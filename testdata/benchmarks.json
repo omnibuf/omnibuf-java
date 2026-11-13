@@ -1,0 +1,116 @@
+{
+  "language" : "java",
+  "runtime" : "OpenJDK 21.0.13",
+  "platform" : "darwin",
+  "arch" : "arm64",
+  "cpu" : "Apple M1 Pro",
+  "workload" : "PeerUpdate",
+  "categories" : [ {
+    "id" : "encode",
+    "title" : "Full Message Encode Speed (PeerUpdate)",
+    "unit" : "ns",
+    "results" : [ {
+      "name" : "OmniBuf (Generated)",
+      "nsPerOp" : 342,
+      "opsPerSec" : 2924699,
+      "wireBytes" : 366,
+      "highlight" : true,
+      "baseline" : true
+    }, {
+      "name" : "Protobuf (protobuf-java)",
+      "nsPerOp" : 392,
+      "opsPerSec" : 2549196,
+      "wireBytes" : 341
+    }, {
+      "name" : "OmniBuf (@OmniBufField)",
+      "nsPerOp" : 688,
+      "opsPerSec" : 1453078,
+      "wireBytes" : 366,
+      "highlight" : true
+    }, {
+      "name" : "JSON (Jackson)",
+      "nsPerOp" : 1508,
+      "opsPerSec" : 663068,
+      "wireBytes" : 803
+    }, {
+      "name" : "MessagePack (Jackson)",
+      "nsPerOp" : 2463,
+      "opsPerSec" : 406084,
+      "wireBytes" : 626
+    } ]
+  }, {
+    "id" : "decode",
+    "title" : "Full Message Decode Speed (PeerUpdate)",
+    "unit" : "ns",
+    "results" : [ {
+      "name" : "OmniBuf (Generated)",
+      "nsPerOp" : 733,
+      "opsPerSec" : 1364562,
+      "highlight" : true,
+      "baseline" : true
+    }, {
+      "name" : "Protobuf (protobuf-java)",
+      "nsPerOp" : 951,
+      "opsPerSec" : 1051990
+    }, {
+      "name" : "OmniBuf (@OmniBufField)",
+      "nsPerOp" : 1825,
+      "opsPerSec" : 547915,
+      "highlight" : true
+    }, {
+      "name" : "JSON (Jackson)",
+      "nsPerOp" : 2528,
+      "opsPerSec" : 395591
+    }, {
+      "name" : "MessagePack (Jackson)",
+      "nsPerOp" : 4093,
+      "opsPerSec" : 244324
+    } ]
+  }, {
+    "id" : "lookup_city",
+    "title" : "Read a Single Nested Field (peer.location.city)",
+    "unit" : "ns",
+    "results" : [ {
+      "name" : "OmniBuf (Generated)",
+      "nsPerOp" : 188,
+      "opsPerSec" : 5318440,
+      "highlight" : true,
+      "baseline" : true
+    }, {
+      "name" : "Protobuf (protobuf-java)",
+      "nsPerOp" : 965,
+      "opsPerSec" : 1036097
+    }, {
+      "name" : "JSON (Jackson)",
+      "nsPerOp" : 2578,
+      "opsPerSec" : 387838
+    }, {
+      "name" : "MessagePack (Jackson)",
+      "nsPerOp" : 4274,
+      "opsPerSec" : 233972
+    } ]
+  }, {
+    "id" : "mutate_sequence",
+    "title" : "Selective Single-Field Mutation (peer.sequence)",
+    "unit" : "ns",
+    "results" : [ {
+      "name" : "OmniBuf (Generated)",
+      "nsPerOp" : 158,
+      "opsPerSec" : 6328697,
+      "highlight" : true,
+      "baseline" : true
+    }, {
+      "name" : "Protobuf (protobuf-java)",
+      "nsPerOp" : 1473,
+      "opsPerSec" : 678909
+    }, {
+      "name" : "JSON (Jackson)",
+      "nsPerOp" : 4295,
+      "opsPerSec" : 232853
+    }, {
+      "name" : "MessagePack (Jackson)",
+      "nsPerOp" : 6747,
+      "opsPerSec" : 148217
+    } ]
+  } ]
+}

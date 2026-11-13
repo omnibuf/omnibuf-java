@@ -1,0 +1,7 @@
+version: v2
+clean: true
+plugins:
+  - protoc_builtin: java
+    out: src/main/gen
+  - local: ./bin/protoc-gen-omnibuf-java
+    out: src/main/gen

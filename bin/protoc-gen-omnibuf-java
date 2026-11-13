@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+exec java -cp "${ROOT_DIR}/target/classes:${ROOT_DIR}/target/dependency/*" \
+  com.omnibuf.plugin.ProtocGenOmniBufJava "$@"
