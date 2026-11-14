@@ -10,14 +10,14 @@ import java.util.List;
 import java.util.Map;
 
 public final class OmniBufLocation {
-    private static final byte[] EMPTY_BYTES = new byte[0];
+    static final byte[] EMPTY_BYTES = new byte[0];
 
-    private String region = "";
-    private String datacenter = "";
-    private String city = "";
-    private int rack = 0;
-    private float latitude = 0.0f;
-    private float longitude = 0.0f;
+    String region = "";
+    String datacenter = "";
+    String city = "";
+    int rack;
+    float latitude;
+    float longitude;
 
     public OmniBufLocation() {}
 

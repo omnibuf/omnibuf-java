@@ -39,8 +39,8 @@ public final class OmniBufBlind {
         String resolveName(int fieldNum) {
             for (BlindSchema cur = this; cur != null; cur = cur.parent) {
                 String name = cur.local.fields().get(fieldNum);
-                if (name != null && !name.isEmpty()) {
-                    return name;
+                if (name != null) {
+                    return name.isEmpty() ? ("field_" + fieldNum) : name;
                 }
             }
             return "field_" + fieldNum;
@@ -61,39 +61,76 @@ public final class OmniBufBlind {
      * {@link UnsignedLong}.
      */
     public static Map<String, Object> decodeBlind(byte[] packet) {
-        if (packet == null) {
-            throw new OmniBufException("omnibuf: null packet buffer");
-        }
-        return decodeBlindSlice(packet, 0, packet.length, null, 0);
+        return decodeBlind(packet, UnmarshalOptions.DEFAULT);
     }
 
     /**
-     * Decodes {@code packet} into canonical deterministic JSON. Returns {@code "{}"} if the
-     * packet is structurally valid but contains non-finite IEEE-754 {@code NaN} or {@code Infinity}
-     * floats that have no RFC 8259 JSON representation.
+     * Decodes {@code packet} without an external schema while enforcing {@code options} limits.
+     */
+    public static Map<String, Object> decodeBlind(byte[] packet, UnmarshalOptions options) {
+        if (packet == null) {
+            throw new OmniBufException("omnibuf: null packet buffer");
+        }
+        UnmarshalOptions opts = options == null ? UnmarshalOptions.DEFAULT : options;
+        if (packet.length > opts.maxMessageBytes()) {
+            throw new OmniBufException(
+                "omnibuf: packet length " + packet.length + " exceeds maxMessageBytes (" + opts.maxMessageBytes() + ")"
+            );
+        }
+        return decodeBlindSlice(packet, 0, packet.length, null, 0, opts);
+    }
+
+    /**
+     * Subtype of {@link OmniBufException} thrown when {@link #decodeBlindJson(byte[])} encounters
+     * an IEEE-754 {@code NaN} or {@code +-Infinity} float that has no RFC 8259 JSON representation.
+     */
+    public static final class NonFiniteFloatException extends OmniBufException {
+        private static final long serialVersionUID = 1L;
+
+        public NonFiniteFloatException(String message) {
+            super(message);
+        }
+    }
+
+    /**
+     * Decodes {@code packet} into canonical deterministic JSON. Throws {@link OmniBufException}
+     * if the packet contains non-finite IEEE-754 {@code NaN} or {@code Infinity} floats that have
+     * no RFC 8259 JSON representation.
      */
     public static String decodeBlindJson(byte[] packet) {
-        return decodeBlindJson(packet, true);
+        return decodeBlindJson(packet, false, UnmarshalOptions.DEFAULT);
     }
 
     public static String decodeBlindJson(byte[] packet, boolean fallbackOnNonFinite) {
-        Map<String, Object> map = decodeBlind(packet);
+        return decodeBlindJson(packet, fallbackOnNonFinite, UnmarshalOptions.DEFAULT);
+    }
+
+    public static String decodeBlindJson(
+            byte[] packet, boolean fallbackOnNonFinite, UnmarshalOptions options) {
+        Map<String, Object> map = decodeBlind(packet, options);
         if (hasNonFiniteFloat(map)) {
             if (fallbackOnNonFinite) {
                 return "{}";
             }
-            throw new OmniBufException("omnibuf: non-finite float cannot be represented in JSON");
+            throw new NonFiniteFloatException("omnibuf: non-finite float cannot be represented in JSON");
         }
-        StringBuilder sb = new StringBuilder(Math.max(32, packet.length * 2));
+        StringBuilder sb = new StringBuilder(Math.max(32, Math.min(packet.length * 2, 1 << 20)));
         writeJsonValue(sb, map);
         return sb.toString();
     }
 
     private static Map<String, Object> decodeBlindSlice(
-            byte[] data, int offset, int length, BlindSchema inherited, int depth) {
-        if (depth > OmniBufDecoder.MAX_CONTAINER_DEPTH) {
+            byte[] data,
+            int offset,
+            int length,
+            BlindSchema inherited,
+            int depth,
+            UnmarshalOptions opts) {
+        int maxDepth = opts.maxNestingDepth();
+        int maxElems = opts.maxCollectionElements();
+        if (depth > maxDepth) {
             throw new OmniBufException(
-                "omnibuf: blind decode depth " + depth + " exceeds MaxNestingDepth"
+                "omnibuf: blind decode depth " + depth + " exceeds MaxNestingDepth (" + maxDepth + ")"
             );
         }
 
@@ -117,7 +154,9 @@ public final class OmniBufBlind {
                     throw new OmniBufException("omnibuf: Field #0 requires WireSubMsg");
                 }
                 OmniBufDecoder.Slice s = OmniBufDecoder.readLengthSlice(data, pos, end, 0);
-                SchemaMeta m = SchemaMeta.decode(data, s.offset(), s.length(), depth + 1);
+                SchemaMeta m = SchemaMeta.decode(
+                    data, s.offset(), s.length(), depth + 1, maxDepth, maxElems
+                );
                 localMeta = SchemaMeta.merge(localMeta, m);
                 pos = s.end();
             } else {
@@ -134,7 +173,7 @@ public final class OmniBufBlind {
         // Pass 2: Decode values, checking Field #0 name collisions and wire-shape invariants.
         Map<String, Object> out = new LinkedHashMap<>();
         Map<String, Integer> nameOwners = new HashMap<>();
-        Map<Integer, Integer> fieldShapes = new HashMap<>();
+        Map<Integer, BlindShape> fieldShapes = new HashMap<>();
         Map<String, ByteArrayOutputStream> subMsgBuffers = null;
         Map<String, OmniBufDecoder.Slice> singleSubSlices = null;
         Map<String, BlindSchema> subMsgSchemas = null;
@@ -162,12 +201,12 @@ public final class OmniBufBlind {
                 );
             }
 
-            int shape = computeFieldShape(data, pos, end, wt);
-            Integer prevShape = fieldShapes.putIfAbsent(fnum, shape);
-            if (prevShape != null && prevShape != shape) {
-                throw new OmniBufException(
-                    "omnibuf: wire shape mismatch across concatenated field #" + fnum
-                );
+            BlindShape shape = parseBlindFieldShape(data, pos, end, wt, depth, maxDepth, maxElems);
+            BlindShape prevShape = fieldShapes.get(fnum);
+            if (prevShape == null) {
+                fieldShapes.put(fnum, shape);
+            } else {
+                fieldShapes.put(fnum, unifyBlindShapes(prevShape, shape, fnum));
             }
 
             switch (wt) {
@@ -184,42 +223,42 @@ public final class OmniBufBlind {
                 case WireType.WIRE_BOOL_FALSE -> out.put(name, Boolean.FALSE);
                 case WireType.WIRE_BOOL_TRUE -> out.put(name, Boolean.TRUE);
                 case WireType.WIRE_FIXED32 -> {
-                    if (pos + 4 > end) {
+                    if (end - pos < 4) {
                         throw new OmniBufException("omnibuf: truncated WireFixed32");
                     }
                     out.put(name, Integer.toUnsignedLong(PrefixVarint.getIntLE(data, pos)));
                     pos += 4;
                 }
                 case WireType.WIRE_SFIXED32 -> {
-                    if (pos + 4 > end) {
+                    if (end - pos < 4) {
                         throw new OmniBufException("omnibuf: truncated WireSfixed32");
                     }
                     out.put(name, PrefixVarint.getIntLE(data, pos));
                     pos += 4;
                 }
                 case WireType.WIRE_FLOAT32 -> {
-                    if (pos + 4 > end) {
+                    if (end - pos < 4) {
                         throw new OmniBufException("omnibuf: truncated WireFloat32");
                     }
                     out.put(name, Float.intBitsToFloat(PrefixVarint.getIntLE(data, pos)));
                     pos += 4;
                 }
                 case WireType.WIRE_FIXED64 -> {
-                    if (pos + 8 > end) {
+                    if (end - pos < 8) {
                         throw new OmniBufException("omnibuf: truncated WireFixed64");
                     }
                     out.put(name, UnsignedLong.fromLongBits(PrefixVarint.getLongLE(data, pos)));
                     pos += 8;
                 }
                 case WireType.WIRE_SFIXED64 -> {
-                    if (pos + 8 > end) {
+                    if (end - pos < 8) {
                         throw new OmniBufException("omnibuf: truncated WireSfixed64");
                     }
                     out.put(name, PrefixVarint.getLongLE(data, pos));
                     pos += 8;
                 }
                 case WireType.WIRE_FLOAT64 -> {
-                    if (pos + 8 > end) {
+                    if (end - pos < 8) {
                         throw new OmniBufException("omnibuf: truncated WireFloat64");
                     }
                     out.put(name, Double.longBitsToDouble(PrefixVarint.getLongLE(data, pos)));
@@ -248,9 +287,23 @@ public final class OmniBufBlind {
                     }
                     subMsgSchemas.put(name, activeSchema != null ? activeSchema.childSchema(fnum) : null);
                     if (subMsgBuffers != null && subMsgBuffers.containsKey(name)) {
-                        subMsgBuffers.get(name).write(data, s.offset(), s.length());
+                        ByteArrayOutputStream baos = subMsgBuffers.get(name);
+                        if ((long) baos.size() + s.length() > opts.maxMessageBytes()) {
+                            throw new OmniBufException("omnibuf: merged sub-message exceeds maxMessageBytes");
+                        }
+                        baos.write(data, s.offset(), s.length());
                     } else if (singleSubSlices.containsKey(name)) {
                         OmniBufDecoder.Slice first = singleSubSlices.remove(name);
+                        if ((long) first.length() + s.length() > opts.maxMessageBytes()) {
+                            throw new OmniBufException("omnibuf: merged sub-message exceeds maxMessageBytes");
+                        }
+                        // Validate each concatenated slice boundary individually before merging
+                        OmniBufDecoder.validateMessage(
+                            data, first.offset(), first.length(), depth + 1, maxDepth, maxElems
+                        );
+                        OmniBufDecoder.validateMessage(
+                            data, s.offset(), s.length(), depth + 1, maxDepth, maxElems
+                        );
                         if (subMsgBuffers == null) {
                             subMsgBuffers = new LinkedHashMap<>();
                         }
@@ -273,7 +326,7 @@ public final class OmniBufBlind {
                         list = new ArrayList<>();
                         out.put(name, list);
                     }
-                    decodeArrayBodyBlind(list, data, s.offset(), s.end(), childSchema, depth + 1);
+                    decodeArrayBodyBlind(list, data, s.offset(), s.end(), childSchema, depth + 1, opts);
                 }
                 case WireType.WIRE_MAP -> {
                     OmniBufDecoder.Slice s = OmniBufDecoder.readLengthSlice(data, pos, end, 3);
@@ -285,7 +338,7 @@ public final class OmniBufBlind {
                         map = new LinkedHashMap<>();
                         out.put(name, map);
                     }
-                    decodeMapBodyBlind(map, data, s.offset(), s.end(), childSchema, depth + 1);
+                    decodeMapBodyBlind(map, data, s.offset(), s.end(), childSchema, depth + 1, opts);
                 }
                 case WireType.WIRE_EXTENDED ->
                     throw new OmniBufException("omnibuf: unrecognized WireExtended field #" + fnum);
@@ -300,7 +353,9 @@ public final class OmniBufBlind {
                 OmniBufDecoder.Slice s = entry.getValue();
                 out.put(
                     name,
-                    decodeBlindSlice(data, s.offset(), s.length(), subMsgSchemas.get(name), depth + 1)
+                    decodeBlindSlice(
+                        data, s.offset(), s.length(), subMsgSchemas.get(name), depth + 1, opts
+                    )
                 );
             }
         }
@@ -310,7 +365,9 @@ public final class OmniBufBlind {
                 byte[] mergedBytes = entry.getValue().toByteArray();
                 out.put(
                     name,
-                    decodeBlindSlice(mergedBytes, 0, mergedBytes.length, subMsgSchemas.get(name), depth + 1)
+                    decodeBlindSlice(
+                        mergedBytes, 0, mergedBytes.length, subMsgSchemas.get(name), depth + 1, opts
+                    )
                 );
             }
         }
@@ -318,23 +375,153 @@ public final class OmniBufBlind {
         return out;
     }
 
-    private static int computeFieldShape(byte[] data, int pos, int end, int wt) {
+    private record BlindShape(int wt, boolean anyMap, int keyWT, BlindShape elem) {}
+
+    private static BlindShape unifyBlindShapes(BlindShape a, BlindShape b, int fnum) {
+        if (a == null) {
+            return b;
+        }
+        if (b == null) {
+            return a;
+        }
+        if (a.wt != b.wt) {
+            throw new OmniBufException(
+                "omnibuf: wire shape mismatch across concatenated field #" + fnum
+            );
+        }
+        return switch (a.wt) {
+            case WireType.WIRE_ARRAY ->
+                new BlindShape(WireType.WIRE_ARRAY, false, 0, unifyBlindShapes(a.elem, b.elem, fnum));
+            case WireType.WIRE_MAP -> {
+                if (a.anyMap) {
+                    yield b;
+                }
+                if (b.anyMap) {
+                    yield a;
+                }
+                if (a.keyWT != b.keyWT) {
+                    throw new OmniBufException(
+                        "omnibuf: map key wire shape mismatch across field #" + fnum
+                    );
+                }
+                yield new BlindShape(
+                    WireType.WIRE_MAP, false, a.keyWT, unifyBlindShapes(a.elem, b.elem, fnum)
+                );
+            }
+            default -> a;
+        };
+    }
+
+    private static BlindShape parseBlindFieldShape(
+            byte[] data,
+            int pos,
+            int end,
+            int wt,
+            int depth,
+            int maxNestingDepth,
+            int maxCollectionElements) {
         if (wt == WireType.WIRE_BOOL_TRUE) {
-            return WireType.WIRE_BOOL_FALSE;
+            return new BlindShape(WireType.WIRE_BOOL_FALSE, false, 0, null);
         }
         if (wt == WireType.WIRE_ARRAY) {
             OmniBufDecoder.Slice s = OmniBufDecoder.readLengthSlice(data, pos, end, 2);
-            OmniBufDecoder.ArrayHeader hdr =
-                OmniBufDecoder.parseArrayHeader(data, s.offset(), s.end());
-            return WireType.WIRE_ARRAY | (hdr.elemWireType() << 8);
+            return parseBlindContainerShape(
+                data, s.offset(), s.end(), WireType.WIRE_ARRAY, depth + 1, maxNestingDepth, maxCollectionElements, 0
+            );
         }
         if (wt == WireType.WIRE_MAP) {
             OmniBufDecoder.Slice s = OmniBufDecoder.readLengthSlice(data, pos, end, 3);
-            OmniBufDecoder.MapHeader hdr =
-                OmniBufDecoder.parseMapHeader(data, s.offset(), s.end());
-            return WireType.WIRE_MAP | (hdr.keyWireType() << 8) | (hdr.valWireType() << 16);
+            return parseBlindContainerShape(
+                data, s.offset(), s.end(), WireType.WIRE_MAP, depth + 1, maxNestingDepth, maxCollectionElements, 0
+            );
         }
-        return wt;
+        return new BlindShape(wt, false, 0, null);
+    }
+
+    private static BlindShape parseBlindContainerShape(
+            byte[] data,
+            int bodyStart,
+            int bodyEnd,
+            int containerWT,
+            int depth,
+            int maxNestingDepth,
+            int maxCollectionElements,
+            int fnum) {
+        if (depth > maxNestingDepth) {
+            throw new OmniBufException(
+                "omnibuf: container nesting depth " + depth + " exceeds MaxNestingDepth"
+            );
+        }
+        if (containerWT == WireType.WIRE_ARRAY) {
+            OmniBufDecoder.ArrayHeader hdr = OmniBufDecoder.parseArrayHeader(
+                data, bodyStart, bodyEnd, maxCollectionElements
+            );
+            int elemWT = hdr.elemWireType();
+            if (elemWT != WireType.WIRE_ARRAY && elemWT != WireType.WIRE_MAP) {
+                return new BlindShape(
+                    WireType.WIRE_ARRAY, false, 0, new BlindShape(elemWT, false, 0, null)
+                );
+            }
+            if (hdr.count() == 0) {
+                BlindShape emptyElem = elemWT == WireType.WIRE_ARRAY
+                    ? new BlindShape(WireType.WIRE_ARRAY, false, 0, null)
+                    : new BlindShape(WireType.WIRE_MAP, true, 0, null);
+                return new BlindShape(WireType.WIRE_ARRAY, false, 0, emptyElem);
+            }
+            int p = hdr.payloadStart();
+            int end = hdr.payloadEnd();
+            int minLen = elemWT == WireType.WIRE_ARRAY ? 2 : 3;
+            BlindShape elemShape = null;
+            for (int i = 0; i < hdr.count(); i++) {
+                OmniBufDecoder.Slice s = OmniBufDecoder.readLengthSlice(data, p, end, minLen);
+                BlindShape child = parseBlindContainerShape(
+                    data, s.offset(), s.end(), elemWT, depth + 1, maxNestingDepth, maxCollectionElements, fnum
+                );
+                elemShape = elemShape == null ? child : unifyBlindShapes(elemShape, child, fnum);
+                p = s.end();
+            }
+            if (p != end) {
+                throw new OmniBufException("omnibuf: WireArray has trailing payload bytes");
+            }
+            return new BlindShape(WireType.WIRE_ARRAY, false, 0, elemShape);
+        }
+        OmniBufDecoder.MapHeader hdr = OmniBufDecoder.parseMapHeader(
+            data, bodyStart, bodyEnd, maxCollectionElements
+        );
+        int keyWT = hdr.keyWireType();
+        int valWT = hdr.valWireType();
+        if (valWT != WireType.WIRE_ARRAY && valWT != WireType.WIRE_MAP) {
+            return new BlindShape(
+                WireType.WIRE_MAP, false, keyWT, new BlindShape(valWT, false, 0, null)
+            );
+        }
+        if (hdr.count() == 0) {
+            BlindShape emptyVal = valWT == WireType.WIRE_ARRAY
+                ? new BlindShape(WireType.WIRE_ARRAY, false, 0, null)
+                : new BlindShape(WireType.WIRE_MAP, true, 0, null);
+            return new BlindShape(WireType.WIRE_MAP, false, keyWT, emptyVal);
+        }
+        int p = hdr.payloadStart();
+        int end = hdr.payloadEnd();
+        int minLen = valWT == WireType.WIRE_ARRAY ? 2 : 3;
+        BlindShape valShape = null;
+        for (int i = 0; i < hdr.count(); i++) {
+            int afterKey = OmniBufDecoder.tryFastSkipValue(data, p, end, keyWT);
+            if (afterKey < 0) {
+                throw new OmniBufException("omnibuf: truncated WireMap key at " + p);
+            }
+            p = afterKey;
+            OmniBufDecoder.Slice vs = OmniBufDecoder.readLengthSlice(data, p, end, minLen);
+            BlindShape child = parseBlindContainerShape(
+                data, vs.offset(), vs.end(), valWT, depth + 1, maxNestingDepth, maxCollectionElements, fnum
+            );
+            valShape = valShape == null ? child : unifyBlindShapes(valShape, child, fnum);
+            p = vs.end();
+        }
+        if (p != end) {
+            throw new OmniBufException("omnibuf: WireMap has trailing payload bytes");
+        }
+        return new BlindShape(WireType.WIRE_MAP, false, keyWT, valShape);
     }
 
     private static void decodeArrayBodyBlind(
@@ -343,16 +530,22 @@ public final class OmniBufBlind {
             int bodyStart,
             int bodyEnd,
             BlindSchema childSchema,
-            int depth) {
-        if (depth > OmniBufDecoder.MAX_CONTAINER_DEPTH) {
+            int depth,
+            UnmarshalOptions opts) {
+        if (depth > opts.maxNestingDepth()) {
             throw new OmniBufException(
                 "omnibuf: WireArray nesting depth " + depth + " exceeds MaxNestingDepth"
             );
         }
-        OmniBufDecoder.ArrayHeader hdr = OmniBufDecoder.parseArrayHeader(data, bodyStart, bodyEnd);
+        OmniBufDecoder.ArrayHeader hdr = OmniBufDecoder.parseArrayHeader(
+            data, bodyStart, bodyEnd, opts.maxCollectionElements()
+        );
         int elemWT = hdr.elemWireType();
         if (elemWT == WireType.WIRE_EXTENDED) {
             throw new OmniBufException("omnibuf: unsupported WireExtended in WireArray");
+        }
+        if ((long) target.size() + hdr.count() > opts.maxCollectionElements()) {
+            throw new OmniBufException("omnibuf: accumulated WireArray count exceeds maxCollectionElements");
         }
         int count = hdr.count();
         int p = hdr.payloadStart();
@@ -414,20 +607,22 @@ public final class OmniBufBlind {
                 }
                 case WireType.WIRE_SUB_MSG -> {
                     OmniBufDecoder.Slice s = OmniBufDecoder.readLengthSlice(data, p, end, 0);
-                    target.add(decodeBlindSlice(data, s.offset(), s.length(), childSchema, depth + 1));
+                    target.add(
+                        decodeBlindSlice(data, s.offset(), s.length(), childSchema, depth + 1, opts)
+                    );
                     yield s.end();
                 }
                 case WireType.WIRE_ARRAY -> {
                     OmniBufDecoder.Slice s = OmniBufDecoder.readLengthSlice(data, p, end, 2);
                     List<Object> nested = new ArrayList<>();
-                    decodeArrayBodyBlind(nested, data, s.offset(), s.end(), childSchema, depth + 1);
+                    decodeArrayBodyBlind(nested, data, s.offset(), s.end(), childSchema, depth + 1, opts);
                     target.add(nested);
                     yield s.end();
                 }
                 case WireType.WIRE_MAP -> {
                     OmniBufDecoder.Slice s = OmniBufDecoder.readLengthSlice(data, p, end, 3);
                     Map<String, Object> nested = new LinkedHashMap<>();
-                    decodeMapBodyBlind(nested, data, s.offset(), s.end(), childSchema, depth + 1);
+                    decodeMapBodyBlind(nested, data, s.offset(), s.end(), childSchema, depth + 1, opts);
                     target.add(nested);
                     yield s.end();
                 }
@@ -445,13 +640,16 @@ public final class OmniBufBlind {
             int bodyStart,
             int bodyEnd,
             BlindSchema childSchema,
-            int depth) {
-        if (depth > OmniBufDecoder.MAX_CONTAINER_DEPTH) {
+            int depth,
+            UnmarshalOptions opts) {
+        if (depth > opts.maxNestingDepth()) {
             throw new OmniBufException(
                 "omnibuf: WireMap nesting depth " + depth + " exceeds MaxNestingDepth"
             );
         }
-        OmniBufDecoder.MapHeader hdr = OmniBufDecoder.parseMapHeader(data, bodyStart, bodyEnd);
+        OmniBufDecoder.MapHeader hdr = OmniBufDecoder.parseMapHeader(
+            data, bodyStart, bodyEnd, opts.maxCollectionElements()
+        );
         int keyWT = hdr.keyWireType();
         int valWT = hdr.valWireType();
         int p = hdr.payloadStart();
@@ -486,28 +684,28 @@ public final class OmniBufBlind {
                     key = b == 1 ? "true" : "false";
                 }
                 case WireType.WIRE_FIXED32 -> {
-                    if (p + 4 > end) {
+                    if (end - p < 4) {
                         throw new OmniBufException("omnibuf: truncated WireMap fixed32 key");
                     }
                     key = Integer.toUnsignedString(PrefixVarint.getIntLE(data, p));
                     p += 4;
                 }
                 case WireType.WIRE_SFIXED32 -> {
-                    if (p + 4 > end) {
+                    if (end - p < 4) {
                         throw new OmniBufException("omnibuf: truncated WireMap sfixed32 key");
                     }
                     key = Integer.toString(PrefixVarint.getIntLE(data, p));
                     p += 4;
                 }
                 case WireType.WIRE_FIXED64 -> {
-                    if (p + 8 > end) {
+                    if (end - p < 8) {
                         throw new OmniBufException("omnibuf: truncated WireMap fixed64 key");
                     }
                     key = Long.toUnsignedString(PrefixVarint.getLongLE(data, p));
                     p += 8;
                 }
                 case WireType.WIRE_SFIXED64 -> {
-                    if (p + 8 > end) {
+                    if (end - p < 8) {
                         throw new OmniBufException("omnibuf: truncated WireMap sfixed64 key");
                     }
                     key = Long.toString(PrefixVarint.getLongLE(data, p));
@@ -539,42 +737,42 @@ public final class OmniBufBlind {
                     val = b == 1;
                 }
                 case WireType.WIRE_FIXED32 -> {
-                    if (p + 4 > end) {
+                    if (end - p < 4) {
                         throw new OmniBufException("omnibuf: truncated WireMap fixed32 value");
                     }
                     val = Integer.toUnsignedLong(PrefixVarint.getIntLE(data, p));
                     p += 4;
                 }
                 case WireType.WIRE_SFIXED32 -> {
-                    if (p + 4 > end) {
+                    if (end - p < 4) {
                         throw new OmniBufException("omnibuf: truncated WireMap sfixed32 value");
                     }
                     val = PrefixVarint.getIntLE(data, p);
                     p += 4;
                 }
                 case WireType.WIRE_FLOAT32 -> {
-                    if (p + 4 > end) {
+                    if (end - p < 4) {
                         throw new OmniBufException("omnibuf: truncated WireMap float32 value");
                     }
                     val = Float.intBitsToFloat(PrefixVarint.getIntLE(data, p));
                     p += 4;
                 }
                 case WireType.WIRE_FIXED64 -> {
-                    if (p + 8 > end) {
+                    if (end - p < 8) {
                         throw new OmniBufException("omnibuf: truncated WireMap fixed64 value");
                     }
                     val = UnsignedLong.fromLongBits(PrefixVarint.getLongLE(data, p));
                     p += 8;
                 }
                 case WireType.WIRE_SFIXED64 -> {
-                    if (p + 8 > end) {
+                    if (end - p < 8) {
                         throw new OmniBufException("omnibuf: truncated WireMap sfixed64 value");
                     }
                     val = PrefixVarint.getLongLE(data, p);
                     p += 8;
                 }
                 case WireType.WIRE_FLOAT64 -> {
-                    if (p + 8 > end) {
+                    if (end - p < 8) {
                         throw new OmniBufException("omnibuf: truncated WireMap float64 value");
                     }
                     val = Double.longBitsToDouble(PrefixVarint.getLongLE(data, p));
@@ -592,26 +790,31 @@ public final class OmniBufBlind {
                 }
                 case WireType.WIRE_SUB_MSG -> {
                     OmniBufDecoder.Slice vs = OmniBufDecoder.readLengthSlice(data, p, end, 0);
-                    val = decodeBlindSlice(data, vs.offset(), vs.length(), childSchema, depth + 1);
+                    val = decodeBlindSlice(
+                        data, vs.offset(), vs.length(), childSchema, depth + 1, opts
+                    );
                     p = vs.end();
                 }
                 case WireType.WIRE_ARRAY -> {
                     OmniBufDecoder.Slice vs = OmniBufDecoder.readLengthSlice(data, p, end, 2);
                     List<Object> nested = new ArrayList<>();
-                    decodeArrayBodyBlind(nested, data, vs.offset(), vs.end(), childSchema, depth + 1);
+                    decodeArrayBodyBlind(nested, data, vs.offset(), vs.end(), childSchema, depth + 1, opts);
                     val = nested;
                     p = vs.end();
                 }
                 case WireType.WIRE_MAP -> {
                     OmniBufDecoder.Slice vs = OmniBufDecoder.readLengthSlice(data, p, end, 3);
                     Map<String, Object> nested = new LinkedHashMap<>();
-                    decodeMapBodyBlind(nested, data, vs.offset(), vs.end(), childSchema, depth + 1);
+                    decodeMapBodyBlind(nested, data, vs.offset(), vs.end(), childSchema, depth + 1, opts);
                     val = nested;
                     p = vs.end();
                 }
                 case WireType.WIRE_EXTENDED ->
                     throw new OmniBufException("omnibuf: unsupported WireExtended in WireMap value");
                 default -> throw new OmniBufException("omnibuf: invalid WireMap value type: " + valWT);
+            }
+            if (!target.containsKey(key) && target.size() >= opts.maxCollectionElements()) {
+                throw new OmniBufException("omnibuf: accumulated WireMap count exceeds maxCollectionElements");
             }
             target.put(key, val);
         }
@@ -721,7 +924,7 @@ public final class OmniBufBlind {
     private static String formatFloat32Json(float f) {
         int bits = Float.floatToRawIntBits(f);
         if (f == 0.0f) {
-            return bits < 0 ? "-0" : "0";
+            return bits < 0 ? "-0.0" : "0";
         }
         String s = Float.toString(f);
         int eIdx = s.indexOf('E');
@@ -744,7 +947,7 @@ public final class OmniBufBlind {
     private static String formatFloat64Json(double d) {
         long bits = Double.doubleToRawLongBits(d);
         if (d == 0.0d) {
-            return bits < 0L ? "-0" : "0";
+            return bits < 0L ? "-0.0" : "0";
         }
         String s = Double.toString(d);
         int eIdx = s.indexOf('E');

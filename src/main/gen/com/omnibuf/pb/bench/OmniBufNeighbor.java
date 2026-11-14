@@ -10,12 +10,12 @@ import java.util.List;
 import java.util.Map;
 
 public final class OmniBufNeighbor {
-    private static final byte[] EMPTY_BYTES = new byte[0];
+    static final byte[] EMPTY_BYTES = new byte[0];
 
-    private int peerAsn = 0;
-    private String router = "";
-    private int latencyUs = 0;
-    private boolean established = false;
+    int peerAsn;
+    String router = "";
+    int latencyUs;
+    boolean established;
 
     public OmniBufNeighbor() {}
 

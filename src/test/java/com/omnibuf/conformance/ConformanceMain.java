@@ -189,28 +189,25 @@ public final class ConformanceMain {
 
     private static void handleBlind(
             ConformanceRequestFrame req, byte[] payload, ConformanceResponseFrame resp) {
+        if (req.getRequestedOutputFormat() == WIRE_FORMAT_JSON) {
+            try {
+                resp.setJsonPayload(OmniBufBlind.decodeBlindJson(payload));
+            } catch (OmniBufBlind.NonFiniteFloatException e) {
+                resp.setJsonPayload("{}");
+            } catch (OmniBufException e) {
+                resp.setParseError(e.getMessage());
+            }
+            return;
+        }
         try {
             OmniBufBlind.decodeBlind(payload);
         } catch (OmniBufException e) {
             resp.setParseError(e.getMessage());
-            return;
-        }
-        if (req.getRequestedOutputFormat() == WIRE_FORMAT_JSON) {
-            resp.setJsonPayload(OmniBufBlind.decodeBlindJson(payload, true));
         }
     }
 
     private static void handlePlugin(
             ConformanceRequestFrame req, byte[] payload, ConformanceResponseFrame resp) {
-        if (req.getTestOpaqueSplice() || req.getTestOpaqueSpliceShrink()) {
-            try {
-                checkSpliceAliasedPrefix(payload);
-            } catch (RuntimeException e) {
-                resp.setRuntimeError(e.getMessage());
-                return;
-            }
-        }
-
         switch (req.getMessageType()) {
             case "omnibuf.bench.PeerUpdate" -> handlePluginPeerUpdate(req, payload, resp);
             case "omnibuf.conformance.TestAllTypes" -> handlePluginTestAllTypes(req, payload, resp);
@@ -220,6 +217,17 @@ public final class ConformanceMain {
 
     private static void handlePluginPeerUpdate(
             ConformanceRequestFrame req, byte[] payload, ConformanceResponseFrame resp) {
+        if (req.getTestOpaqueSplice() || req.getTestOpaqueSpliceShrink()) {
+            try {
+                OpaquePeerUpdate probe = new OpaquePeerUpdate(payload);
+                probe.setSequence(probe.getSequence() + 1L);
+                probe.marshalValidated();
+            } catch (OmniBufException e) {
+                resp.setParseError(e.getMessage());
+                return;
+            }
+        }
+
         // Pre-populate stale values to verify unmarshal resets absent fields cleanly.
         OmniBufPeerUpdate msg = new OmniBufPeerUpdate()
             .setAsn(999999)
@@ -238,11 +246,19 @@ public final class ConformanceMain {
             return;
         }
 
+        if (req.getTestOpaqueSplice() || req.getTestOpaqueSpliceShrink()) {
+            checkSpliceAliasedPrefix(payload);
+        }
+
         OpaquePeerUpdate op = new OpaquePeerUpdate(payload);
         OpaqueLocation opLoc = op.getLocation();
         OmniBufLocation wantLoc = msg.getLocation();
         String gotCity = opLoc == null ? "" : opLoc.getCity();
         String wantCity = wantLoc == null ? "" : wantLoc.getCity();
+        float gotLat = opLoc == null ? 0.0f : opLoc.getLatitude();
+        float wantLat = wantLoc == null ? 0.0f : wantLoc.getLatitude();
+        float gotLon = opLoc == null ? 0.0f : opLoc.getLongitude();
+        float wantLon = wantLoc == null ? 0.0f : wantLoc.getLongitude();
 
         if (op.getAsn() != msg.getAsn()
                 || !op.getRouterId().equals(msg.getRouterId())
@@ -253,6 +269,8 @@ public final class ConformanceMain {
                 || op.getTags().size() != msg.getTags().size()
                 || op.getPrefixes().size() != msg.getPrefixes().size()
                 || !gotCity.equals(wantCity)
+                || Float.floatToRawIntBits(gotLat) != Float.floatToRawIntBits(wantLat)
+                || Float.floatToRawIntBits(gotLon) != Float.floatToRawIntBits(wantLon)
                 || op.getNeighbors().size() != msg.getNeighbors().size()
                 || op.getSequence() != msg.getSequence()) {
             resp.setParseError("opaque PeerUpdate getter mismatch with decoded struct");
@@ -277,7 +295,7 @@ public final class ConformanceMain {
                     .setLatitude(52.52f)
                     .setLongitude(13.405f));
                 op.setSequence(op.getSequence() + 1L);
-                resp.setOmnibufPayload(op.marshal());
+                resp.setOmnibufPayload(op.marshalValidated());
             } catch (OmniBufException e) {
                 resp.setSerializeError(e.getMessage());
             }
@@ -302,7 +320,7 @@ public final class ConformanceMain {
                     .setLatitude(1.0f)
                     .setLongitude(2.0f));
                 op.setSequence(2L);
-                resp.setOmnibufPayload(op.marshal());
+                resp.setOmnibufPayload(op.marshalValidated());
             } catch (OmniBufException e) {
                 resp.setSerializeError(e.getMessage());
             }
@@ -320,6 +338,17 @@ public final class ConformanceMain {
 
     private static void handlePluginTestAllTypes(
             ConformanceRequestFrame req, byte[] payload, ConformanceResponseFrame resp) {
+        if (req.getTestOpaqueSplice() || req.getTestOpaqueSpliceShrink()) {
+            try {
+                OpaqueTestAllTypes probe = new OpaqueTestAllTypes(payload);
+                probe.setF1Uint32(probe.getF1Uint32() + 1);
+                probe.marshalValidated();
+            } catch (OmniBufException e) {
+                resp.setParseError(e.getMessage());
+                return;
+            }
+        }
+
         Map<String, Long> staleMap = new LinkedHashMap<>();
         staleMap.put("stale", 999L);
 
@@ -344,6 +373,10 @@ public final class ConformanceMain {
         } catch (OmniBufException e) {
             resp.setParseError(e.getMessage());
             return;
+        }
+
+        if (req.getTestOpaqueSplice() || req.getTestOpaqueSpliceShrink()) {
+            checkSpliceAliasedPrefix(payload);
         }
 
         OpaqueTestAllTypes op = new OpaqueTestAllTypes(payload);
@@ -426,7 +459,7 @@ public final class ConformanceMain {
                 op.setF15Fixed32(0xDEADBEEF);
                 op.setF16Fixed64(0xCAFEBABEDEADBEEFL);
                 op.setF20OverflowStr("overflow20-".repeat(20));
-                resp.setOmnibufPayload(op.marshal());
+                resp.setOmnibufPayload(op.marshalValidated());
             } catch (OmniBufException e) {
                 resp.setSerializeError(e.getMessage());
             }
@@ -464,7 +497,7 @@ public final class ConformanceMain {
                 op.setF15Fixed32(7);
                 op.setF16Fixed64(9L);
                 op.setF20OverflowStr("z");
-                resp.setOmnibufPayload(op.marshal());
+                resp.setOmnibufPayload(op.marshalValidated());
             } catch (OmniBufException e) {
                 resp.setSerializeError(e.getMessage());
             }

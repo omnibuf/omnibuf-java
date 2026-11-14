@@ -83,12 +83,13 @@ class OmniBufTiersTest {
             json
         );
 
-        // Non-finite NaN returns "{}" fallback when fallbackOnNonFinite is true
+        // Public decodeBlindJson(byte[]) rejects NaN/Infinity by default; fallbackOnNonFinite=true returns "{}"
         OmniBufEncoder nanEnc = new OmniBufEncoder(32);
         nanEnc.writeFloat64(1, Double.NaN);
         byte[] nanPacket = nanEnc.toByteArray();
-        assertEquals("{}", OmniBufBlind.decodeBlindJson(nanPacket));
+        assertThrows(OmniBufException.class, () -> OmniBufBlind.decodeBlindJson(nanPacket));
         assertThrows(OmniBufException.class, () -> OmniBufBlind.decodeBlindJson(nanPacket, false));
+        assertEquals("{}", OmniBufBlind.decodeBlindJson(nanPacket, true));
     }
 
     @Test

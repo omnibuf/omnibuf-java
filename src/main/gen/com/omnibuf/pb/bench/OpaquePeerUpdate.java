@@ -167,6 +167,13 @@ public final class OpaquePeerUpdate {
         return view == null ? null : new com.omnibuf.pb.bench.OpaqueLocation(view);
     }
 
+    public boolean hasLocation() {
+        if ((dirtyMask & 0x200L) != 0L) {
+            return dirty_location != null;
+        }
+        return OmniBufOpaque.hasField(buffer, offset, length, 9, 1 << WireType.WIRE_SUB_MSG);
+    }
+
     public OpaquePeerUpdate setLocation(com.omnibuf.pb.bench.OmniBufLocation value) {
         this.dirty_location = value;
         this.dirtyMask |= 0x200L;
@@ -224,6 +231,20 @@ public final class OpaquePeerUpdate {
         );
     }
 
+    public byte[] marshalValidated() {
+        return marshalValidatedInto(null);
+    }
+
+    public byte[] tryMarshal() {
+        return marshalValidatedInto(null);
+    }
+
+    public byte[] marshalValidatedInto(OmniBufEncoder target) {
+        return OmniBufOpaque.spliceFieldsValidated(
+            buffer, offset, length, dirtyMask, MAX_FIELD_NUMBER, this::writeDirtyField, target
+        );
+    }
+
     private void writeDirtyField(OmniBufEncoder enc, int fieldNumber) {
         boolean deterministic = true;
         switch (fieldNumber) {
@@ -255,9 +276,9 @@ public final class OpaquePeerUpdate {
                 {
                     com.omnibuf.pb.bench.OmniBufLocation sub9 = this.dirty_location;
                     if (sub9 != null) {
-                        enc.beginSubMsg(9);
+                        int subPos = enc.beginSubMsgFast(9);
                         com.omnibuf.pb.bench.LocationOmniBuf.encode(enc, sub9, deterministic);
-                        enc.endSubMsg();
+                        enc.endContainerAt(subPos);
                     }
                 }
             }
@@ -265,16 +286,16 @@ public final class OpaquePeerUpdate {
                 {
                     List<com.omnibuf.pb.bench.OmniBufNeighbor> list10 = this.dirty_neighbors;
                     int n = list10 == null ? 0 : list10.size();
-                    enc.beginSubMsgArr(10);
+                    int arrPos = enc.beginTypedArrayFast(10, WireType.WIRE_SUB_MSG, n);
                     for (int i = 0; i < n; i++) {
-                        enc.beginSubMsgElem();
+                        int elemPos = enc.beginInlineSubMsgFast();
                         com.omnibuf.pb.bench.OmniBufNeighbor elem = list10.get(i);
                         if (elem != null) {
                             com.omnibuf.pb.bench.NeighborOmniBuf.encode(enc, elem, deterministic);
                         }
-                        enc.endSubMsgElem();
+                        enc.endContainerAt(elemPos);
                     }
-                    enc.endSubMsgArr();
+                    enc.endContainerAt(arrPos);
                 }
             }
             case 11 -> {

@@ -6,23 +6,85 @@ package com.omnibuf.pb.bench;
 import com.omnibuf.MarshalOptions;
 import com.omnibuf.OmniBufException;
 import com.omnibuf.SchemaMeta;
+import com.omnibuf.UnmarshalOptions;
+import com.omnibuf.wire.CodecPool;
 import com.omnibuf.wire.OmniBufDecoder;
 import com.omnibuf.wire.OmniBufEncoder;
 import com.omnibuf.wire.WireType;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 public final class PeerUpdateOmniBuf {
-    private static final ThreadLocal<OmniBufEncoder> ENCODER_POOL =
-        ThreadLocal.withInitial(() -> new OmniBufEncoder(512));
-
-    private static final SchemaMeta SCHEMA_META = buildSchemaMeta();
-    private static final byte[] FIELD0_BYTES = SCHEMA_META.encodeField0(true);
+    private static volatile SchemaMeta SCHEMA_META;
+    private static volatile byte[] FIELD0_BYTES;
+    private static volatile Boolean CYCLIC_SCHEMA;
 
     private PeerUpdateOmniBuf() {}
 
-    private static SchemaMeta buildSchemaMeta() {
+    public static SchemaMeta schemaMeta() {
+        SchemaMeta m = SCHEMA_META;
+        if (m == null) {
+            boolean[] cyclic = new boolean[1];
+            m = schemaMeta(1, new HashSet<>(), cyclic);
+            CYCLIC_SCHEMA = cyclic[0];
+            SCHEMA_META = m;
+        }
+        return m;
+    }
+
+    private static boolean isCyclicSchema() {
+        Boolean c = CYCLIC_SCHEMA;
+        if (c == null) {
+            schemaMeta();
+            c = CYCLIC_SCHEMA;
+        }
+        return Boolean.TRUE.equals(c);
+    }
+
+    public static SchemaMeta schemaMeta(int schemaDepth, Set<String> active, boolean[] cyclicOut) {
+        if (!active.add(".omnibuf.bench.PeerUpdate")) {
+            cyclicOut[0] = true;
+            return null;
+        }
+        if (schemaDepth + 1 > WireType.MAX_CONTAINER_DEPTH) {
+            active.remove(".omnibuf.bench.PeerUpdate");
+            return null;
+        }
+        try {
+            Map<Integer, String> fieldNames = new LinkedHashMap<>(11);
+            fieldNames.put(1, "asn");
+            fieldNames.put(2, "router_id");
+            fieldNames.put(3, "active");
+            fieldNames.put(4, "uptime_sec");
+            fieldNames.put(5, "rssi_dbm");
+            fieldNames.put(6, "cpu_load");
+            fieldNames.put(7, "tags");
+            fieldNames.put(8, "prefixes");
+            fieldNames.put(9, "location");
+            fieldNames.put(10, "neighbors");
+            fieldNames.put(11, "sequence");
+            Map<Integer, SchemaMeta> children = new LinkedHashMap<>();
+            SchemaMeta child_9 = com.omnibuf.pb.bench.LocationOmniBuf.schemaMeta(schemaDepth + 2, active, cyclicOut);
+            if (child_9 != null && schemaDepth + 3 <= WireType.MAX_CONTAINER_DEPTH) {
+                children.put(9, child_9);
+            }
+            SchemaMeta child_10 = com.omnibuf.pb.bench.NeighborOmniBuf.schemaMeta(schemaDepth + 2, active, cyclicOut);
+            if (child_10 != null && schemaDepth + 3 <= WireType.MAX_CONTAINER_DEPTH) {
+                children.put(10, child_10);
+            }
+            return new SchemaMeta("PeerUpdate", fieldNames, children);
+        } finally {
+            active.remove(".omnibuf.bench.PeerUpdate");
+        }
+    }
+
+    public static SchemaMeta instanceSchemaMeta(OmniBufPeerUpdate msg, int schemaDepth) {
+        if (msg == null || schemaDepth + 1 > WireType.MAX_CONTAINER_DEPTH) {
+            return null;
+        }
         Map<Integer, String> fieldNames = new LinkedHashMap<>(11);
         fieldNames.put(1, "asn");
         fieldNames.put(2, "router_id");
@@ -36,13 +98,36 @@ public final class PeerUpdateOmniBuf {
         fieldNames.put(10, "neighbors");
         fieldNames.put(11, "sequence");
         Map<Integer, SchemaMeta> children = new LinkedHashMap<>();
-        children.put(9, com.omnibuf.pb.bench.LocationOmniBuf.schemaMeta());
-        children.put(10, com.omnibuf.pb.bench.NeighborOmniBuf.schemaMeta());
+        if (schemaDepth + 3 <= WireType.MAX_CONTAINER_DEPTH) {
+            if (msg.location != null) {
+                SchemaMeta child = com.omnibuf.pb.bench.LocationOmniBuf.instanceSchemaMeta(msg.location, schemaDepth + 2);
+                if (child != null) {
+                    children.put(9, child);
+                }
+            }
+            if (msg.neighbors != null && !msg.neighbors.isEmpty()) {
+                SchemaMeta child = null;
+                for (int i = 0, n = msg.neighbors.size(); i < n; i++) {
+                    com.omnibuf.pb.bench.OmniBufNeighbor elem = msg.neighbors.get(i);
+                    if (elem != null) {
+                        child = SchemaMeta.merge(child, com.omnibuf.pb.bench.NeighborOmniBuf.instanceSchemaMeta(elem, schemaDepth + 2));
+                    }
+                }
+                if (child != null) {
+                    children.put(10, child);
+                }
+            }
+        }
         return new SchemaMeta("PeerUpdate", fieldNames, children);
     }
 
-    public static SchemaMeta schemaMeta() {
-        return SCHEMA_META;
+    private static byte[] field0Bytes() {
+        byte[] b = FIELD0_BYTES;
+        if (b == null) {
+            b = schemaMeta().encodeField0(true);
+            FIELD0_BYTES = b;
+        }
+        return b;
     }
 
     public static byte[] marshal(OmniBufPeerUpdate msg) {
@@ -54,79 +139,113 @@ public final class PeerUpdateOmniBuf {
             throw new OmniBufException("omnibuf: cannot marshal null PeerUpdate");
         }
         MarshalOptions opts = options == null ? MarshalOptions.DEFAULT : options;
-        OmniBufEncoder enc = ENCODER_POOL.get();
-        enc.reset();
-        if (opts.selfDescribing()) {
-            if (opts.deterministic()) {
-                enc.writeRawBytes(FIELD0_BYTES);
-            } else {
-                SCHEMA_META.writeField0(enc, false);
+        OmniBufEncoder enc = CodecPool.acquireEncoder();
+        try {
+            if (opts.selfDescribing()) {
+                if (isCyclicSchema()) {
+                    SchemaMeta dyn = instanceSchemaMeta(msg, 1);
+                    if (dyn != null) {
+                        dyn.writeField0(enc, opts.deterministic());
+                    }
+                } else if (opts.deterministic()) {
+                    enc.writeRawBytes(field0Bytes());
+                } else {
+                    schemaMeta().writeField0(enc, false);
+                }
             }
+            encode(enc, msg, opts.deterministic());
+            return enc.toByteArray();
+        } finally {
+            CodecPool.releaseEncoder(enc);
         }
-        encode(enc, msg, opts.deterministic());
-        return enc.toByteArray();
     }
 
     public static void encode(OmniBufEncoder enc, OmniBufPeerUpdate msg, boolean deterministic) {
-        enc.writeUint32(1, msg.getAsn());
-        enc.writeString(2, msg.getRouterId());
-        enc.writeBool(3, msg.getActive());
-        enc.writeUint(4, msg.getUptimeSec());
-        enc.writeSint32(5, msg.getRssiDbm());
-        enc.writeFloat64(6, msg.getCpuLoad());
-        enc.writeStringList(7, msg.getTags());
-        enc.writeUint32List(8, msg.getPrefixes());
+        enc.writeUint32(1, msg.asn);
+        enc.writeString(2, msg.routerId);
+        enc.writeBool(3, msg.active);
+        enc.writeUint(4, msg.uptimeSec);
+        enc.writeSint32(5, msg.rssiDbm);
+        enc.writeFloat64(6, msg.cpuLoad);
+        enc.writeStringList(7, msg.tags);
+        enc.writeUint32List(8, msg.prefixes);
         {
-            com.omnibuf.pb.bench.OmniBufLocation sub9 = msg.getLocation();
+            com.omnibuf.pb.bench.OmniBufLocation sub9 = msg.location;
             if (sub9 != null) {
-                enc.beginSubMsg(9);
+                int subPos = enc.beginSubMsgFast(9);
                 com.omnibuf.pb.bench.LocationOmniBuf.encode(enc, sub9, deterministic);
-                enc.endSubMsg();
+                enc.endContainerAt(subPos);
             }
         }
         {
-            List<com.omnibuf.pb.bench.OmniBufNeighbor> list10 = msg.getNeighbors();
+            List<com.omnibuf.pb.bench.OmniBufNeighbor> list10 = msg.neighbors;
             int n = list10 == null ? 0 : list10.size();
-            enc.beginSubMsgArr(10);
+            int arrPos = enc.beginTypedArrayFast(10, WireType.WIRE_SUB_MSG, n);
             for (int i = 0; i < n; i++) {
-                enc.beginSubMsgElem();
+                int elemPos = enc.beginInlineSubMsgFast();
                 com.omnibuf.pb.bench.OmniBufNeighbor elem = list10.get(i);
                 if (elem != null) {
                     com.omnibuf.pb.bench.NeighborOmniBuf.encode(enc, elem, deterministic);
                 }
-                enc.endSubMsgElem();
+                enc.endContainerAt(elemPos);
             }
-            enc.endSubMsgArr();
+            enc.endContainerAt(arrPos);
         }
-        enc.writeUint(11, msg.getSequence());
+        enc.writeUint(11, msg.sequence);
     }
 
     public static OmniBufPeerUpdate unmarshal(byte[] data) {
+        return unmarshal(data, UnmarshalOptions.DEFAULT);
+    }
+
+    public static OmniBufPeerUpdate unmarshal(byte[] data, UnmarshalOptions options) {
         if (data == null) {
             throw new OmniBufException("omnibuf: null packet buffer");
         }
-        OmniBufPeerUpdate out = new OmniBufPeerUpdate();
-        decodeInto(data, 0, data.length, out, 0);
-        return out;
+        OmniBufDecoder dec = CodecPool.acquireDecoder(data, 0, data.length, options);
+        try {
+            OmniBufPeerUpdate out = new OmniBufPeerUpdate();
+            decodeFrom(dec, out, 0);
+            return out;
+        } finally {
+            CodecPool.releaseDecoder(dec);
+        }
     }
 
     public static void unmarshal(byte[] data, OmniBufPeerUpdate target) {
+        unmarshal(data, target, UnmarshalOptions.DEFAULT);
+    }
+
+    public static void unmarshal(byte[] data, OmniBufPeerUpdate target, UnmarshalOptions options) {
         if (data == null) {
             throw new OmniBufException("omnibuf: null packet buffer");
         }
         if (target == null) {
             throw new OmniBufException("omnibuf: null target instance");
         }
-        target.reset();
-        decodeInto(data, 0, data.length, target, 0);
+        OmniBufDecoder dec = CodecPool.acquireDecoder(data, 0, data.length, options);
+        try {
+            target.reset();
+            decodeFrom(dec, target, 0);
+        } finally {
+            CodecPool.releaseDecoder(dec);
+        }
     }
 
     public static void decodeInto(
             byte[] data, int offset, int length, OmniBufPeerUpdate target, int depth) {
-        if (depth > OmniBufDecoder.MAX_CONTAINER_DEPTH) {
+        OmniBufDecoder dec = CodecPool.acquireDecoder(data, offset, length);
+        try {
+            decodeFrom(dec, target, depth);
+        } finally {
+            CodecPool.releaseDecoder(dec);
+        }
+    }
+
+    public static void decodeFrom(OmniBufDecoder dec, OmniBufPeerUpdate target, int depth) {
+        if (depth > dec.maxNestingDepth()) {
             throw new OmniBufException("omnibuf: nesting depth exceeds MaxNestingDepth");
         }
-        OmniBufDecoder dec = new OmniBufDecoder(data, offset, length);
         while (dec.hasRemaining()) {
             long tag = dec.readTag();
             int fnum = (int) (tag >>> 4);
@@ -135,42 +254,42 @@ public final class PeerUpdateOmniBuf {
                 case 0 -> dec.skipOrValidateUnknown(0, wt, depth);
                 case 1 -> {
                     if (wt == WireType.WIRE_UINT) {
-                        target.setAsn(dec.readUint32());
+                        target.asn = dec.readUint32();
                     } else {
                         dec.skipOrValidateUnknown(fnum, wt, depth);
                     }
                 }
                 case 2 -> {
                     if (wt == WireType.WIRE_STRING) {
-                        target.setRouterId(dec.readString());
+                        target.routerId = dec.readString();
                     } else {
                         dec.skipOrValidateUnknown(fnum, wt, depth);
                     }
                 }
                 case 3 -> {
                     if (wt == WireType.WIRE_BOOL_FALSE || wt == WireType.WIRE_BOOL_TRUE) {
-                        target.setActive(wt == WireType.WIRE_BOOL_TRUE);
+                        target.active = (wt == WireType.WIRE_BOOL_TRUE);
                     } else {
                         dec.skipOrValidateUnknown(fnum, wt, depth);
                     }
                 }
                 case 4 -> {
                     if (wt == WireType.WIRE_UINT) {
-                        target.setUptimeSec(dec.readUint64());
+                        target.uptimeSec = dec.readUint64();
                     } else {
                         dec.skipOrValidateUnknown(fnum, wt, depth);
                     }
                 }
                 case 5 -> {
                     if (wt == WireType.WIRE_SINT) {
-                        target.setRssiDbm(dec.readSint32());
+                        target.rssiDbm = dec.readSint32();
                     } else {
                         dec.skipOrValidateUnknown(fnum, wt, depth);
                     }
                 }
                 case 6 -> {
                     if (wt == WireType.WIRE_FLOAT64) {
-                        target.setCpuLoad(dec.readFloat64());
+                        target.cpuLoad = dec.readFloat64();
                     } else {
                         dec.skipOrValidateUnknown(fnum, wt, depth);
                     }
@@ -179,23 +298,18 @@ public final class PeerUpdateOmniBuf {
                     if (wt != WireType.WIRE_ARRAY) {
                         dec.skipOrValidateUnknown(fnum, wt, depth);
                     } else {
-                        if (depth + 1 > OmniBufDecoder.MAX_CONTAINER_DEPTH) {
-                            throw new OmniBufException("omnibuf: WireArray exceeds MaxNestingDepth");
-                        }
-                        int valStart = dec.position();
-                        OmniBufDecoder.Slice body = dec.readLengthPrefixedSlice(2);
-                        OmniBufDecoder.ArrayHeader hdr = OmniBufDecoder.parseArrayHeader(data, body.offset(), body.end());
-                        if (hdr.elemWireType() != WireType.WIRE_STRING) {
-                            OmniBufDecoder.validateValue(data, valStart, dec.limit(), WireType.WIRE_ARRAY, depth);
-                        } else {
-                            OmniBufDecoder aDec = new OmniBufDecoder(data, hdr.payloadStart(), hdr.payloadEnd() - hdr.payloadStart());
-                            var list = target.getTags();
-                            for (int i = 0; i < hdr.count(); i++) {
-                                list.add(aDec.readString());
+                        long arrState = dec.beginArray(WireType.WIRE_STRING, depth);
+                        if (arrState >= 0L) {
+                            int count = (int) arrState;
+                            int arrLimit = (int) (arrState >>> 32);
+                            var list = target.ensureTags(count);
+                            if ((long) list.size() + count > dec.maxCollectionElements()) {
+                                throw new OmniBufException("omnibuf: accumulated WireArray count exceeds maxCollectionElements");
                             }
-                            if (aDec.hasRemaining()) {
-                                throw new OmniBufException("omnibuf: WireArray has trailing payload bytes");
+                            for (int i = 0; i < count; i++) {
+                                list.add(dec.readString());
                             }
+                            dec.endContainer(arrLimit);
                         }
                     }
                 }
@@ -203,35 +317,31 @@ public final class PeerUpdateOmniBuf {
                     if (wt != WireType.WIRE_ARRAY) {
                         dec.skipOrValidateUnknown(fnum, wt, depth);
                     } else {
-                        if (depth + 1 > OmniBufDecoder.MAX_CONTAINER_DEPTH) {
-                            throw new OmniBufException("omnibuf: WireArray exceeds MaxNestingDepth");
-                        }
-                        int valStart = dec.position();
-                        OmniBufDecoder.Slice body = dec.readLengthPrefixedSlice(2);
-                        OmniBufDecoder.ArrayHeader hdr = OmniBufDecoder.parseArrayHeader(data, body.offset(), body.end());
-                        if (hdr.elemWireType() != WireType.WIRE_UINT) {
-                            OmniBufDecoder.validateValue(data, valStart, dec.limit(), WireType.WIRE_ARRAY, depth);
-                        } else {
-                            OmniBufDecoder aDec = new OmniBufDecoder(data, hdr.payloadStart(), hdr.payloadEnd() - hdr.payloadStart());
-                            var list = target.getPrefixes();
-                            for (int i = 0; i < hdr.count(); i++) {
-                                list.add(aDec.readUint32());
+                        long arrState = dec.beginArray(WireType.WIRE_UINT, depth);
+                        if (arrState >= 0L) {
+                            int count = (int) arrState;
+                            int arrLimit = (int) (arrState >>> 32);
+                            var list = target.ensurePrefixes(count);
+                            if ((long) list.size() + count > dec.maxCollectionElements()) {
+                                throw new OmniBufException("omnibuf: accumulated WireArray count exceeds maxCollectionElements");
                             }
-                            if (aDec.hasRemaining()) {
-                                throw new OmniBufException("omnibuf: WireArray has trailing payload bytes");
+                            for (int i = 0; i < count; i++) {
+                                list.add(dec.readUint32());
                             }
+                            dec.endContainer(arrLimit);
                         }
                     }
                 }
                 case 9 -> {
                     if (wt == WireType.WIRE_SUB_MSG) {
-                        OmniBufDecoder.Slice s = dec.readLengthPrefixedSlice(0);
-                        com.omnibuf.pb.bench.OmniBufLocation sub = target.getLocation();
+                        int subLimit = dec.readLengthPrefixedLimit(0);
+                        com.omnibuf.pb.bench.OmniBufLocation sub = target.location;
                         if (sub == null) {
                             sub = new com.omnibuf.pb.bench.OmniBufLocation();
-                            target.setLocation(sub);
+                            target.location = sub;
                         }
-                        com.omnibuf.pb.bench.LocationOmniBuf.decodeInto(data, s.offset(), s.length(), sub, depth + 1);
+                        com.omnibuf.pb.bench.LocationOmniBuf.decodeFrom(dec, sub, depth + 1);
+                        dec.endContainer(subLimit);
                     } else {
                         dec.skipOrValidateUnknown(fnum, wt, depth);
                     }
@@ -240,32 +350,28 @@ public final class PeerUpdateOmniBuf {
                     if (wt != WireType.WIRE_ARRAY) {
                         dec.skipOrValidateUnknown(fnum, wt, depth);
                     } else {
-                        if (depth + 1 > OmniBufDecoder.MAX_CONTAINER_DEPTH) {
-                            throw new OmniBufException("omnibuf: WireArray exceeds MaxNestingDepth");
-                        }
-                        int valStart = dec.position();
-                        OmniBufDecoder.Slice body = dec.readLengthPrefixedSlice(2);
-                        OmniBufDecoder.ArrayHeader hdr = OmniBufDecoder.parseArrayHeader(data, body.offset(), body.end());
-                        if (hdr.elemWireType() != WireType.WIRE_SUB_MSG) {
-                            OmniBufDecoder.validateValue(data, valStart, dec.limit(), WireType.WIRE_ARRAY, depth);
-                        } else {
-                            OmniBufDecoder aDec = new OmniBufDecoder(data, hdr.payloadStart(), hdr.payloadEnd() - hdr.payloadStart());
-                            var list = target.getNeighbors();
-                            for (int i = 0; i < hdr.count(); i++) {
-                                OmniBufDecoder.Slice es = aDec.readLengthPrefixedSlice(0);
+                        long arrState = dec.beginArray(WireType.WIRE_SUB_MSG, depth);
+                        if (arrState >= 0L) {
+                            int count = (int) arrState;
+                            int arrLimit = (int) (arrState >>> 32);
+                            var list = target.ensureNeighbors(count);
+                            if ((long) list.size() + count > dec.maxCollectionElements()) {
+                                throw new OmniBufException("omnibuf: accumulated WireArray count exceeds maxCollectionElements");
+                            }
+                            for (int i = 0; i < count; i++) {
+                                int elemLimit = dec.readLengthPrefixedLimit(0);
                                 com.omnibuf.pb.bench.OmniBufNeighbor elem = new com.omnibuf.pb.bench.OmniBufNeighbor();
-                                com.omnibuf.pb.bench.NeighborOmniBuf.decodeInto(data, es.offset(), es.length(), elem, depth + 2);
+                                com.omnibuf.pb.bench.NeighborOmniBuf.decodeFrom(dec, elem, depth + 2);
+                                dec.endContainer(elemLimit);
                                 list.add(elem);
                             }
-                            if (aDec.hasRemaining()) {
-                                throw new OmniBufException("omnibuf: WireArray has trailing payload bytes");
-                            }
+                            dec.endContainer(arrLimit);
                         }
                     }
                 }
                 case 11 -> {
                     if (wt == WireType.WIRE_UINT) {
-                        target.setSequence(dec.readUint64());
+                        target.sequence = dec.readUint64();
                     } else {
                         dec.skipOrValidateUnknown(fnum, wt, depth);
                     }

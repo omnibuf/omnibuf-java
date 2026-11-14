@@ -10,25 +10,25 @@ import java.util.List;
 import java.util.Map;
 
 public final class OmniBufTestAllTypes {
-    private static final byte[] EMPTY_BYTES = new byte[0];
+    static final byte[] EMPTY_BYTES = new byte[0];
 
-    private int f1Uint32 = 0;
-    private long f2Uint64 = 0L;
-    private int f3Sint32 = 0;
-    private long f4Sint64 = 0L;
-    private boolean f5Bool = false;
-    private String f6String = "";
-    private byte[] f7Bytes = EMPTY_BYTES;
-    private com.omnibuf.pb.conformance.OmniBufAllTypesSubMsg f8SubMsg = null;
-    private List<String> f9StringArr = new ArrayList<>();
-    private List<Integer> f10Uint32Arr = new ArrayList<>();
-    private List<com.omnibuf.pb.conformance.OmniBufAllTypesSubMsg> f11SubMsgArr = new ArrayList<>();
-    private Map<String, Long> f12MapStrUint = new LinkedHashMap<>();
-    private float f13Float32 = 0.0f;
-    private double f14Float64 = 0.0d;
-    private int f15Fixed32 = 0;
-    private long f16Fixed64 = 0L;
-    private String f20OverflowStr = "";
+    int f1Uint32;
+    long f2Uint64;
+    int f3Sint32;
+    long f4Sint64;
+    boolean f5Bool;
+    String f6String = "";
+    byte[] f7Bytes = EMPTY_BYTES;
+    com.omnibuf.pb.conformance.OmniBufAllTypesSubMsg f8SubMsg;
+    List<String> f9StringArr;
+    List<Integer> f10Uint32Arr;
+    List<com.omnibuf.pb.conformance.OmniBufAllTypesSubMsg> f11SubMsgArr;
+    Map<String, Long> f12MapStrUint;
+    float f13Float32;
+    double f14Float64;
+    int f15Fixed32;
+    long f16Fixed64;
+    String f20OverflowStr = "";
 
     public OmniBufTestAllTypes() {}
 
@@ -41,10 +41,10 @@ public final class OmniBufTestAllTypes {
         this.f6String = "";
         this.f7Bytes = EMPTY_BYTES;
         this.f8SubMsg = null;
-        this.f9StringArr = new ArrayList<>();
-        this.f10Uint32Arr = new ArrayList<>();
-        this.f11SubMsgArr = new ArrayList<>();
-        this.f12MapStrUint = new LinkedHashMap<>();
+        this.f9StringArr = null;
+        this.f10Uint32Arr = null;
+        this.f11SubMsgArr = null;
+        this.f12MapStrUint = null;
         this.f13Float32 = 0.0f;
         this.f14Float64 = 0.0d;
         this.f15Fixed32 = 0;
@@ -119,44 +119,117 @@ public final class OmniBufTestAllTypes {
         return this.f8SubMsg;
     }
 
+    public boolean hasF8SubMsg() {
+        return this.f8SubMsg != null;
+    }
+
+    public OmniBufTestAllTypes clearF8SubMsg() {
+        this.f8SubMsg = null;
+        return this;
+    }
+
     public OmniBufTestAllTypes setF8SubMsg(com.omnibuf.pb.conformance.OmniBufAllTypesSubMsg value) {
         this.f8SubMsg = value;
         return this;
     }
 
     public List<String> getF9StringArr() {
+        if (this.f9StringArr == null) {
+            this.f9StringArr = new ArrayList<>();
+        }
         return this.f9StringArr;
     }
 
+    List<String> ensureF9StringArr(int minCap) {
+        List<String> cur = this.f9StringArr;
+        int cap = Math.min(minCap, 4096);
+        if (cur == null) {
+            cur = new ArrayList<>(cap);
+            this.f9StringArr = cur;
+        } else if (!(cur instanceof ArrayList<?>)) {
+            cur = new ArrayList<>(cur);
+            this.f9StringArr = cur;
+        }
+        return cur;
+    }
+
     public OmniBufTestAllTypes setF9StringArr(List<String> value) {
-        this.f9StringArr = value == null ? new ArrayList<>() : value;
+        this.f9StringArr = value;
         return this;
     }
 
     public List<Integer> getF10Uint32Arr() {
+        if (this.f10Uint32Arr == null) {
+            this.f10Uint32Arr = new ArrayList<>();
+        }
         return this.f10Uint32Arr;
     }
 
+    List<Integer> ensureF10Uint32Arr(int minCap) {
+        List<Integer> cur = this.f10Uint32Arr;
+        int cap = Math.min(minCap, 4096);
+        if (cur == null) {
+            cur = new ArrayList<>(cap);
+            this.f10Uint32Arr = cur;
+        } else if (!(cur instanceof ArrayList<?>)) {
+            cur = new ArrayList<>(cur);
+            this.f10Uint32Arr = cur;
+        }
+        return cur;
+    }
+
     public OmniBufTestAllTypes setF10Uint32Arr(List<Integer> value) {
-        this.f10Uint32Arr = value == null ? new ArrayList<>() : value;
+        this.f10Uint32Arr = value;
         return this;
     }
 
     public List<com.omnibuf.pb.conformance.OmniBufAllTypesSubMsg> getF11SubMsgArr() {
+        if (this.f11SubMsgArr == null) {
+            this.f11SubMsgArr = new ArrayList<>();
+        }
         return this.f11SubMsgArr;
     }
 
+    List<com.omnibuf.pb.conformance.OmniBufAllTypesSubMsg> ensureF11SubMsgArr(int minCap) {
+        List<com.omnibuf.pb.conformance.OmniBufAllTypesSubMsg> cur = this.f11SubMsgArr;
+        int cap = Math.min(minCap, 4096);
+        if (cur == null) {
+            cur = new ArrayList<>(cap);
+            this.f11SubMsgArr = cur;
+        } else if (!(cur instanceof ArrayList<?>)) {
+            cur = new ArrayList<>(cur);
+            this.f11SubMsgArr = cur;
+        }
+        return cur;
+    }
+
     public OmniBufTestAllTypes setF11SubMsgArr(List<com.omnibuf.pb.conformance.OmniBufAllTypesSubMsg> value) {
-        this.f11SubMsgArr = value == null ? new ArrayList<>() : value;
+        this.f11SubMsgArr = value;
         return this;
     }
 
     public Map<String, Long> getF12MapStrUint() {
+        if (this.f12MapStrUint == null) {
+            this.f12MapStrUint = new LinkedHashMap<>();
+        }
         return this.f12MapStrUint;
     }
 
+    Map<String, Long> ensureF12MapStrUint(int minCap) {
+        Map<String, Long> cur = this.f12MapStrUint;
+        int cap = Math.min(minCap, 4096);
+        if (cur == null) {
+            cur = new LinkedHashMap<>(Math.max(4, cap + (cap >>> 1) + 1));
+            this.f12MapStrUint = cur;
+        } else if (!(cur instanceof LinkedHashMap<?, ?>)) {
+            cur = new LinkedHashMap<>(cur);
+            this.f12MapStrUint = cur;
+        }
+        return cur;
+    }
+
     public OmniBufTestAllTypes setF12MapStrUint(Map<String, Long> value) {
-        this.f12MapStrUint = value == null ? new LinkedHashMap<>() : value;
+        this.f12MapStrUint = value;
         return this;
     }
 

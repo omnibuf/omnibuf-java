@@ -2,5 +2,9 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+PLUGIN_JAR="${ROOT_DIR}/target/omnibuf-java-0.1.0-protoc-gen.jar"
+if [[ -f "${PLUGIN_JAR}" ]]; then
+  exec java -jar "${PLUGIN_JAR}" "$@"
+fi
 exec java -cp "${ROOT_DIR}/target/classes:${ROOT_DIR}/target/dependency/*" \
   com.omnibuf.plugin.ProtocGenOmniBufJava "$@"

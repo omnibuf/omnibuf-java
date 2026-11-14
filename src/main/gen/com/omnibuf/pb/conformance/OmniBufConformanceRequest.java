@@ -10,17 +10,17 @@ import java.util.List;
 import java.util.Map;
 
 public final class OmniBufConformanceRequest {
-    private static final byte[] EMPTY_BYTES = new byte[0];
+    static final byte[] EMPTY_BYTES = new byte[0];
 
-    private String testName = "";
-    private String messageType = "";
-    private int tier = 0;
-    private int requestedOutputFormat = 0;
-    private byte[] omnibufPayload = EMPTY_BYTES;
-    private String jsonPayload = "";
-    private boolean selfDescribing = false;
-    private boolean testOpaqueSplice = false;
-    private boolean testOpaqueSpliceShrink = false;
+    String testName = "";
+    String messageType = "";
+    int tier;
+    int requestedOutputFormat;
+    byte[] omnibufPayload = EMPTY_BYTES;
+    String jsonPayload = "";
+    boolean selfDescribing;
+    boolean testOpaqueSplice;
+    boolean testOpaqueSpliceShrink;
 
     public OmniBufConformanceRequest() {}
 

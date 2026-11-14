@@ -1,14 +1,18 @@
 package com.omnibuf.plugin;
 
 import com.google.protobuf.DescriptorProtos.DescriptorProto;
+import com.google.protobuf.DescriptorProtos.EnumDescriptorProto;
+import com.google.protobuf.DescriptorProtos.EnumValueDescriptorProto;
 import com.google.protobuf.DescriptorProtos.FieldDescriptorProto;
 import com.google.protobuf.DescriptorProtos.FieldDescriptorProto.Label;
 import com.google.protobuf.DescriptorProtos.FieldDescriptorProto.Type;
 import com.google.protobuf.DescriptorProtos.FileDescriptorProto;
+import com.google.protobuf.DescriptorProtos.OneofDescriptorProto;
 import com.google.protobuf.compiler.PluginProtos.CodeGeneratorRequest;
 import com.google.protobuf.compiler.PluginProtos.CodeGeneratorResponse;
 import java.io.IOException;
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
@@ -20,19 +24,61 @@ import java.util.Set;
  * {@code protoc-gen-omnibuf-java} code generator plugin.
  *
  * <p>Reads a {@link CodeGeneratorRequest} from {@code System.in} and emits three Java 21 source
- * files per top-level protobuf message into the file's {@code java_package}:
+ * files per protobuf message (including nested message declarations) into the file's
+ * {@code java_package}:
  * <ul>
- *   <li>{@code OmniBuf<Message>.java}: lightweight mutable data model with zero-overhead fields</li>
- *   <li>{@code <Message>OmniBuf.java}: single-pass static encoder/decoder and {@code SchemaMeta}</li>
+ *   <li>{@code OmniBuf<Message>.java}: lightweight mutable data model with lazy collection allocation</li>
+ *   <li>{@code <Message>OmniBuf.java}: single-pass stackless encoder and single-cursor decoder</li>
  *   <li>{@code Opaque<Message>.java}: zero-copy lazy reader view with {@code spliceFields} mutation</li>
  * </ul>
  */
 public final class ProtocGenOmniBufJava {
 
+    private static final int MAX_FIELD_NUMBER = (1 << 29) - 1;
+
+    private static final Set<String> JAVA_RESERVED = Set.of(
+        "abstract", "assert", "boolean", "break", "byte", "case", "catch", "char", "class",
+        "const", "continue", "default", "do", "double", "else", "enum", "exports", "extends",
+        "false", "final", "finally", "float", "for", "goto", "if", "implements", "import",
+        "instanceof", "int", "interface", "long", "module", "native", "new", "non-sealed",
+        "null", "open", "opens", "package", "permits", "private", "protected", "provides",
+        "public", "record", "requires", "return", "sealed", "short", "static", "strictfp",
+        "super", "switch", "synchronized", "this", "throw", "throws", "to", "transient",
+        "transitive", "true", "try", "uses", "var", "void", "volatile", "while", "with",
+        "yield", "_",
+        // Internal generated identifiers to avoid shadowing
+        "EMPTY_BYTES", "MAX_FIELD_NUMBER", "buffer", "offset", "length", "dirtyMask", "dirtyBits"
+    );
+
+    private static final Set<String> RESERVED_PASCAL_NAMES = Set.of(
+        "Class", "DirtyFields"
+    );
+
+    private static final class PluginValidationException extends RuntimeException {
+        private static final long serialVersionUID = 1L;
+
+        PluginValidationException(String message) {
+            super(message);
+        }
+    }
+
+    private record OneofInfo(
+        int protoIndex,
+        String protoName,
+        String camelName,
+        String pascalName,
+        String upperConstName,
+        List<Integer> memberNumbers,
+        List<String> memberWireMasks
+    ) {}
+
     private record MessageInfo(
+        String sourceFileName,
         String protoFullName,
         String simpleName,
+        String schemaTypeName,
         String javaPackage,
+        boolean isProto2,
         DescriptorProto descriptor,
         Map<String, DescriptorProto> mapEntries
     ) {
@@ -69,9 +115,17 @@ public final class ProtocGenOmniBufJava {
         String pascalName,
         boolean isMap,
         boolean isRepeated,
+        boolean hasExplicitScalarPresence,
+        OneofInfo oneof,
         FieldDescriptorProto mapKeyProto,
         FieldDescriptorProto mapValProto,
         MessageInfo subMessage
+    ) {}
+
+    private record ResolvedMessage(
+        MessageInfo info,
+        List<ResolvedField> fields,
+        List<OneofInfo> oneofs
     ) {}
 
     private ProtocGenOmniBufJava() {}
@@ -89,48 +143,57 @@ public final class ProtocGenOmniBufJava {
             CodeGeneratorResponse.Feature.FEATURE_PROTO3_OPTIONAL_VALUE
         );
 
-        Map<String, MessageInfo> registry = new LinkedHashMap<>();
-        Set<String> targetFiles = new HashSet<>(request.getFileToGenerateList());
+        try {
+            Map<String, MessageInfo> registry = new LinkedHashMap<>();
+            Map<String, EnumDescriptorProto> enumRegistry = new LinkedHashMap<>();
+            Set<String> targetFiles = new HashSet<>(request.getFileToGenerateList());
 
-        for (FileDescriptorProto file : request.getProtoFileList()) {
-            String protoPkg = file.getPackage();
-            String javaPkg = file.getOptions().hasJavaPackage() && !file.getOptions().getJavaPackage().isEmpty()
-                ? file.getOptions().getJavaPackage()
-                : protoPkg;
-            for (DescriptorProto msg : file.getMessageTypeList()) {
-                if (msg.getOptions().getMapEntry()) {
+            for (FileDescriptorProto file : request.getProtoFileList()) {
+                String protoPkg = file.getPackage();
+                String javaPkg = file.getOptions().hasJavaPackage() && !file.getOptions().getJavaPackage().isEmpty()
+                    ? file.getOptions().getJavaPackage()
+                    : protoPkg;
+                boolean isProto2 = !"proto3".equals(file.getSyntax());
+                String protoPrefix = protoPkg.isEmpty() ? "." : "." + protoPkg + ".";
+
+                if (targetFiles.contains(file.getName()) && file.getExtensionCount() > 0) {
+                    throw new PluginValidationException(
+                        "omnibuf: proto2 extensions are not supported in " + file.getName()
+                    );
+                }
+
+                for (EnumDescriptorProto ed : file.getEnumTypeList()) {
+                    enumRegistry.put(protoPrefix + ed.getName(), ed);
+                }
+
+                for (DescriptorProto msg : file.getMessageTypeList()) {
+                    registerMessageRecursive(
+                        file.getName(),
+                        targetFiles.contains(file.getName()),
+                        javaPkg,
+                        isProto2,
+                        protoPrefix + msg.getName(),
+                        msg.getName(),
+                        msg,
+                        registry,
+                        enumRegistry
+                    );
+                }
+            }
+
+            // Validate and resolve all messages in target files (plus any referenced dependency messages)
+            Map<String, ResolvedMessage> resolvedCache = new LinkedHashMap<>();
+            for (MessageInfo info : registry.values()) {
+                if (targetFiles.contains(info.sourceFileName())) {
+                    resolveMessageGraph(info, registry, enumRegistry, resolvedCache);
+                }
+            }
+
+            for (MessageInfo info : registry.values()) {
+                if (!targetFiles.contains(info.sourceFileName())) {
                     continue;
                 }
-                String fullProtoName = protoPkg.isEmpty()
-                    ? "." + msg.getName()
-                    : "." + protoPkg + "." + msg.getName();
-                Map<String, DescriptorProto> mapEntries = new HashMap<>();
-                for (DescriptorProto nested : msg.getNestedTypeList()) {
-                    if (nested.getOptions().getMapEntry()) {
-                        mapEntries.put(fullProtoName + "." + nested.getName(), nested);
-                    }
-                }
-                registry.put(
-                    fullProtoName,
-                    new MessageInfo(fullProtoName, msg.getName(), javaPkg, msg, mapEntries)
-                );
-            }
-        }
-
-        for (FileDescriptorProto file : request.getProtoFileList()) {
-            if (!targetFiles.contains(file.getName())) {
-                continue;
-            }
-            String protoPkg = file.getPackage();
-            for (DescriptorProto msg : file.getMessageTypeList()) {
-                if (msg.getOptions().getMapEntry()) {
-                    continue;
-                }
-                String fullProtoName = protoPkg.isEmpty()
-                    ? "." + msg.getName()
-                    : "." + protoPkg + "." + msg.getName();
-                MessageInfo info = registry.get(fullProtoName);
-                List<ResolvedField> fields = resolveFields(info, registry);
+                ResolvedMessage resolved = resolvedCache.get(info.protoFullName());
                 String dirPrefix = info.javaPackage().isEmpty()
                     ? ""
                     : info.javaPackage().replace('.', '/') + "/";
@@ -138,69 +201,356 @@ public final class ProtocGenOmniBufJava {
                 resp.addFile(
                     CodeGeneratorResponse.File.newBuilder()
                         .setName(dirPrefix + info.modelClass() + ".java")
-                        .setContent(emitModelFile(file.getName(), info, fields))
+                        .setContent(emitModelFile(info.sourceFileName(), resolved))
                         .build()
                 );
                 resp.addFile(
                     CodeGeneratorResponse.File.newBuilder()
                         .setName(dirPrefix + info.codecClass() + ".java")
-                        .setContent(emitCodecFile(file.getName(), info, fields))
+                        .setContent(emitCodecFile(info.sourceFileName(), resolved))
                         .build()
                 );
                 resp.addFile(
                     CodeGeneratorResponse.File.newBuilder()
                         .setName(dirPrefix + info.opaqueClass() + ".java")
-                        .setContent(emitOpaqueFile(file.getName(), info, fields))
+                        .setContent(emitOpaqueFile(info.sourceFileName(), resolved))
                         .build()
+                );
+            }
+
+            return resp.build();
+        } catch (PluginValidationException e) {
+            return CodeGeneratorResponse.newBuilder()
+                .setSupportedFeatures(CodeGeneratorResponse.Feature.FEATURE_PROTO3_OPTIONAL_VALUE)
+                .setError(e.getMessage())
+                .build();
+        }
+    }
+
+    private static void registerMessageRecursive(
+            String sourceFileName,
+            boolean isTargetFile,
+            String javaPkg,
+            boolean isProto2,
+            String fullProtoName,
+            String flatJavaSimpleName,
+            DescriptorProto msg,
+            Map<String, MessageInfo> registry,
+            Map<String, EnumDescriptorProto> enumRegistry) {
+        if (msg.getOptions().getMapEntry()) {
+            return;
+        }
+        if (isTargetFile && (msg.getExtensionCount() > 0 || msg.getExtensionRangeCount() > 0)) {
+            throw new PluginValidationException(
+                "omnibuf: proto2 extensions are not supported on message " + fullProtoName
+            );
+        }
+
+        for (EnumDescriptorProto ed : msg.getEnumTypeList()) {
+            enumRegistry.put(fullProtoName + "." + ed.getName(), ed);
+        }
+
+        Map<String, DescriptorProto> mapEntries = new HashMap<>();
+        for (DescriptorProto nested : msg.getNestedTypeList()) {
+            String nestedFullProto = fullProtoName + "." + nested.getName();
+            if (nested.getOptions().getMapEntry()) {
+                mapEntries.put(nestedFullProto, nested);
+            } else {
+                registerMessageRecursive(
+                    sourceFileName,
+                    isTargetFile,
+                    javaPkg,
+                    isProto2,
+                    nestedFullProto,
+                    flatJavaSimpleName + "_" + nested.getName(),
+                    nested,
+                    registry,
+                    enumRegistry
                 );
             }
         }
 
-        return resp.build();
+        registry.put(
+            fullProtoName,
+            new MessageInfo(
+                sourceFileName,
+                fullProtoName,
+                flatJavaSimpleName,
+                msg.getName(),
+                javaPkg,
+                isProto2,
+                msg,
+                mapEntries
+            )
+        );
     }
 
-    private static List<ResolvedField> resolveFields(
-            MessageInfo info, Map<String, MessageInfo> registry) {
-        List<ResolvedField> out = new ArrayList<>();
+    private static ResolvedMessage resolveMessageGraph(
+            MessageInfo info,
+            Map<String, MessageInfo> registry,
+            Map<String, EnumDescriptorProto> enumRegistry,
+            Map<String, ResolvedMessage> resolvedCache) {
+        ResolvedMessage existing = resolvedCache.get(info.protoFullName());
+        if (existing != null) {
+            return existing;
+        }
+
+        if (info.descriptor().getExtensionCount() > 0 || info.descriptor().getExtensionRangeCount() > 0) {
+            throw new PluginValidationException(
+                "omnibuf: proto2 extensions are not supported on message " + info.protoFullName()
+            );
+        }
+
+        // Put a placeholder first to guard cyclic message graphs
+        List<ResolvedField> fields = new ArrayList<>();
+        List<OneofInfo> oneofs = new ArrayList<>();
+        ResolvedMessage placeholder = new ResolvedMessage(info, fields, oneofs);
+        resolvedCache.put(info.protoFullName(), placeholder);
+
+        Set<String> usedCamels = new HashSet<>();
+        Set<String> usedPascals = new HashSet<>();
+
+        // Pre-discover real (non-proto3_optional) oneof groups
+        Map<Integer, List<FieldDescriptorProto>> realOneofMembers = new LinkedHashMap<>();
         for (FieldDescriptorProto fd : info.descriptor().getFieldList()) {
+            if (fd.hasOneofIndex() && !fd.getProto3Optional()) {
+                realOneofMembers.computeIfAbsent(fd.getOneofIndex(), k -> new ArrayList<>()).add(fd);
+            }
+        }
+
+        Map<Integer, OneofInfo> oneofByIndex = new HashMap<>();
+        for (Map.Entry<Integer, List<FieldDescriptorProto>> entry : realOneofMembers.entrySet()) {
+            int idx = entry.getKey();
+            OneofDescriptorProto od = info.descriptor().getOneofDecl(idx);
+            String[] names = sanitizeNames(od.getName(), idx + 1, usedCamels, usedPascals);
+            List<FieldDescriptorProto> sortedMembers = new ArrayList<>(entry.getValue());
+            sortedMembers.sort(Comparator.comparingInt(FieldDescriptorProto::getNumber));
+            List<Integer> memberNums = new ArrayList<>(sortedMembers.size());
+            List<String> memberMasks = new ArrayList<>(sortedMembers.size());
+            for (FieldDescriptorProto mfd : sortedMembers) {
+                validateFieldSupported(info, mfd, registry, enumRegistry);
+                memberNums.add(mfd.getNumber());
+                memberMasks.add(wireMaskExpr(mfd.getType()));
+            }
+            String upperConst = toUpperSnake(od.getName(), idx);
+            OneofInfo oi = new OneofInfo(
+                idx,
+                od.getName(),
+                names[0],
+                names[1],
+                upperConst,
+                memberNums,
+                memberMasks
+            );
+            oneofByIndex.put(idx, oi);
+            oneofs.add(oi);
+        }
+
+        List<FieldDescriptorProto> rawFields = new ArrayList<>(info.descriptor().getFieldList());
+        rawFields.sort(Comparator.comparingInt(FieldDescriptorProto::getNumber));
+
+        Set<Integer> seenFieldNumbers = new HashSet<>();
+        for (FieldDescriptorProto fd : rawFields) {
             int number = fd.getNumber();
+            if (number <= 0 || number > MAX_FIELD_NUMBER) {
+                throw new PluginValidationException(
+                    "omnibuf: field number out of range (" + number + ") on "
+                        + info.protoFullName() + "." + fd.getName()
+                );
+            }
+            if (!seenFieldNumbers.add(number)) {
+                throw new PluginValidationException(
+                    "omnibuf: duplicate field number " + number + " on " + info.protoFullName()
+                );
+            }
+
+            validateFieldSupported(info, fd, registry, enumRegistry);
+
             String protoName = fd.getName();
-            String camel = snakeToCamel(protoName);
-            String pascal = Character.toUpperCase(camel.charAt(0)) + camel.substring(1);
+            String[] names = sanitizeNames(protoName, number, usedCamels, usedPascals);
+            String camel = names[0];
+            String pascal = names[1];
             boolean repeated = fd.getLabel() == Label.LABEL_REPEATED;
 
             if (repeated && fd.getType() == Type.TYPE_MESSAGE) {
-                DescriptorProto mapEntry = info.mapEntries().get(fd.getTypeName());
+                DescriptorProto mapEntry = info.mapEntries().get(normalizeTypeName(fd.getTypeName()));
                 if (mapEntry != null) {
                     FieldDescriptorProto kf = mapEntry.getField(0);
                     FieldDescriptorProto vf = mapEntry.getField(1);
+                    validateMapKeyType(info, fd, kf);
+                    validateMapValueType(info, fd, vf, registry, enumRegistry);
                     MessageInfo valSub = vf.getType() == Type.TYPE_MESSAGE
-                        ? registry.get(vf.getTypeName())
+                        ? registry.get(normalizeTypeName(vf.getTypeName()))
                         : null;
-                    out.add(new ResolvedField(
-                        fd, number, protoName, camel, pascal, true, false, kf, vf, valSub
+                    if (valSub != null) {
+                        resolveMessageGraph(valSub, registry, enumRegistry, resolvedCache);
+                    }
+                    fields.add(new ResolvedField(
+                        fd, number, protoName, camel, pascal, true, false, false, null, kf, vf, valSub
                     ));
                     continue;
                 }
             }
 
-            MessageInfo sub = fd.getType() == Type.TYPE_MESSAGE
-                ? registry.get(fd.getTypeName())
+            OneofInfo oneof = (fd.hasOneofIndex() && !fd.getProto3Optional())
+                ? oneofByIndex.get(fd.getOneofIndex())
                 : null;
-            out.add(new ResolvedField(
-                fd, number, protoName, camel, pascal, false, repeated, null, null, sub
+            boolean explicitScalarPresence = !repeated
+                && oneof == null
+                && fd.getType() != Type.TYPE_MESSAGE
+                && (fd.getProto3Optional() || info.isProto2());
+
+            MessageInfo sub = fd.getType() == Type.TYPE_MESSAGE
+                ? registry.get(normalizeTypeName(fd.getTypeName()))
+                : null;
+            if (sub != null) {
+                resolveMessageGraph(sub, registry, enumRegistry, resolvedCache);
+            }
+
+            fields.add(new ResolvedField(
+                fd, number, protoName, camel, pascal, false, repeated, explicitScalarPresence,
+                oneof, null, null, sub
             ));
         }
-        return out;
+
+        return placeholder;
+    }
+
+    private static void validateFieldSupported(
+            MessageInfo info,
+            FieldDescriptorProto fd,
+            Map<String, MessageInfo> registry,
+            Map<String, EnumDescriptorProto> enumRegistry) {
+        String qualifiedField = info.protoFullName() + "." + fd.getName();
+        if (fd.getType() == Type.TYPE_GROUP) {
+            throw new PluginValidationException(
+                "omnibuf: proto2 groups are not supported: " + qualifiedField
+            );
+        }
+        if (fd.hasDefaultValue() && !isZeroProtoDefault(fd, enumRegistry)) {
+            throw new PluginValidationException(
+                "omnibuf: custom non-zero proto2 default values are not supported on "
+                    + qualifiedField + " (default=\"" + fd.getDefaultValue() + "\")"
+            );
+        }
+        if (fd.getType() == Type.TYPE_MESSAGE) {
+            String typeName = normalizeTypeName(fd.getTypeName());
+            if (!info.mapEntries().containsKey(typeName) && !registry.containsKey(typeName)) {
+                throw new PluginValidationException(
+                    "omnibuf: unresolved message type " + typeName + " on " + qualifiedField
+                );
+            }
+        } else if (fd.getType() == Type.TYPE_ENUM) {
+            String typeName = normalizeTypeName(fd.getTypeName());
+            if (!enumRegistry.isEmpty() && !enumRegistry.containsKey(typeName)) {
+                throw new PluginValidationException(
+                    "omnibuf: unresolved enum type " + typeName + " on " + qualifiedField
+                );
+            }
+        }
+    }
+
+    private static void validateMapKeyType(
+            MessageInfo info, FieldDescriptorProto mapField, FieldDescriptorProto kf) {
+        switch (kf.getType()) {
+            case TYPE_INT32,
+                 TYPE_INT64,
+                 TYPE_UINT32,
+                 TYPE_UINT64,
+                 TYPE_SINT32,
+                 TYPE_SINT64,
+                 TYPE_FIXED32,
+                 TYPE_FIXED64,
+                 TYPE_SFIXED32,
+                 TYPE_SFIXED64,
+                 TYPE_BOOL,
+                 TYPE_STRING -> {}
+            default -> throw new PluginValidationException(
+                "omnibuf: unsupported map key type " + kf.getType() + " on "
+                    + info.protoFullName() + "." + mapField.getName()
+            );
+        }
+    }
+
+    private static void validateMapValueType(
+            MessageInfo info,
+            FieldDescriptorProto mapField,
+            FieldDescriptorProto vf,
+            Map<String, MessageInfo> registry,
+            Map<String, EnumDescriptorProto> enumRegistry) {
+        String qualifiedField = info.protoFullName() + "." + mapField.getName();
+        if (vf.getType() == Type.TYPE_GROUP) {
+            throw new PluginValidationException(
+                "omnibuf: proto2 groups are not supported in map values: " + qualifiedField
+            );
+        }
+        if (vf.getType() == Type.TYPE_MESSAGE) {
+            String typeName = normalizeTypeName(vf.getTypeName());
+            if (!registry.containsKey(typeName)) {
+                throw new PluginValidationException(
+                    "omnibuf: unresolved map value message type " + typeName + " on " + qualifiedField
+                );
+            }
+        } else if (vf.getType() == Type.TYPE_ENUM) {
+            String typeName = normalizeTypeName(vf.getTypeName());
+            if (!enumRegistry.isEmpty() && !enumRegistry.containsKey(typeName)) {
+                throw new PluginValidationException(
+                    "omnibuf: unresolved map value enum type " + typeName + " on " + qualifiedField
+                );
+            }
+        }
+    }
+
+    private static boolean isZeroProtoDefault(
+            FieldDescriptorProto fd, Map<String, EnumDescriptorProto> enumRegistry) {
+        String dv = fd.getDefaultValue();
+        return switch (fd.getType()) {
+            case TYPE_STRING, TYPE_BYTES -> dv.isEmpty();
+            case TYPE_BOOL -> "false".equals(dv);
+            case TYPE_INT32,
+                 TYPE_INT64,
+                 TYPE_UINT32,
+                 TYPE_UINT64,
+                 TYPE_SINT32,
+                 TYPE_SINT64,
+                 TYPE_FIXED32,
+                 TYPE_FIXED64,
+                 TYPE_SFIXED32,
+                 TYPE_SFIXED64 -> "0".equals(dv);
+            case TYPE_FLOAT, TYPE_DOUBLE -> "0".equals(dv) || "0.0".equals(dv);
+            case TYPE_ENUM -> {
+                EnumDescriptorProto ed = enumRegistry.get(normalizeTypeName(fd.getTypeName()));
+                if (ed == null) {
+                    yield false;
+                }
+                for (EnumValueDescriptorProto ev : ed.getValueList()) {
+                    if (ev.getName().equals(dv)) {
+                        yield ev.getNumber() == 0;
+                    }
+                }
+                yield false;
+            }
+            default -> false;
+        };
+    }
+
+    private static String normalizeTypeName(String typeName) {
+        if (typeName == null || typeName.isEmpty()) {
+            return "";
+        }
+        return typeName.startsWith(".") ? typeName : "." + typeName;
     }
 
     // ========================================================================
     // 1. Mutable Model Class (OmniBuf<Message>.java)
     // ========================================================================
 
-    private static String emitModelFile(
-            String sourceProto, MessageInfo info, List<ResolvedField> fields) {
-        StringBuilder sb = new StringBuilder(2048);
+    private static String emitModelFile(String sourceProto, ResolvedMessage resolved) {
+        MessageInfo info = resolved.info();
+        List<ResolvedField> fields = resolved.fields();
+        List<OneofInfo> oneofs = resolved.oneofs();
+
+        StringBuilder sb = new StringBuilder(3072);
         sb.append("// Generated by protoc-gen-omnibuf-java. DO NOT EDIT.\n");
         sb.append("// source: ").append(sourceProto).append("\n\n");
         if (!info.javaPackage().isEmpty()) {
@@ -213,16 +563,21 @@ public final class ProtocGenOmniBufJava {
         sb.append("import java.util.Map;\n\n");
 
         sb.append("public final class ").append(info.modelClass()).append(" {\n");
-        sb.append("    private static final byte[] EMPTY_BYTES = new byte[0];\n\n");
+        sb.append("    static final byte[] EMPTY_BYTES = new byte[0];\n\n");
 
         for (ResolvedField f : fields) {
-            sb.append("    private ")
-                .append(javaFieldType(f))
-                .append(' ')
-                .append(f.camelName())
-                .append(" = ")
-                .append(javaDefaultInit(f))
-                .append(";\n");
+            String init = modelFieldDeclInit(f);
+            sb.append("    ").append(javaFieldType(f)).append(' ').append(f.camelName());
+            if (init != null) {
+                sb.append(" = ").append(init);
+            }
+            sb.append(";\n");
+            if (f.hasExplicitScalarPresence()) {
+                sb.append("    boolean has_").append(f.camelName()).append(";\n");
+            }
+        }
+        for (OneofInfo oi : oneofs) {
+            sb.append("    int ").append(oi.camelName()).append("Case;\n");
         }
         sb.append('\n');
 
@@ -230,25 +585,128 @@ public final class ProtocGenOmniBufJava {
 
         sb.append("    public void reset() {\n");
         for (ResolvedField f : fields) {
-            if (f.isMap()) {
-                sb.append("        this.").append(f.camelName()).append(" = new LinkedHashMap<>();\n");
-            } else if (f.isRepeated()) {
-                sb.append("        this.").append(f.camelName()).append(" = new ArrayList<>();\n");
+            if (f.isRepeated() || f.isMap()) {
+                sb.append("        this.").append(f.camelName()).append(" = null;\n");
             } else {
                 sb.append("        this.")
                     .append(f.camelName())
                     .append(" = ")
-                    .append(javaDefaultInit(f))
+                    .append(javaScalarResetExpr(f))
                     .append(";\n");
+                if (f.hasExplicitScalarPresence()) {
+                    sb.append("        this.has_").append(f.camelName()).append(" = false;\n");
+                }
             }
+        }
+        for (OneofInfo oi : oneofs) {
+            sb.append("        this.").append(oi.camelName()).append("Case = 0;\n");
         }
         sb.append("    }\n\n");
 
+        for (OneofInfo oi : oneofs) {
+            sb.append("    public int get").append(oi.pascalName()).append("Case() {\n");
+            sb.append("        return this.").append(oi.camelName()).append("Case;\n");
+            sb.append("    }\n\n");
+
+            sb.append("    public ").append(info.modelClass()).append(" clear").append(oi.pascalName()).append("() {\n");
+            emitOneofClearSwitch(sb, oi, fields, "        ");
+            sb.append("        this.").append(oi.camelName()).append("Case = 0;\n");
+            sb.append("        return this;\n");
+            sb.append("    }\n\n");
+
+            sb.append("    void prepare").append(oi.pascalName()).append("(int activeField) {\n");
+            sb.append("        if (this.").append(oi.camelName()).append("Case != 0 && this.")
+                .append(oi.camelName()).append("Case != activeField) {\n");
+            emitOneofClearSwitch(sb, oi, fields, "            ");
+            sb.append("        }\n");
+            sb.append("        this.").append(oi.camelName()).append("Case = activeField;\n");
+            sb.append("    }\n\n");
+        }
+
         for (ResolvedField f : fields) {
             String fType = javaFieldType(f);
-            sb.append("    public ").append(fType).append(" get").append(f.pascalName()).append("() {\n");
-            sb.append("        return this.").append(f.camelName()).append(";\n");
-            sb.append("    }\n\n");
+            if (f.isRepeated()) {
+                sb.append("    public ").append(fType).append(" get").append(f.pascalName()).append("() {\n");
+                sb.append("        if (this.").append(f.camelName()).append(" == null) {\n");
+                sb.append("            this.").append(f.camelName()).append(" = new ArrayList<>();\n");
+                sb.append("        }\n");
+                sb.append("        return this.").append(f.camelName()).append(";\n");
+                sb.append("    }\n\n");
+
+                sb.append("    ").append(fType).append(" ensure").append(f.pascalName()).append("(int minCap) {\n");
+                sb.append("        ").append(fType).append(" cur = this.").append(f.camelName()).append(";\n");
+                sb.append("        int cap = Math.min(minCap, 4096);\n");
+                sb.append("        if (cur == null) {\n");
+                sb.append("            cur = new ArrayList<>(cap);\n");
+                sb.append("            this.").append(f.camelName()).append(" = cur;\n");
+                sb.append("        } else if (!(cur instanceof ArrayList<?>)) {\n");
+                sb.append("            cur = new ArrayList<>(cur);\n");
+                sb.append("            this.").append(f.camelName()).append(" = cur;\n");
+                sb.append("        }\n");
+                sb.append("        return cur;\n");
+                sb.append("    }\n\n");
+            } else if (f.isMap()) {
+                sb.append("    public ").append(fType).append(" get").append(f.pascalName()).append("() {\n");
+                sb.append("        if (this.").append(f.camelName()).append(" == null) {\n");
+                sb.append("            this.").append(f.camelName()).append(" = new LinkedHashMap<>();\n");
+                sb.append("        }\n");
+                sb.append("        return this.").append(f.camelName()).append(";\n");
+                sb.append("    }\n\n");
+
+                sb.append("    ").append(fType).append(" ensure").append(f.pascalName()).append("(int minCap) {\n");
+                sb.append("        ").append(fType).append(" cur = this.").append(f.camelName()).append(";\n");
+                sb.append("        int cap = Math.min(minCap, 4096);\n");
+                sb.append("        if (cur == null) {\n");
+                sb.append("            cur = new LinkedHashMap<>(Math.max(4, cap + (cap >>> 1) + 1));\n");
+                sb.append("            this.").append(f.camelName()).append(" = cur;\n");
+                sb.append("        } else if (!(cur instanceof LinkedHashMap<?, ?>)) {\n");
+                sb.append("            cur = new LinkedHashMap<>(cur);\n");
+                sb.append("            this.").append(f.camelName()).append(" = cur;\n");
+                sb.append("        }\n");
+                sb.append("        return cur;\n");
+                sb.append("    }\n\n");
+            } else {
+                sb.append("    public ").append(fType).append(" get").append(f.pascalName()).append("() {\n");
+                sb.append("        return this.").append(f.camelName()).append(";\n");
+                sb.append("    }\n\n");
+
+                if (f.oneof() != null) {
+                    sb.append("    public boolean has").append(f.pascalName()).append("() {\n");
+                    sb.append("        return this.").append(f.oneof().camelName()).append("Case == ")
+                        .append(f.number()).append(";\n");
+                    sb.append("    }\n\n");
+
+                    sb.append("    public ").append(info.modelClass()).append(" clear").append(f.pascalName()).append("() {\n");
+                    sb.append("        if (this.").append(f.oneof().camelName()).append("Case == ")
+                        .append(f.number()).append(") {\n");
+                    sb.append("            this.").append(f.camelName()).append(" = ")
+                        .append(javaScalarResetExpr(f)).append(";\n");
+                    sb.append("            this.").append(f.oneof().camelName()).append("Case = 0;\n");
+                    sb.append("        }\n");
+                    sb.append("        return this;\n");
+                    sb.append("    }\n\n");
+                } else if (f.hasExplicitScalarPresence()) {
+                    sb.append("    public boolean has").append(f.pascalName()).append("() {\n");
+                    sb.append("        return this.has_").append(f.camelName()).append(";\n");
+                    sb.append("    }\n\n");
+
+                    sb.append("    public ").append(info.modelClass()).append(" clear").append(f.pascalName()).append("() {\n");
+                    sb.append("        this.").append(f.camelName()).append(" = ")
+                        .append(javaScalarResetExpr(f)).append(";\n");
+                    sb.append("        this.has_").append(f.camelName()).append(" = false;\n");
+                    sb.append("        return this;\n");
+                    sb.append("    }\n\n");
+                } else if (f.proto().getType() == Type.TYPE_MESSAGE) {
+                    sb.append("    public boolean has").append(f.pascalName()).append("() {\n");
+                    sb.append("        return this.").append(f.camelName()).append(" != null;\n");
+                    sb.append("    }\n\n");
+
+                    sb.append("    public ").append(info.modelClass()).append(" clear").append(f.pascalName()).append("() {\n");
+                    sb.append("        this.").append(f.camelName()).append(" = null;\n");
+                    sb.append("        return this;\n");
+                    sb.append("    }\n\n");
+                }
+            }
 
             sb.append("    public ")
                 .append(info.modelClass())
@@ -257,14 +715,21 @@ public final class ProtocGenOmniBufJava {
                 .append('(')
                 .append(fType)
                 .append(" value) {\n");
+            if (f.oneof() != null) {
+                if (f.proto().getType() == Type.TYPE_MESSAGE) {
+                    sb.append("        if (value == null) {\n");
+                    sb.append("            return clear").append(f.pascalName()).append("();\n");
+                    sb.append("        }\n");
+                }
+                sb.append("        prepare").append(f.oneof().pascalName()).append('(')
+                    .append(f.number()).append(");\n");
+            } else if (f.hasExplicitScalarPresence()) {
+                sb.append("        this.has_").append(f.camelName()).append(" = true;\n");
+            }
             if (f.proto().getType() == Type.TYPE_STRING && !f.isRepeated() && !f.isMap()) {
                 sb.append("        this.").append(f.camelName()).append(" = value == null ? \"\" : value;\n");
             } else if (f.proto().getType() == Type.TYPE_BYTES && !f.isRepeated() && !f.isMap()) {
                 sb.append("        this.").append(f.camelName()).append(" = value == null ? EMPTY_BYTES : value;\n");
-            } else if (f.isRepeated()) {
-                sb.append("        this.").append(f.camelName()).append(" = value == null ? new ArrayList<>() : value;\n");
-            } else if (f.isMap()) {
-                sb.append("        this.").append(f.camelName()).append(" = value == null ? new LinkedHashMap<>() : value;\n");
             } else {
                 sb.append("        this.").append(f.camelName()).append(" = value;\n");
             }
@@ -284,12 +749,27 @@ public final class ProtocGenOmniBufJava {
         return sb.toString();
     }
 
+    private static void emitOneofClearSwitch(
+            StringBuilder sb, OneofInfo oi, List<ResolvedField> fields, String indent) {
+        sb.append(indent).append("switch (this.").append(oi.camelName()).append("Case) {\n");
+        for (ResolvedField f : fields) {
+            if (f.oneof() != null && f.oneof().protoIndex() == oi.protoIndex()) {
+                sb.append(indent).append("    case ").append(f.number()).append(" -> this.")
+                    .append(f.camelName()).append(" = ").append(javaScalarResetExpr(f)).append(";\n");
+            }
+        }
+        sb.append(indent).append("    default -> {}\n");
+        sb.append(indent).append("}\n");
+    }
+
     // ========================================================================
     // 2. Static Fast Codec (<Message>OmniBuf.java)
     // ========================================================================
 
-    private static String emitCodecFile(
-            String sourceProto, MessageInfo info, List<ResolvedField> fields) {
+    private static String emitCodecFile(String sourceProto, ResolvedMessage resolved) {
+        MessageInfo info = resolved.info();
+        List<ResolvedField> fields = resolved.fields();
+
         StringBuilder sb = new StringBuilder(4096);
         sb.append("// Generated by protoc-gen-omnibuf-java. DO NOT EDIT.\n");
         sb.append("// source: ").append(sourceProto).append("\n\n");
@@ -299,46 +779,185 @@ public final class ProtocGenOmniBufJava {
         sb.append("import com.omnibuf.MarshalOptions;\n");
         sb.append("import com.omnibuf.OmniBufException;\n");
         sb.append("import com.omnibuf.SchemaMeta;\n");
+        sb.append("import com.omnibuf.UnmarshalOptions;\n");
+        sb.append("import com.omnibuf.wire.CodecPool;\n");
         sb.append("import com.omnibuf.wire.OmniBufDecoder;\n");
         sb.append("import com.omnibuf.wire.OmniBufEncoder;\n");
+        if (needsPrefixVarintImport(fields)) {
+            sb.append("import com.omnibuf.wire.PrefixVarint;\n");
+        }
+        boolean hasSubMessageFields = false;
+        for (ResolvedField f : fields) {
+            if (f.subMessage() != null) {
+                hasSubMessageFields = true;
+                break;
+            }
+        }
+
         sb.append("import com.omnibuf.wire.WireType;\n");
+        sb.append("import java.util.HashSet;\n");
         sb.append("import java.util.LinkedHashMap;\n");
         sb.append("import java.util.List;\n");
-        sb.append("import java.util.Map;\n\n");
+        sb.append("import java.util.Map;\n");
+        sb.append("import java.util.Set;\n\n");
 
         sb.append("public final class ").append(info.codecClass()).append(" {\n");
-        sb.append("    private static final ThreadLocal<OmniBufEncoder> ENCODER_POOL =\n");
-        sb.append("        ThreadLocal.withInitial(() -> new OmniBufEncoder(512));\n\n");
-
-        sb.append("    private static final SchemaMeta SCHEMA_META = buildSchemaMeta();\n");
-        sb.append("    private static final byte[] FIELD0_BYTES = SCHEMA_META.encodeField0(true);\n\n");
+        sb.append("    private static volatile SchemaMeta SCHEMA_META;\n");
+        sb.append("    private static volatile byte[] FIELD0_BYTES;\n");
+        sb.append("    private static volatile Boolean CYCLIC_SCHEMA;\n\n");
 
         sb.append("    private ").append(info.codecClass()).append("() {}\n\n");
 
-        sb.append("    private static SchemaMeta buildSchemaMeta() {\n");
+        sb.append("    public static SchemaMeta schemaMeta() {\n");
+        sb.append("        SchemaMeta m = SCHEMA_META;\n");
+        sb.append("        if (m == null) {\n");
+        sb.append("            boolean[] cyclic = new boolean[1];\n");
+        sb.append("            m = schemaMeta(1, new HashSet<>(), cyclic);\n");
+        sb.append("            CYCLIC_SCHEMA = cyclic[0];\n");
+        sb.append("            SCHEMA_META = m;\n");
+        sb.append("        }\n");
+        sb.append("        return m;\n");
+        sb.append("    }\n\n");
+
+        sb.append("    private static boolean isCyclicSchema() {\n");
+        sb.append("        Boolean c = CYCLIC_SCHEMA;\n");
+        sb.append("        if (c == null) {\n");
+        sb.append("            schemaMeta();\n");
+        sb.append("            c = CYCLIC_SCHEMA;\n");
+        sb.append("        }\n");
+        sb.append("        return Boolean.TRUE.equals(c);\n");
+        sb.append("    }\n\n");
+
+        sb.append("    public static SchemaMeta schemaMeta(int schemaDepth, Set<String> active, boolean[] cyclicOut) {\n");
+        sb.append("        if (!active.add(\"").append(info.protoFullName()).append("\")) {\n");
+        sb.append("            cyclicOut[0] = true;\n");
+        sb.append("            return null;\n");
+        sb.append("        }\n");
+        sb.append("        if (schemaDepth + 1 > WireType.MAX_CONTAINER_DEPTH) {\n");
+        sb.append("            active.remove(\"").append(info.protoFullName()).append("\");\n");
+        sb.append("            return null;\n");
+        sb.append("        }\n");
+        sb.append("        try {\n");
+        sb.append("            Map<Integer, String> fieldNames = new LinkedHashMap<>(").append(fields.size()).append(");\n");
+        for (ResolvedField f : fields) {
+            sb.append("            fieldNames.put(")
+                .append(f.number())
+                .append(", \"")
+                .append(escapeJavaString(f.protoName()))
+                .append("\");\n");
+        }
+        sb.append("            Map<Integer, SchemaMeta> children = new LinkedHashMap<>();\n");
+        for (ResolvedField f : fields) {
+            if (f.subMessage() != null) {
+                sb.append("            SchemaMeta child_").append(f.number()).append(" = ")
+                    .append(f.subMessage().qualifiedCodec())
+                    .append(".schemaMeta(schemaDepth + 2, active, cyclicOut);\n");
+                sb.append("            if (child_").append(f.number())
+                    .append(" != null && schemaDepth + 3 <= WireType.MAX_CONTAINER_DEPTH) {\n");
+                sb.append("                children.put(").append(f.number())
+                    .append(", child_").append(f.number()).append(");\n");
+                sb.append("            }\n");
+            }
+        }
+        sb.append("            return new SchemaMeta(\"")
+            .append(escapeJavaString(info.schemaTypeName()))
+            .append("\", fieldNames, children);\n");
+        sb.append("        } finally {\n");
+        sb.append("            active.remove(\"").append(info.protoFullName()).append("\");\n");
+        sb.append("        }\n");
+        sb.append("    }\n\n");
+
+        sb.append("    public static SchemaMeta instanceSchemaMeta(")
+            .append(info.modelClass())
+            .append(" msg, int schemaDepth) {\n");
+        sb.append("        if (msg == null || schemaDepth + 1 > WireType.MAX_CONTAINER_DEPTH) {\n");
+        sb.append("            return null;\n");
+        sb.append("        }\n");
         sb.append("        Map<Integer, String> fieldNames = new LinkedHashMap<>(").append(fields.size()).append(");\n");
         for (ResolvedField f : fields) {
             sb.append("        fieldNames.put(")
                 .append(f.number())
                 .append(", \"")
-                .append(f.protoName())
+                .append(escapeJavaString(f.protoName()))
                 .append("\");\n");
         }
         sb.append("        Map<Integer, SchemaMeta> children = new LinkedHashMap<>();\n");
-        for (ResolvedField f : fields) {
-            if (f.subMessage() != null && !f.subMessage().protoFullName().equals(info.protoFullName())) {
-                sb.append("        children.put(")
-                    .append(f.number())
-                    .append(", ")
-                    .append(f.subMessage().qualifiedCodec())
-                    .append(".schemaMeta());\n");
+        if (hasSubMessageFields) {
+            sb.append("        if (schemaDepth + 3 <= WireType.MAX_CONTAINER_DEPTH) {\n");
+            for (ResolvedField f : fields) {
+                if (f.subMessage() == null) {
+                    continue;
+                }
+                String subModel = f.subMessage().qualifiedModel();
+                String subCodec = f.subMessage().qualifiedCodec();
+                if (f.isMap()) {
+                    sb.append("            if (msg.").append(f.camelName())
+                        .append(" != null && !msg.").append(f.camelName()).append(".isEmpty()) {\n");
+                    sb.append("                SchemaMeta child = null;\n");
+                    sb.append("                for (").append(subModel).append(" elem : msg.")
+                        .append(f.camelName()).append(".values()) {\n");
+                    sb.append("                    if (elem != null) {\n");
+                    sb.append("                        child = SchemaMeta.merge(child, ")
+                        .append(subCodec).append(".instanceSchemaMeta(elem, schemaDepth + 2));\n");
+                    sb.append("                    }\n");
+                    sb.append("                }\n");
+                    sb.append("                if (child != null) {\n");
+                    sb.append("                    children.put(").append(f.number()).append(", child);\n");
+                    sb.append("                }\n");
+                    sb.append("            }\n");
+                } else if (f.isRepeated()) {
+                    sb.append("            if (msg.").append(f.camelName())
+                        .append(" != null && !msg.").append(f.camelName()).append(".isEmpty()) {\n");
+                    sb.append("                SchemaMeta child = null;\n");
+                    sb.append("                for (int i = 0, n = msg.").append(f.camelName())
+                        .append(".size(); i < n; i++) {\n");
+                    sb.append("                    ").append(subModel).append(" elem = msg.")
+                        .append(f.camelName()).append(".get(i);\n");
+                    sb.append("                    if (elem != null) {\n");
+                    sb.append("                        child = SchemaMeta.merge(child, ")
+                        .append(subCodec).append(".instanceSchemaMeta(elem, schemaDepth + 2));\n");
+                    sb.append("                    }\n");
+                    sb.append("                }\n");
+                    sb.append("                if (child != null) {\n");
+                    sb.append("                    children.put(").append(f.number()).append(", child);\n");
+                    sb.append("                }\n");
+                    sb.append("            }\n");
+                } else if (f.oneof() != null) {
+                    sb.append("            if (msg.").append(f.oneof().camelName())
+                        .append("Case == ").append(f.number())
+                        .append(" && msg.").append(f.camelName()).append(" != null) {\n");
+                    sb.append("                SchemaMeta child = ").append(subCodec)
+                        .append(".instanceSchemaMeta(msg.").append(f.camelName())
+                        .append(", schemaDepth + 2);\n");
+                    sb.append("                if (child != null) {\n");
+                    sb.append("                    children.put(").append(f.number()).append(", child);\n");
+                    sb.append("                }\n");
+                    sb.append("            }\n");
+                } else {
+                    sb.append("            if (msg.").append(f.camelName()).append(" != null) {\n");
+                    sb.append("                SchemaMeta child = ").append(subCodec)
+                        .append(".instanceSchemaMeta(msg.").append(f.camelName())
+                        .append(", schemaDepth + 2);\n");
+                    sb.append("                if (child != null) {\n");
+                    sb.append("                    children.put(").append(f.number()).append(", child);\n");
+                    sb.append("                }\n");
+                    sb.append("            }\n");
+                }
             }
+            sb.append("        }\n");
         }
-        sb.append("        return new SchemaMeta(\"").append(info.simpleName()).append("\", fieldNames, children);\n");
+        sb.append("        return new SchemaMeta(\"")
+            .append(escapeJavaString(info.schemaTypeName()))
+            .append("\", fieldNames, children);\n");
         sb.append("    }\n\n");
 
-        sb.append("    public static SchemaMeta schemaMeta() {\n");
-        sb.append("        return SCHEMA_META;\n");
+        sb.append("    private static byte[] field0Bytes() {\n");
+        sb.append("        byte[] b = FIELD0_BYTES;\n");
+        sb.append("        if (b == null) {\n");
+        sb.append("            b = schemaMeta().encodeField0(true);\n");
+        sb.append("            FIELD0_BYTES = b;\n");
+        sb.append("        }\n");
+        sb.append("        return b;\n");
         sb.append("    }\n\n");
 
         sb.append("    public static byte[] marshal(").append(info.modelClass()).append(" msg) {\n");
@@ -350,59 +969,108 @@ public final class ProtocGenOmniBufJava {
             .append(" msg, MarshalOptions options) {\n");
         sb.append("        if (msg == null) {\n");
         sb.append("            throw new OmniBufException(\"omnibuf: cannot marshal null ")
-            .append(info.simpleName())
+            .append(escapeJavaString(info.simpleName()))
             .append("\");\n");
         sb.append("        }\n");
         sb.append("        MarshalOptions opts = options == null ? MarshalOptions.DEFAULT : options;\n");
-        sb.append("        OmniBufEncoder enc = ENCODER_POOL.get();\n");
-        sb.append("        enc.reset();\n");
-        sb.append("        if (opts.selfDescribing()) {\n");
-        sb.append("            if (opts.deterministic()) {\n");
-        sb.append("                enc.writeRawBytes(FIELD0_BYTES);\n");
-        sb.append("            } else {\n");
-        sb.append("                SCHEMA_META.writeField0(enc, false);\n");
+        sb.append("        OmniBufEncoder enc = CodecPool.acquireEncoder();\n");
+        sb.append("        try {\n");
+        sb.append("            if (opts.selfDescribing()) {\n");
+        sb.append("                if (isCyclicSchema()) {\n");
+        sb.append("                    SchemaMeta dyn = instanceSchemaMeta(msg, 1);\n");
+        sb.append("                    if (dyn != null) {\n");
+        sb.append("                        dyn.writeField0(enc, opts.deterministic());\n");
+        sb.append("                    }\n");
+        sb.append("                } else if (opts.deterministic()) {\n");
+        sb.append("                    enc.writeRawBytes(field0Bytes());\n");
+        sb.append("                } else {\n");
+        sb.append("                    schemaMeta().writeField0(enc, false);\n");
+        sb.append("                }\n");
         sb.append("            }\n");
+        sb.append("            encode(enc, msg, opts.deterministic());\n");
+        sb.append("            return enc.toByteArray();\n");
+        sb.append("        } finally {\n");
+        sb.append("            CodecPool.releaseEncoder(enc);\n");
         sb.append("        }\n");
-        sb.append("        encode(enc, msg, opts.deterministic());\n");
-        sb.append("        return enc.toByteArray();\n");
         sb.append("    }\n\n");
 
         sb.append("    public static void encode(OmniBufEncoder enc, ")
             .append(info.modelClass())
             .append(" msg, boolean deterministic) {\n");
         for (ResolvedField f : fields) {
-            emitFieldEncode(sb, f, "msg.get" + f.pascalName() + "()", "        ");
+            if (f.oneof() != null) {
+                sb.append("        if (msg.").append(f.oneof().camelName()).append("Case == ")
+                    .append(f.number()).append(") {\n");
+                emitFieldEncode(sb, info, f, "msg." + f.camelName(), "            ");
+                sb.append("        }\n");
+            } else if (f.hasExplicitScalarPresence()) {
+                sb.append("        if (msg.has_").append(f.camelName()).append(") {\n");
+                emitFieldEncode(sb, info, f, "msg." + f.camelName(), "            ");
+                sb.append("        }\n");
+            } else {
+                emitFieldEncode(sb, info, f, "msg." + f.camelName(), "        ");
+            }
         }
         sb.append("    }\n\n");
 
         sb.append("    public static ").append(info.modelClass()).append(" unmarshal(byte[] data) {\n");
+        sb.append("        return unmarshal(data, UnmarshalOptions.DEFAULT);\n");
+        sb.append("    }\n\n");
+
+        sb.append("    public static ").append(info.modelClass()).append(" unmarshal(byte[] data, UnmarshalOptions options) {\n");
         sb.append("        if (data == null) {\n");
         sb.append("            throw new OmniBufException(\"omnibuf: null packet buffer\");\n");
         sb.append("        }\n");
-        sb.append("        ").append(info.modelClass()).append(" out = new ").append(info.modelClass()).append("();\n");
-        sb.append("        decodeInto(data, 0, data.length, out, 0);\n");
-        sb.append("        return out;\n");
+        sb.append("        OmniBufDecoder dec = CodecPool.acquireDecoder(data, 0, data.length, options);\n");
+        sb.append("        try {\n");
+        sb.append("            ").append(info.modelClass()).append(" out = new ").append(info.modelClass()).append("();\n");
+        sb.append("            decodeFrom(dec, out, 0);\n");
+        sb.append("            return out;\n");
+        sb.append("        } finally {\n");
+        sb.append("            CodecPool.releaseDecoder(dec);\n");
+        sb.append("        }\n");
         sb.append("    }\n\n");
 
         sb.append("    public static void unmarshal(byte[] data, ").append(info.modelClass()).append(" target) {\n");
+        sb.append("        unmarshal(data, target, UnmarshalOptions.DEFAULT);\n");
+        sb.append("    }\n\n");
+
+        sb.append("    public static void unmarshal(byte[] data, ")
+            .append(info.modelClass())
+            .append(" target, UnmarshalOptions options) {\n");
         sb.append("        if (data == null) {\n");
         sb.append("            throw new OmniBufException(\"omnibuf: null packet buffer\");\n");
         sb.append("        }\n");
         sb.append("        if (target == null) {\n");
         sb.append("            throw new OmniBufException(\"omnibuf: null target instance\");\n");
         sb.append("        }\n");
-        sb.append("        target.reset();\n");
-        sb.append("        decodeInto(data, 0, data.length, target, 0);\n");
+        sb.append("        OmniBufDecoder dec = CodecPool.acquireDecoder(data, 0, data.length, options);\n");
+        sb.append("        try {\n");
+        sb.append("            target.reset();\n");
+        sb.append("            decodeFrom(dec, target, 0);\n");
+        sb.append("        } finally {\n");
+        sb.append("            CodecPool.releaseDecoder(dec);\n");
+        sb.append("        }\n");
         sb.append("    }\n\n");
 
         sb.append("    public static void decodeInto(\n");
         sb.append("            byte[] data, int offset, int length, ")
             .append(info.modelClass())
             .append(" target, int depth) {\n");
-        sb.append("        if (depth > OmniBufDecoder.MAX_CONTAINER_DEPTH) {\n");
+        sb.append("        OmniBufDecoder dec = CodecPool.acquireDecoder(data, offset, length);\n");
+        sb.append("        try {\n");
+        sb.append("            decodeFrom(dec, target, depth);\n");
+        sb.append("        } finally {\n");
+        sb.append("            CodecPool.releaseDecoder(dec);\n");
+        sb.append("        }\n");
+        sb.append("    }\n\n");
+
+        sb.append("    public static void decodeFrom(OmniBufDecoder dec, ")
+            .append(info.modelClass())
+            .append(" target, int depth) {\n");
+        sb.append("        if (depth > dec.maxNestingDepth()) {\n");
         sb.append("            throw new OmniBufException(\"omnibuf: nesting depth exceeds MaxNestingDepth\");\n");
         sb.append("        }\n");
-        sb.append("        OmniBufDecoder dec = new OmniBufDecoder(data, offset, length);\n");
         sb.append("        while (dec.hasRemaining()) {\n");
         sb.append("            long tag = dec.readTag();\n");
         sb.append("            int fnum = (int) (tag >>> 4);\n");
@@ -421,11 +1089,32 @@ public final class ProtocGenOmniBufJava {
         return sb.toString();
     }
 
+    private static boolean needsPrefixVarintImport(List<ResolvedField> fields) {
+        for (ResolvedField f : fields) {
+            if (f.isMap()) {
+                if (!(f.mapKeyProto().getType() == Type.TYPE_STRING
+                        && f.mapValProto().getType() == Type.TYPE_UINT64)) {
+                    if (isZigZagType(f.mapKeyProto().getType()) || isZigZagType(f.mapValProto().getType())) {
+                        return true;
+                    }
+                }
+            }
+        }
+        return false;
+    }
+
+    private static boolean isZigZagType(Type t) {
+        return t == Type.TYPE_INT32
+            || t == Type.TYPE_INT64
+            || t == Type.TYPE_SINT32
+            || t == Type.TYPE_SINT64
+            || t == Type.TYPE_ENUM;
+    }
+
     private static void emitFieldEncode(
-            StringBuilder sb, ResolvedField f, String expr, String indent) {
+            StringBuilder sb, MessageInfo ownerInfo, ResolvedField f, String expr, String indent) {
         int fnum = f.number();
         if (f.isMap()) {
-            // Currently generated map helper supports map<string, uint64> directly and generic scalar maps.
             if (f.mapKeyProto().getType() == Type.TYPE_STRING
                     && f.mapValProto().getType() == Type.TYPE_UINT64) {
                 sb.append(indent)
@@ -436,7 +1125,29 @@ public final class ProtocGenOmniBufJava {
                     .append(", deterministic);\n");
                 return;
             }
-            throw new IllegalStateException("Unsupported map signature in protoc-gen-omnibuf-java: " + f.protoName());
+            String kBox = boxedType(f.mapKeyProto(), null);
+            String vBox = boxedType(f.mapValProto(), f.subMessage());
+            String keyWT = wireTypeConst(f.mapKeyProto().getType());
+            String valWT = wireTypeConst(f.mapValProto().getType());
+            String mapVar = "map" + fnum;
+            sb.append(indent).append("{\n");
+            sb.append(indent).append("    Map<").append(kBox).append(", ").append(vBox).append("> ")
+                .append(mapVar).append(" = ").append(expr).append(";\n");
+            sb.append(indent).append("    int n = ").append(mapVar).append(" == null ? 0 : ")
+                .append(mapVar).append(".size();\n");
+            sb.append(indent).append("    int mapPos = enc.beginTypedMapFast(")
+                .append(fnum).append(", ").append(keyWT).append(", ").append(valWT).append(", n);\n");
+            sb.append(indent).append("    if (n > 0) {\n");
+            sb.append(indent).append("        for (Map.Entry<").append(kBox).append(", ").append(vBox)
+                .append("> entry : OmniBufEncoder.sortMapEntries(")
+                .append(mapVar).append(", ").append(keyWT).append(", deterministic)) {\n");
+            emitInlineMapEntryWrite(sb, ownerInfo, f.mapKeyProto(), null, "entry.getKey()", "k" + fnum, indent + "            ");
+            emitInlineMapEntryWrite(sb, ownerInfo, f.mapValProto(), f.subMessage(), "entry.getValue()", "v" + fnum, indent + "            ");
+            sb.append(indent).append("        }\n");
+            sb.append(indent).append("    }\n");
+            sb.append(indent).append("    enc.endContainerAt(mapPos);\n");
+            sb.append(indent).append("}\n");
+            return;
         }
 
         if (f.isRepeated()) {
@@ -475,16 +1186,16 @@ public final class ProtocGenOmniBufJava {
                     sb.append(indent).append("    List<").append(subModel).append("> ").append(varName)
                         .append(" = ").append(expr).append(";\n");
                     sb.append(indent).append("    int n = ").append(varName).append(" == null ? 0 : ").append(varName).append(".size();\n");
-                    sb.append(indent).append("    enc.beginSubMsgArr(").append(fnum).append(");\n");
+                    sb.append(indent).append("    int arrPos = enc.beginTypedArrayFast(").append(fnum).append(", WireType.WIRE_SUB_MSG, n);\n");
                     sb.append(indent).append("    for (int i = 0; i < n; i++) {\n");
-                    sb.append(indent).append("        enc.beginSubMsgElem();\n");
+                    sb.append(indent).append("        int elemPos = enc.beginInlineSubMsgFast();\n");
                     sb.append(indent).append("        ").append(subModel).append(" elem = ").append(varName).append(".get(i);\n");
                     sb.append(indent).append("        if (elem != null) {\n");
                     sb.append(indent).append("            ").append(subCodec).append(".encode(enc, elem, deterministic);\n");
                     sb.append(indent).append("        }\n");
-                    sb.append(indent).append("        enc.endSubMsgElem();\n");
+                    sb.append(indent).append("        enc.endContainerAt(elemPos);\n");
                     sb.append(indent).append("    }\n");
-                    sb.append(indent).append("    enc.endSubMsgArr();\n");
+                    sb.append(indent).append("    enc.endContainerAt(arrPos);\n");
                     sb.append(indent).append("}\n");
                 }
                 default -> throw new IllegalStateException("Unsupported repeated field: " + f.protoName());
@@ -513,13 +1224,59 @@ public final class ProtocGenOmniBufJava {
                 sb.append(indent).append("{\n");
                 sb.append(indent).append("    ").append(subModel).append(' ').append(varName).append(" = ").append(expr).append(";\n");
                 sb.append(indent).append("    if (").append(varName).append(" != null) {\n");
-                sb.append(indent).append("        enc.beginSubMsg(").append(fnum).append(");\n");
+                sb.append(indent).append("        int subPos = enc.beginSubMsgFast(").append(fnum).append(");\n");
                 sb.append(indent).append("        ").append(subCodec).append(".encode(enc, ").append(varName).append(", deterministic);\n");
-                sb.append(indent).append("        enc.endSubMsg();\n");
+                sb.append(indent).append("        enc.endContainerAt(subPos);\n");
                 sb.append(indent).append("    }\n");
                 sb.append(indent).append("}\n");
             }
             default -> throw new IllegalStateException("Unsupported singular field: " + f.protoName());
+        }
+    }
+
+    private static void emitInlineMapEntryWrite(
+            StringBuilder sb,
+            MessageInfo ownerInfo,
+            FieldDescriptorProto fd,
+            MessageInfo sub,
+            String valExpr,
+            String localVar,
+            String indent) {
+        String box = boxedType(fd, sub);
+        sb.append(indent).append(box).append(' ').append(localVar).append(" = ").append(valExpr).append(";\n");
+        switch (fd.getType()) {
+            case TYPE_STRING -> sb.append(indent)
+                .append("enc.writeStringElement(").append(localVar).append(" == null ? \"\" : ").append(localVar).append(");\n");
+            case TYPE_BYTES -> sb.append(indent)
+                .append("enc.writeBytesElement(").append(localVar).append(" == null ? ")
+                .append(ownerInfo.modelClass()).append(".EMPTY_BYTES : ").append(localVar).append(");\n");
+            case TYPE_BOOL -> sb.append(indent)
+                .append("enc.writeRawByte(Boolean.TRUE.equals(").append(localVar).append(") ? 1 : 0);\n");
+            case TYPE_UINT32 -> sb.append(indent)
+                .append("enc.writeVarint(Integer.toUnsignedLong(").append(localVar).append(" == null ? 0 : ").append(localVar).append("));\n");
+            case TYPE_UINT64 -> sb.append(indent)
+                .append("enc.writeVarint(").append(localVar).append(" == null ? 0L : ").append(localVar).append(");\n");
+            case TYPE_INT32, TYPE_SINT32, TYPE_ENUM -> sb.append(indent)
+                .append("enc.writeVarint(PrefixVarint.encodeZigZag32(").append(localVar).append(" == null ? 0 : ").append(localVar).append("));\n");
+            case TYPE_INT64, TYPE_SINT64 -> sb.append(indent)
+                .append("enc.writeVarint(PrefixVarint.encodeZigZag64(").append(localVar).append(" == null ? 0L : ").append(localVar).append("));\n");
+            case TYPE_FIXED32, TYPE_SFIXED32 -> sb.append(indent)
+                .append("enc.writeInlineFixed32(").append(localVar).append(" == null ? 0 : ").append(localVar).append(");\n");
+            case TYPE_FLOAT -> sb.append(indent)
+                .append("enc.writeInlineFixed32(Float.floatToRawIntBits(").append(localVar).append(" == null ? 0.0f : ").append(localVar).append("));\n");
+            case TYPE_FIXED64, TYPE_SFIXED64 -> sb.append(indent)
+                .append("enc.writeInlineFixed64(").append(localVar).append(" == null ? 0L : ").append(localVar).append(");\n");
+            case TYPE_DOUBLE -> sb.append(indent)
+                .append("enc.writeInlineFixed64(Double.doubleToRawLongBits(").append(localVar).append(" == null ? 0.0d : ").append(localVar).append("));\n");
+            case TYPE_MESSAGE -> {
+                sb.append(indent).append("int elemPos = enc.beginInlineSubMsgFast();\n");
+                sb.append(indent).append("if (").append(localVar).append(" != null) {\n");
+                sb.append(indent).append("    ").append(sub.qualifiedCodec())
+                    .append(".encode(enc, ").append(localVar).append(", deterministic);\n");
+                sb.append(indent).append("}\n");
+                sb.append(indent).append("enc.endContainerAt(elemPos);\n");
+            }
+            default -> throw new IllegalStateException("Unsupported map entry type: " + fd.getType());
         }
     }
 
@@ -528,28 +1285,41 @@ public final class ProtocGenOmniBufJava {
         sb.append("                case ").append(fnum).append(" -> {\n");
 
         if (f.isMap()) {
+            String kBox = boxedType(f.mapKeyProto(), null);
+            String vBox = boxedType(f.mapValProto(), f.subMessage());
+            String keyWT = wireTypeConst(f.mapKeyProto().getType());
+            String valWT = wireTypeConst(f.mapValProto().getType());
             sb.append("                    if (wt != WireType.WIRE_MAP) {\n");
             sb.append("                        dec.skipOrValidateUnknown(fnum, wt, depth);\n");
             sb.append("                    } else {\n");
-            sb.append("                        if (depth + 1 > OmniBufDecoder.MAX_CONTAINER_DEPTH) {\n");
-            sb.append("                            throw new OmniBufException(\"omnibuf: WireMap exceeds MaxNestingDepth\");\n");
-            sb.append("                        }\n");
-            sb.append("                        int valStart = dec.position();\n");
-            sb.append("                        OmniBufDecoder.Slice body = dec.readLengthPrefixedSlice(3);\n");
-            sb.append("                        OmniBufDecoder.MapHeader hdr = OmniBufDecoder.parseMapHeader(data, body.offset(), body.end());\n");
-            sb.append("                        if (hdr.keyWireType() != WireType.WIRE_STRING || hdr.valWireType() != WireType.WIRE_UINT) {\n");
-            sb.append("                            OmniBufDecoder.validateValue(data, valStart, dec.limit(), WireType.WIRE_MAP, depth);\n");
-            sb.append("                        } else {\n");
-            sb.append("                            OmniBufDecoder mDec = new OmniBufDecoder(data, hdr.payloadStart(), hdr.payloadEnd() - hdr.payloadStart());\n");
-            sb.append("                            Map<String, Long> map = target.get").append(f.pascalName()).append("();\n");
-            sb.append("                            for (int i = 0; i < hdr.count(); i++) {\n");
-            sb.append("                                String k = mDec.readString();\n");
-            sb.append("                                long v = mDec.readUint64();\n");
+            sb.append("                        long mapState = dec.beginMap(")
+                .append(keyWT).append(", ").append(valWT).append(", depth);\n");
+            sb.append("                        if (mapState >= 0L) {\n");
+            sb.append("                            int count = (int) mapState;\n");
+            sb.append("                            int mapLimit = (int) (mapState >>> 32);\n");
+            sb.append("                            Map<").append(kBox).append(", ").append(vBox)
+                .append("> map = target.ensure").append(f.pascalName()).append("(count);\n");
+            sb.append("                            int maxElems = dec.maxCollectionElements();\n");
+            sb.append("                            for (int i = 0; i < count; i++) {\n");
+            sb.append("                                ").append(kBox).append(" k = ")
+                .append(arrayElementReadExpr(f.mapKeyProto().getType())).append(";\n");
+            if (f.mapValProto().getType() == Type.TYPE_MESSAGE) {
+                String subModel = f.subMessage().qualifiedModel();
+                String subCodec = f.subMessage().qualifiedCodec();
+                sb.append("                                int elemLimit = dec.readLengthPrefixedLimit(0);\n");
+                sb.append("                                ").append(subModel).append(" v = new ").append(subModel).append("();\n");
+                sb.append("                                ").append(subCodec).append(".decodeFrom(dec, v, depth + 2);\n");
+                sb.append("                                dec.endContainer(elemLimit);\n");
+            } else {
+                sb.append("                                ").append(vBox).append(" v = ")
+                    .append(arrayElementReadExpr(f.mapValProto().getType())).append(";\n");
+            }
+            sb.append("                                if (!map.containsKey(k) && map.size() >= maxElems) {\n");
+            sb.append("                                    throw new OmniBufException(\"omnibuf: accumulated WireMap count exceeds maxCollectionElements\");\n");
+            sb.append("                                }\n");
             sb.append("                                map.put(k, v);\n");
             sb.append("                            }\n");
-            sb.append("                            if (mDec.hasRemaining()) {\n");
-            sb.append("                                throw new OmniBufException(\"omnibuf: WireMap has trailing payload bytes\");\n");
-            sb.append("                            }\n");
+            sb.append("                            dec.endContainer(mapLimit);\n");
             sb.append("                        }\n");
             sb.append("                    }\n");
             sb.append("                }\n");
@@ -561,32 +1331,28 @@ public final class ProtocGenOmniBufJava {
             sb.append("                    if (wt != WireType.WIRE_ARRAY) {\n");
             sb.append("                        dec.skipOrValidateUnknown(fnum, wt, depth);\n");
             sb.append("                    } else {\n");
-            sb.append("                        if (depth + 1 > OmniBufDecoder.MAX_CONTAINER_DEPTH) {\n");
-            sb.append("                            throw new OmniBufException(\"omnibuf: WireArray exceeds MaxNestingDepth\");\n");
-            sb.append("                        }\n");
-            sb.append("                        int valStart = dec.position();\n");
-            sb.append("                        OmniBufDecoder.Slice body = dec.readLengthPrefixedSlice(2);\n");
-            sb.append("                        OmniBufDecoder.ArrayHeader hdr = OmniBufDecoder.parseArrayHeader(data, body.offset(), body.end());\n");
-            sb.append("                        if (hdr.elemWireType() != ").append(elemWireConst).append(") {\n");
-            sb.append("                            OmniBufDecoder.validateValue(data, valStart, dec.limit(), WireType.WIRE_ARRAY, depth);\n");
-            sb.append("                        } else {\n");
-            sb.append("                            OmniBufDecoder aDec = new OmniBufDecoder(data, hdr.payloadStart(), hdr.payloadEnd() - hdr.payloadStart());\n");
-            sb.append("                            var list = target.get").append(f.pascalName()).append("();\n");
-            sb.append("                            for (int i = 0; i < hdr.count(); i++) {\n");
+            sb.append("                        long arrState = dec.beginArray(").append(elemWireConst).append(", depth);\n");
+            sb.append("                        if (arrState >= 0L) {\n");
+            sb.append("                            int count = (int) arrState;\n");
+            sb.append("                            int arrLimit = (int) (arrState >>> 32);\n");
+            sb.append("                            var list = target.ensure").append(f.pascalName()).append("(count);\n");
+            sb.append("                            if ((long) list.size() + count > dec.maxCollectionElements()) {\n");
+            sb.append("                                throw new OmniBufException(\"omnibuf: accumulated WireArray count exceeds maxCollectionElements\");\n");
+            sb.append("                            }\n");
+            sb.append("                            for (int i = 0; i < count; i++) {\n");
             if (f.proto().getType() == Type.TYPE_MESSAGE) {
                 String subModel = f.subMessage().qualifiedModel();
                 String subCodec = f.subMessage().qualifiedCodec();
-                sb.append("                                OmniBufDecoder.Slice es = aDec.readLengthPrefixedSlice(0);\n");
+                sb.append("                                int elemLimit = dec.readLengthPrefixedLimit(0);\n");
                 sb.append("                                ").append(subModel).append(" elem = new ").append(subModel).append("();\n");
-                sb.append("                                ").append(subCodec).append(".decodeInto(data, es.offset(), es.length(), elem, depth + 2);\n");
+                sb.append("                                ").append(subCodec).append(".decodeFrom(dec, elem, depth + 2);\n");
+                sb.append("                                dec.endContainer(elemLimit);\n");
                 sb.append("                                list.add(elem);\n");
             } else {
                 sb.append("                                list.add(").append(arrayElementReadExpr(f.proto().getType())).append(");\n");
             }
             sb.append("                            }\n");
-            sb.append("                            if (aDec.hasRemaining()) {\n");
-            sb.append("                                throw new OmniBufException(\"omnibuf: WireArray has trailing payload bytes\");\n");
-            sb.append("                            }\n");
+            sb.append("                            dec.endContainer(arrLimit);\n");
             sb.append("                        }\n");
             sb.append("                    }\n");
             sb.append("                }\n");
@@ -595,7 +1361,13 @@ public final class ProtocGenOmniBufJava {
 
         if (f.proto().getType() == Type.TYPE_BOOL) {
             sb.append("                    if (wt == WireType.WIRE_BOOL_FALSE || wt == WireType.WIRE_BOOL_TRUE) {\n");
-            sb.append("                        target.set").append(f.pascalName()).append("(wt == WireType.WIRE_BOOL_TRUE);\n");
+            if (f.oneof() != null) {
+                sb.append("                        target.prepare").append(f.oneof().pascalName())
+                    .append('(').append(fnum).append(");\n");
+            } else if (f.hasExplicitScalarPresence()) {
+                sb.append("                        target.has_").append(f.camelName()).append(" = true;\n");
+            }
+            sb.append("                        target.").append(f.camelName()).append(" = (wt == WireType.WIRE_BOOL_TRUE);\n");
             sb.append("                    } else {\n");
             sb.append("                        dec.skipOrValidateUnknown(fnum, wt, depth);\n");
             sb.append("                    }\n");
@@ -607,13 +1379,18 @@ public final class ProtocGenOmniBufJava {
             String subModel = f.subMessage().qualifiedModel();
             String subCodec = f.subMessage().qualifiedCodec();
             sb.append("                    if (wt == WireType.WIRE_SUB_MSG) {\n");
-            sb.append("                        OmniBufDecoder.Slice s = dec.readLengthPrefixedSlice(0);\n");
-            sb.append("                        ").append(subModel).append(" sub = target.get").append(f.pascalName()).append("();\n");
+            sb.append("                        int subLimit = dec.readLengthPrefixedLimit(0);\n");
+            if (f.oneof() != null) {
+                sb.append("                        target.prepare").append(f.oneof().pascalName())
+                    .append('(').append(fnum).append(");\n");
+            }
+            sb.append("                        ").append(subModel).append(" sub = target.").append(f.camelName()).append(";\n");
             sb.append("                        if (sub == null) {\n");
             sb.append("                            sub = new ").append(subModel).append("();\n");
-            sb.append("                            target.set").append(f.pascalName()).append("(sub);\n");
+            sb.append("                            target.").append(f.camelName()).append(" = sub;\n");
             sb.append("                        }\n");
-            sb.append("                        ").append(subCodec).append(".decodeInto(data, s.offset(), s.length(), sub, depth + 1);\n");
+            sb.append("                        ").append(subCodec).append(".decodeFrom(dec, sub, depth + 1);\n");
+            sb.append("                        dec.endContainer(subLimit);\n");
             sb.append("                    } else {\n");
             sb.append("                        dec.skipOrValidateUnknown(fnum, wt, depth);\n");
             sb.append("                    }\n");
@@ -623,11 +1400,17 @@ public final class ProtocGenOmniBufJava {
 
         String wtConst = wireTypeConst(f.proto().getType());
         sb.append("                    if (wt == ").append(wtConst).append(") {\n");
-        sb.append("                        target.set")
-            .append(f.pascalName())
-            .append('(')
+        if (f.oneof() != null) {
+            sb.append("                        target.prepare").append(f.oneof().pascalName())
+                .append('(').append(fnum).append(");\n");
+        } else if (f.hasExplicitScalarPresence()) {
+            sb.append("                        target.has_").append(f.camelName()).append(" = true;\n");
+        }
+        sb.append("                        target.")
+            .append(f.camelName())
+            .append(" = ")
             .append(singularReadExpr(f.proto().getType()))
-            .append(");\n");
+            .append(";\n");
         sb.append("                    } else {\n");
         sb.append("                        dec.skipOrValidateUnknown(fnum, wt, depth);\n");
         sb.append("                    }\n");
@@ -638,41 +1421,91 @@ public final class ProtocGenOmniBufJava {
     // 3. Opaque Lazy View & Splicer (Opaque<Message>.java)
     // ========================================================================
 
-    private static String emitOpaqueFile(
-            String sourceProto, MessageInfo info, List<ResolvedField> fields) {
+    private static String emitOpaqueFile(String sourceProto, ResolvedMessage resolved) {
+        MessageInfo info = resolved.info();
+        List<ResolvedField> fields = resolved.fields();
+        List<OneofInfo> oneofs = resolved.oneofs();
+
+        int maxField = 0;
+        boolean needsDeterministicFlag = false;
+        boolean needsDecoderImport = false;
+        for (ResolvedField f : fields) {
+            if (f.number() > maxField) {
+                maxField = f.number();
+            }
+            if (f.isMap() || f.proto().getType() == Type.TYPE_MESSAGE) {
+                needsDeterministicFlag = true;
+            }
+            if (f.isMap() && f.mapValProto().getType() == Type.TYPE_MESSAGE) {
+                needsDecoderImport = true;
+            }
+        }
+        boolean useBitSet = maxField >= 64;
+
         StringBuilder sb = new StringBuilder(4096);
         sb.append("// Generated by protoc-gen-omnibuf-java. DO NOT EDIT.\n");
         sb.append("// source: ").append(sourceProto).append("\n\n");
         if (!info.javaPackage().isEmpty()) {
             sb.append("package ").append(info.javaPackage()).append(";\n\n");
         }
+        if (needsDecoderImport) {
+            sb.append("import com.omnibuf.wire.OmniBufDecoder;\n");
+        }
         sb.append("import com.omnibuf.wire.OmniBufEncoder;\n");
         sb.append("import com.omnibuf.wire.OmniBufOpaque;\n");
+        if (needsPrefixVarintImport(fields)) {
+            sb.append("import com.omnibuf.wire.PrefixVarint;\n");
+        }
         sb.append("import com.omnibuf.wire.WireType;\n");
         sb.append("import java.util.ArrayList;\n");
+        if (useBitSet) {
+            sb.append("import java.util.BitSet;\n");
+        }
         sb.append("import java.util.Collections;\n");
         sb.append("import java.util.LinkedHashMap;\n");
         sb.append("import java.util.List;\n");
         sb.append("import java.util.Map;\n\n");
 
-        int maxField = 0;
-        for (ResolvedField f : fields) {
-            if (f.number() > maxField) {
-                maxField = f.number();
-            }
-        }
-
         sb.append("public final class ").append(info.opaqueClass()).append(" {\n");
         sb.append("    private static final byte[] EMPTY_BYTES = new byte[0];\n");
-        sb.append("    private static final int MAX_FIELD_NUMBER = ").append(maxField).append(";\n\n");
+        sb.append("    private static final int MAX_FIELD_NUMBER = ").append(maxField).append(";\n");
+        for (OneofInfo oi : oneofs) {
+            sb.append("    private static final int[] ONEOF_").append(oi.upperConstName()).append("_FIELDS = new int[] {");
+            for (int i = 0; i < oi.memberNumbers().size(); i++) {
+                if (i > 0) {
+                    sb.append(", ");
+                }
+                sb.append(oi.memberNumbers().get(i));
+            }
+            sb.append("};\n");
+            sb.append("    private static final int[] ONEOF_").append(oi.upperConstName()).append("_MASKS = new int[] {");
+            for (int i = 0; i < oi.memberWireMasks().size(); i++) {
+                if (i > 0) {
+                    sb.append(", ");
+                }
+                sb.append(oi.memberWireMasks().get(i));
+            }
+            sb.append("};\n");
+        }
+        sb.append('\n');
 
         sb.append("    private final byte[] buffer;\n");
         sb.append("    private final int offset;\n");
         sb.append("    private final int length;\n");
-        sb.append("    private long dirtyMask;\n\n");
+        if (useBitSet) {
+            sb.append("    private final BitSet dirtyBits = new BitSet();\n\n");
+        } else {
+            sb.append("    private long dirtyMask;\n\n");
+        }
 
         for (ResolvedField f : fields) {
             sb.append("    private ").append(javaFieldType(f)).append(" dirty_").append(f.camelName()).append(";\n");
+            if (f.hasExplicitScalarPresence()) {
+                sb.append("    private boolean dirtyPresent_").append(f.camelName()).append(";\n");
+            }
+        }
+        for (OneofInfo oi : oneofs) {
+            sb.append("    private int dirtyOneof_").append(oi.camelName()).append(" = -1;\n");
         }
         sb.append('\n');
 
@@ -693,11 +1526,42 @@ public final class ProtocGenOmniBufJava {
         sb.append("    }\n\n");
 
         sb.append("    public boolean hasDirtyFields() {\n");
-        sb.append("        return dirtyMask != 0L;\n");
+        if (useBitSet) {
+            sb.append("        return !dirtyBits.isEmpty();\n");
+        } else {
+            sb.append("        return dirtyMask != 0L;\n");
+        }
         sb.append("    }\n\n");
 
+        for (OneofInfo oi : oneofs) {
+            sb.append("    public int get").append(oi.pascalName()).append("Case() {\n");
+            sb.append("        if (this.dirtyOneof_").append(oi.camelName()).append(" >= 0) {\n");
+            sb.append("            return this.dirtyOneof_").append(oi.camelName()).append(";\n");
+            sb.append("        }\n");
+            sb.append("        return OmniBufOpaque.locateActiveOneof(\n");
+            sb.append("            buffer, offset, length, ONEOF_")
+                .append(oi.upperConstName()).append("_FIELDS, ONEOF_")
+                .append(oi.upperConstName()).append("_MASKS\n");
+            sb.append("        );\n");
+            sb.append("    }\n\n");
+
+            sb.append("    public ").append(info.opaqueClass()).append(" clear").append(oi.pascalName()).append("() {\n");
+            sb.append("        this.dirtyOneof_").append(oi.camelName()).append(" = 0;\n");
+            for (int memberNum : oi.memberNumbers()) {
+                sb.append("        ").append(markDirtyStmt(useBitSet, memberNum)).append('\n');
+            }
+            for (ResolvedField mf : fields) {
+                if (mf.oneof() != null && mf.oneof().protoIndex() == oi.protoIndex()) {
+                    sb.append("        this.dirty_").append(mf.camelName()).append(" = ")
+                        .append(opaqueDirtyResetExpr(mf)).append(";\n");
+                }
+            }
+            sb.append("        return this;\n");
+            sb.append("    }\n\n");
+        }
+
         for (ResolvedField f : fields) {
-            emitOpaqueGetterAndSetter(sb, info, f);
+            emitOpaqueGetterAndSetter(sb, info, f, useBitSet);
         }
 
         sb.append("    public byte[] marshal() {\n");
@@ -706,16 +1570,47 @@ public final class ProtocGenOmniBufJava {
 
         sb.append("    public byte[] marshalInto(OmniBufEncoder target) {\n");
         sb.append("        return OmniBufOpaque.spliceFields(\n");
-        sb.append("            buffer, offset, length, dirtyMask, MAX_FIELD_NUMBER, this::writeDirtyField, target\n");
+        sb.append("            buffer, offset, length, ")
+            .append(useBitSet ? "dirtyBits" : "dirtyMask")
+            .append(", MAX_FIELD_NUMBER, this::writeDirtyField, target\n");
+        sb.append("        );\n");
+        sb.append("    }\n\n");
+
+        sb.append("    public byte[] marshalValidated() {\n");
+        sb.append("        return marshalValidatedInto(null);\n");
+        sb.append("    }\n\n");
+
+        sb.append("    public byte[] tryMarshal() {\n");
+        sb.append("        return marshalValidatedInto(null);\n");
+        sb.append("    }\n\n");
+
+        sb.append("    public byte[] marshalValidatedInto(OmniBufEncoder target) {\n");
+        sb.append("        return OmniBufOpaque.spliceFieldsValidated(\n");
+        sb.append("            buffer, offset, length, ")
+            .append(useBitSet ? "dirtyBits" : "dirtyMask")
+            .append(", MAX_FIELD_NUMBER, this::writeDirtyField, target\n");
         sb.append("        );\n");
         sb.append("    }\n\n");
 
         sb.append("    private void writeDirtyField(OmniBufEncoder enc, int fieldNumber) {\n");
-        sb.append("        boolean deterministic = true;\n");
+        if (needsDeterministicFlag) {
+            sb.append("        boolean deterministic = true;\n");
+        }
         sb.append("        switch (fieldNumber) {\n");
         for (ResolvedField f : fields) {
             sb.append("            case ").append(f.number()).append(" -> {\n");
-            emitFieldEncode(sb, f, "this.dirty_" + f.camelName(), "                ");
+            if (f.oneof() != null) {
+                sb.append("                if (this.dirtyOneof_").append(f.oneof().camelName())
+                    .append(" == ").append(f.number()).append(") {\n");
+                emitFieldEncode(sb, info, f, "this.dirty_" + f.camelName(), "                    ");
+                sb.append("                }\n");
+            } else if (f.hasExplicitScalarPresence()) {
+                sb.append("                if (this.dirtyPresent_").append(f.camelName()).append(") {\n");
+                emitFieldEncode(sb, info, f, "this.dirty_" + f.camelName(), "                    ");
+                sb.append("                }\n");
+            } else {
+                emitFieldEncode(sb, info, f, "this.dirty_" + f.camelName(), "                ");
+            }
             sb.append("            }\n");
         }
         sb.append("            default -> {}\n");
@@ -726,25 +1621,100 @@ public final class ProtocGenOmniBufJava {
         return sb.toString();
     }
 
-    private static void emitOpaqueGetterAndSetter(
-            StringBuilder sb, MessageInfo info, ResolvedField f) {
-        int fnum = f.number();
+    private static String isDirtyExpr(boolean useBitSet, int fnum) {
+        if (useBitSet) {
+            return "dirtyBits.get(" + fnum + ")";
+        }
         long bit = 1L << fnum;
-        String bitLit = "0x" + Long.toHexString(bit) + "L";
+        return "(dirtyMask & 0x" + Long.toHexString(bit) + "L) != 0L";
+    }
+
+    private static String markDirtyStmt(boolean useBitSet, int fnum) {
+        if (useBitSet) {
+            return "this.dirtyBits.set(" + fnum + ");";
+        }
+        long bit = 1L << fnum;
+        return "this.dirtyMask |= 0x" + Long.toHexString(bit) + "L;";
+    }
+
+    private static void emitOpaqueOneofMarkDirty(StringBuilder sb, OneofInfo oi, int activeField, boolean useBitSet) {
+        sb.append("        this.dirtyOneof_").append(oi.camelName()).append(" = ").append(activeField).append(";\n");
+        for (int memberNum : oi.memberNumbers()) {
+            sb.append("        ").append(markDirtyStmt(useBitSet, memberNum)).append('\n');
+        }
+    }
+
+    private static void emitOpaqueGetterAndSetter(
+            StringBuilder sb, MessageInfo info, ResolvedField f, boolean useBitSet) {
+        int fnum = f.number();
+        String dirtyCheck = isDirtyExpr(useBitSet, fnum);
+        String markDirty = markDirtyStmt(useBitSet, fnum);
 
         if (f.isMap()) {
-            sb.append("    public Map<String, Long> get").append(f.pascalName()).append("() {\n");
-            sb.append("        if ((dirtyMask & ").append(bitLit).append(") != 0L) {\n");
-            sb.append("            return dirty_").append(f.camelName()).append(";\n");
-            sb.append("        }\n");
-            sb.append("        return OmniBufOpaque.readMapStringUint64(buffer, offset, length, ").append(fnum).append(");\n");
-            sb.append("    }\n\n");
+            String kBox = boxedType(f.mapKeyProto(), null);
+            String vModelBox = boxedType(f.mapValProto(), f.subMessage());
+            String modelMapType = "Map<" + kBox + ", " + vModelBox + ">";
+
+            if (f.mapKeyProto().getType() == Type.TYPE_STRING
+                    && f.mapValProto().getType() == Type.TYPE_UINT64) {
+                sb.append("    public Map<String, Long> get").append(f.pascalName()).append("() {\n");
+                sb.append("        if (").append(dirtyCheck).append(") {\n");
+                sb.append("            return dirty_").append(f.camelName()).append(";\n");
+                sb.append("        }\n");
+                sb.append("        return OmniBufOpaque.readMapStringUint64(buffer, offset, length, ")
+                    .append(fnum).append(");\n");
+                sb.append("    }\n\n");
+            } else if (f.mapValProto().getType() == Type.TYPE_MESSAGE) {
+                String subOpaque = f.subMessage().qualifiedOpaque();
+                String subCodec = f.subMessage().qualifiedCodec();
+                String opaqueMapType = "Map<" + kBox + ", " + subOpaque + ">";
+                String keyWT = wireTypeConst(f.mapKeyProto().getType());
+                sb.append("    public ").append(opaqueMapType).append(" get").append(f.pascalName()).append("() {\n");
+                sb.append("        if (").append(dirtyCheck).append(") {\n");
+                sb.append("            if (dirty_").append(f.camelName()).append(" == null || dirty_")
+                    .append(f.camelName()).append(".isEmpty()) {\n");
+                sb.append("                return Collections.emptyMap();\n");
+                sb.append("            }\n");
+                sb.append("            ").append(opaqueMapType).append(" out = new LinkedHashMap<>();\n");
+                sb.append("            for (Map.Entry<").append(kBox).append(", ").append(vModelBox)
+                    .append("> entry : dirty_").append(f.camelName()).append(".entrySet()) {\n");
+                sb.append("                ").append(vModelBox).append(" mv = entry.getValue();\n");
+                sb.append("                out.put(entry.getKey(), mv == null ? null : new ")
+                    .append(subOpaque).append('(').append(subCodec).append(".marshal(mv)));\n");
+                sb.append("            }\n");
+                sb.append("            return out;\n");
+                sb.append("        }\n");
+                sb.append("        return OmniBufOpaque.readMap(\n");
+                sb.append("            buffer, offset, length, ").append(fnum).append(", ")
+                    .append(keyWT).append(", WireType.WIRE_SUB_MSG,\n");
+                sb.append("            dec -> ").append(opaqueLambdaReadExpr(f.mapKeyProto().getType())).append(",\n");
+                sb.append("            dec -> {\n");
+                sb.append("                OmniBufDecoder.Slice s = dec.readLengthPrefixedSlice(0);\n");
+                sb.append("                return new ").append(subOpaque).append("(dec.buffer(), s.offset(), s.length());\n");
+                sb.append("            }\n");
+                sb.append("        );\n");
+                sb.append("    }\n\n");
+            } else {
+                String keyWT = wireTypeConst(f.mapKeyProto().getType());
+                String valWT = wireTypeConst(f.mapValProto().getType());
+                sb.append("    public ").append(modelMapType).append(" get").append(f.pascalName()).append("() {\n");
+                sb.append("        if (").append(dirtyCheck).append(") {\n");
+                sb.append("            return dirty_").append(f.camelName()).append(";\n");
+                sb.append("        }\n");
+                sb.append("        return OmniBufOpaque.readMap(\n");
+                sb.append("            buffer, offset, length, ").append(fnum).append(", ")
+                    .append(keyWT).append(", ").append(valWT).append(",\n");
+                sb.append("            dec -> ").append(opaqueLambdaReadExpr(f.mapKeyProto().getType())).append(",\n");
+                sb.append("            dec -> ").append(opaqueLambdaReadExpr(f.mapValProto().getType())).append("\n");
+                sb.append("        );\n");
+                sb.append("    }\n\n");
+            }
 
             sb.append("    public ").append(info.opaqueClass()).append(" set").append(f.pascalName())
-                .append("(Map<String, Long> value) {\n");
+                .append('(').append(modelMapType).append(" value) {\n");
             sb.append("        this.dirty_").append(f.camelName())
                 .append(" = value == null ? new LinkedHashMap<>() : value;\n");
-            sb.append("        this.dirtyMask |= ").append(bitLit).append(";\n");
+            sb.append("        ").append(markDirty).append('\n');
             sb.append("        return this;\n");
             sb.append("    }\n\n");
             return;
@@ -756,7 +1726,7 @@ public final class ProtocGenOmniBufJava {
                 String subModel = f.subMessage().qualifiedModel();
                 String subCodec = f.subMessage().qualifiedCodec();
                 sb.append("    public List<").append(subOpaque).append("> get").append(f.pascalName()).append("() {\n");
-                sb.append("        if ((dirtyMask & ").append(bitLit).append(") != 0L) {\n");
+                sb.append("        if (").append(dirtyCheck).append(") {\n");
                 sb.append("            if (dirty_").append(f.camelName()).append(" == null || dirty_").append(f.camelName()).append(".isEmpty()) {\n");
                 sb.append("                return Collections.emptyList();\n");
                 sb.append("            }\n");
@@ -781,7 +1751,7 @@ public final class ProtocGenOmniBufJava {
                     .append("(List<").append(subModel).append("> value) {\n");
                 sb.append("        this.dirty_").append(f.camelName())
                     .append(" = value == null ? new ArrayList<>() : value;\n");
-                sb.append("        this.dirtyMask |= ").append(bitLit).append(";\n");
+                sb.append("        ").append(markDirty).append('\n');
                 sb.append("        return this;\n");
                 sb.append("    }\n\n");
                 return;
@@ -790,7 +1760,7 @@ public final class ProtocGenOmniBufJava {
             String fType = javaFieldType(f);
             String readerMethod = opaqueRepeatedReader(f.proto().getType());
             sb.append("    public ").append(fType).append(" get").append(f.pascalName()).append("() {\n");
-            sb.append("        if ((dirtyMask & ").append(bitLit).append(") != 0L) {\n");
+            sb.append("        if (").append(dirtyCheck).append(") {\n");
             sb.append("            return dirty_").append(f.camelName()).append(";\n");
             sb.append("        }\n");
             sb.append("        return OmniBufOpaque.").append(readerMethod).append("(buffer, offset, length, ").append(fnum).append(");\n");
@@ -800,7 +1770,7 @@ public final class ProtocGenOmniBufJava {
                 .append('(').append(fType).append(" value) {\n");
             sb.append("        this.dirty_").append(f.camelName())
                 .append(" = value == null ? new ArrayList<>() : value;\n");
-            sb.append("        this.dirtyMask |= ").append(bitLit).append(";\n");
+            sb.append("        ").append(markDirty).append('\n');
             sb.append("        return this;\n");
             sb.append("    }\n\n");
             return;
@@ -811,7 +1781,13 @@ public final class ProtocGenOmniBufJava {
             String subModel = f.subMessage().qualifiedModel();
             String subCodec = f.subMessage().qualifiedCodec();
             sb.append("    public ").append(subOpaque).append(" get").append(f.pascalName()).append("() {\n");
-            sb.append("        if ((dirtyMask & ").append(bitLit).append(") != 0L) {\n");
+            if (f.oneof() != null) {
+                sb.append("        if (get").append(f.oneof().pascalName()).append("Case() != ")
+                    .append(fnum).append(") {\n");
+                sb.append("            return null;\n");
+                sb.append("        }\n");
+            }
+            sb.append("        if (").append(dirtyCheck).append(") {\n");
             sb.append("            return dirty_").append(f.camelName()).append(" == null\n");
             sb.append("                ? null\n");
             sb.append("                : new ").append(subOpaque).append('(').append(subCodec).append(".marshal(dirty_").append(f.camelName()).append("));\n");
@@ -820,10 +1796,35 @@ public final class ProtocGenOmniBufJava {
             sb.append("        return view == null ? null : new ").append(subOpaque).append("(view);\n");
             sb.append("    }\n\n");
 
+            sb.append("    public boolean has").append(f.pascalName()).append("() {\n");
+            if (f.oneof() != null) {
+                sb.append("        return get").append(f.oneof().pascalName()).append("Case() == ")
+                    .append(fnum).append(";\n");
+            } else {
+                sb.append("        if (").append(dirtyCheck).append(") {\n");
+                sb.append("            return dirty_").append(f.camelName()).append(" != null;\n");
+                sb.append("        }\n");
+                sb.append("        return OmniBufOpaque.hasField(buffer, offset, length, ")
+                    .append(fnum).append(", 1 << WireType.WIRE_SUB_MSG);\n");
+            }
+            sb.append("    }\n\n");
+
             sb.append("    public ").append(info.opaqueClass()).append(" set").append(f.pascalName())
                 .append('(').append(subModel).append(" value) {\n");
-            sb.append("        this.dirty_").append(f.camelName()).append(" = value;\n");
-            sb.append("        this.dirtyMask |= ").append(bitLit).append(";\n");
+            if (f.oneof() != null) {
+                sb.append("        if (value == null) {\n");
+                sb.append("            if (get").append(f.oneof().pascalName()).append("Case() == ")
+                    .append(fnum).append(") {\n");
+                sb.append("                return clear").append(f.oneof().pascalName()).append("();\n");
+                sb.append("            }\n");
+                sb.append("            return this;\n");
+                sb.append("        }\n");
+                emitOpaqueOneofMarkDirty(sb, f.oneof(), fnum, useBitSet);
+                sb.append("        this.dirty_").append(f.camelName()).append(" = value;\n");
+            } else {
+                sb.append("        this.dirty_").append(f.camelName()).append(" = value;\n");
+                sb.append("        ").append(markDirty).append('\n');
+            }
             sb.append("        return this;\n");
             sb.append("    }\n\n");
             return;
@@ -832,11 +1833,40 @@ public final class ProtocGenOmniBufJava {
         String fType = javaFieldType(f);
         String readerMethod = opaqueScalarReader(f.proto().getType());
         sb.append("    public ").append(fType).append(" get").append(f.pascalName()).append("() {\n");
-        sb.append("        if ((dirtyMask & ").append(bitLit).append(") != 0L) {\n");
+        if (f.oneof() != null) {
+            sb.append("        if (get").append(f.oneof().pascalName()).append("Case() != ")
+                .append(fnum).append(") {\n");
+            sb.append("            return ").append(opaqueDirtyResetExpr(f)).append(";\n");
+            sb.append("        }\n");
+        }
+        sb.append("        if (").append(dirtyCheck).append(") {\n");
         sb.append("            return dirty_").append(f.camelName()).append(";\n");
         sb.append("        }\n");
         sb.append("        return OmniBufOpaque.").append(readerMethod).append("(buffer, offset, length, ").append(fnum).append(");\n");
         sb.append("    }\n\n");
+
+        if (f.oneof() != null) {
+            sb.append("    public boolean has").append(f.pascalName()).append("() {\n");
+            sb.append("        return get").append(f.oneof().pascalName()).append("Case() == ")
+                .append(fnum).append(";\n");
+            sb.append("    }\n\n");
+        } else if (f.hasExplicitScalarPresence()) {
+            sb.append("    public boolean has").append(f.pascalName()).append("() {\n");
+            sb.append("        if (").append(dirtyCheck).append(") {\n");
+            sb.append("            return dirtyPresent_").append(f.camelName()).append(";\n");
+            sb.append("        }\n");
+            sb.append("        return OmniBufOpaque.hasField(buffer, offset, length, ")
+                .append(fnum).append(", ").append(wireMaskExpr(f.proto().getType())).append(");\n");
+            sb.append("    }\n\n");
+
+            sb.append("    public ").append(info.opaqueClass()).append(" clear").append(f.pascalName()).append("() {\n");
+            sb.append("        this.dirty_").append(f.camelName()).append(" = ")
+                .append(opaqueDirtyResetExpr(f)).append(";\n");
+            sb.append("        this.dirtyPresent_").append(f.camelName()).append(" = false;\n");
+            sb.append("        ").append(markDirty).append('\n');
+            sb.append("        return this;\n");
+            sb.append("    }\n\n");
+        }
 
         sb.append("    public ").append(info.opaqueClass()).append(" set").append(f.pascalName())
             .append('(').append(fType).append(" value) {\n");
@@ -847,7 +1877,14 @@ public final class ProtocGenOmniBufJava {
         } else {
             sb.append("        this.dirty_").append(f.camelName()).append(" = value;\n");
         }
-        sb.append("        this.dirtyMask |= ").append(bitLit).append(";\n");
+        if (f.oneof() != null) {
+            emitOpaqueOneofMarkDirty(sb, f.oneof(), fnum, useBitSet);
+        } else {
+            if (f.hasExplicitScalarPresence()) {
+                sb.append("        this.dirtyPresent_").append(f.camelName()).append(" = true;\n");
+            }
+            sb.append("        ").append(markDirty).append('\n');
+        }
         sb.append("        return this;\n");
         sb.append("    }\n\n");
     }
@@ -890,13 +1927,18 @@ public final class ProtocGenOmniBufJava {
         };
     }
 
-    private static String javaDefaultInit(ResolvedField f) {
-        if (f.isMap()) {
-            return "new LinkedHashMap<>()";
+    private static String modelFieldDeclInit(ResolvedField f) {
+        if (f.isMap() || f.isRepeated()) {
+            return null;
         }
-        if (f.isRepeated()) {
-            return "new ArrayList<>()";
-        }
+        return switch (f.proto().getType()) {
+            case TYPE_STRING -> "\"\"";
+            case TYPE_BYTES -> "EMPTY_BYTES";
+            default -> null;
+        };
+    }
+
+    private static String javaScalarResetExpr(ResolvedField f) {
         return switch (f.proto().getType()) {
             case TYPE_INT32, TYPE_SINT32, TYPE_UINT32, TYPE_FIXED32, TYPE_SFIXED32, TYPE_ENUM -> "0";
             case TYPE_INT64, TYPE_SINT64, TYPE_UINT64, TYPE_FIXED64, TYPE_SFIXED64 -> "0L";
@@ -905,9 +1947,12 @@ public final class ProtocGenOmniBufJava {
             case TYPE_DOUBLE -> "0.0d";
             case TYPE_STRING -> "\"\"";
             case TYPE_BYTES -> "EMPTY_BYTES";
-            case TYPE_MESSAGE -> "null";
             default -> "null";
         };
+    }
+
+    private static String opaqueDirtyResetExpr(ResolvedField f) {
+        return javaScalarResetExpr(f);
     }
 
     private static String wireTypeConst(Type t) {
@@ -928,6 +1973,13 @@ public final class ProtocGenOmniBufJava {
         };
     }
 
+    private static String wireMaskExpr(Type t) {
+        if (t == Type.TYPE_BOOL) {
+            return "(1 << WireType.WIRE_BOOL_FALSE) | (1 << WireType.WIRE_BOOL_TRUE)";
+        }
+        return "1 << " + wireTypeConst(t);
+    }
+
     private static String singularReadExpr(Type t) {
         return switch (t) {
             case TYPE_UINT32 -> "dec.readUint32()";
@@ -946,19 +1998,23 @@ public final class ProtocGenOmniBufJava {
 
     private static String arrayElementReadExpr(Type t) {
         return switch (t) {
-            case TYPE_BOOL -> "aDec.readContainerBool()";
-            case TYPE_UINT32 -> "aDec.readUint32()";
-            case TYPE_UINT64 -> "aDec.readUint64()";
-            case TYPE_INT32, TYPE_SINT32, TYPE_ENUM -> "aDec.readSint32()";
-            case TYPE_INT64, TYPE_SINT64 -> "aDec.readSint64()";
-            case TYPE_FIXED32, TYPE_SFIXED32 -> "aDec.readFixed32()";
-            case TYPE_FIXED64, TYPE_SFIXED64 -> "aDec.readFixed64()";
-            case TYPE_FLOAT -> "aDec.readFloat32()";
-            case TYPE_DOUBLE -> "aDec.readFloat64()";
-            case TYPE_STRING -> "aDec.readString()";
-            case TYPE_BYTES -> "aDec.readBytes()";
+            case TYPE_BOOL -> "dec.readContainerBool()";
+            case TYPE_UINT32 -> "dec.readUint32()";
+            case TYPE_UINT64 -> "dec.readUint64()";
+            case TYPE_INT32, TYPE_SINT32, TYPE_ENUM -> "dec.readSint32()";
+            case TYPE_INT64, TYPE_SINT64 -> "dec.readSint64()";
+            case TYPE_FIXED32, TYPE_SFIXED32 -> "dec.readFixed32()";
+            case TYPE_FIXED64, TYPE_SFIXED64 -> "dec.readFixed64()";
+            case TYPE_FLOAT -> "dec.readFloat32()";
+            case TYPE_DOUBLE -> "dec.readFloat64()";
+            case TYPE_STRING -> "dec.readString()";
+            case TYPE_BYTES -> "dec.readBytes()";
             default -> throw new IllegalStateException("Unsupported array element read: " + t);
         };
+    }
+
+    private static String opaqueLambdaReadExpr(Type t) {
+        return arrayElementReadExpr(t);
     }
 
     private static String opaqueScalarReader(Type t) {
@@ -995,19 +2051,82 @@ public final class ProtocGenOmniBufJava {
         };
     }
 
-    private static String snakeToCamel(String s) {
+    private static String[] sanitizeNames(
+            String protoName, int number, Set<String> usedCamels, Set<String> usedPascals) {
+        String raw = snakeToCamelRaw(protoName);
+        if (raw.isEmpty()) {
+            raw = "field" + number;
+        } else if (!Character.isJavaIdentifierStart(raw.charAt(0))) {
+            raw = "f" + raw;
+        }
+        String camel = Character.toLowerCase(raw.charAt(0)) + raw.substring(1);
+        String pascal = Character.toUpperCase(raw.charAt(0)) + raw.substring(1);
+
+        if (JAVA_RESERVED.contains(camel)) {
+            camel = camel + "_";
+        }
+        if (RESERVED_PASCAL_NAMES.contains(pascal)) {
+            pascal = pascal + "_";
+        }
+
+        if (!usedCamels.add(camel)) {
+            camel = camel + "_" + number;
+            usedCamels.add(camel);
+        }
+        if (!usedPascals.add(pascal)) {
+            pascal = pascal + "_" + number;
+            usedPascals.add(pascal);
+        }
+        return new String[] {camel, pascal};
+    }
+
+    private static String snakeToCamelRaw(String s) {
+        if (s == null || s.isEmpty()) {
+            return "";
+        }
         StringBuilder sb = new StringBuilder(s.length());
         boolean upperNext = false;
         for (int i = 0; i < s.length(); i++) {
             char c = s.charAt(i);
-            if (c == '_') {
-                upperNext = true;
+            if (c == '_' || !Character.isJavaIdentifierPart(c)) {
+                if (sb.length() > 0) {
+                    upperNext = true;
+                }
             } else if (upperNext) {
                 sb.append(Character.toUpperCase(c));
                 upperNext = false;
             } else {
                 sb.append(c);
             }
+        }
+        return sb.toString();
+    }
+
+    private static String toUpperSnake(String s, int index) {
+        StringBuilder sb = new StringBuilder(s.length() + 8);
+        for (int i = 0; i < s.length(); i++) {
+            char c = s.charAt(i);
+            if (Character.isLetterOrDigit(c)) {
+                sb.append(Character.toUpperCase(c));
+            } else {
+                sb.append('_');
+            }
+        }
+        String res = sb.toString();
+        if (res.isEmpty() || Character.isDigit(res.charAt(0))) {
+            res = "ONEOF_" + index + "_" + res;
+        }
+        return res + "_" + index;
+    }
+
+    private static String escapeJavaString(String s) {
+        StringBuilder sb = new StringBuilder(s.length());
+        for (int i = 0; i < s.length(); i++) {
+            char c = s.charAt(i);
+            if (c == '\\' || c == '"') {
+                sb.append('\\');
+            }
+            sb.append(c);
         }
         return sb.toString();
     }

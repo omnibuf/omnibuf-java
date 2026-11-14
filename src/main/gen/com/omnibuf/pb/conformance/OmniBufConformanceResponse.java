@@ -10,14 +10,14 @@ import java.util.List;
 import java.util.Map;
 
 public final class OmniBufConformanceResponse {
-    private static final byte[] EMPTY_BYTES = new byte[0];
+    static final byte[] EMPTY_BYTES = new byte[0];
 
-    private String parseError = "";
-    private String serializeError = "";
-    private String runtimeError = "";
-    private String skipped = "";
-    private byte[] omnibufPayload = EMPTY_BYTES;
-    private String jsonPayload = "";
+    String parseError = "";
+    String serializeError = "";
+    String runtimeError = "";
+    String skipped = "";
+    byte[] omnibufPayload = EMPTY_BYTES;
+    String jsonPayload = "";
 
     public OmniBufConformanceResponse() {}
 

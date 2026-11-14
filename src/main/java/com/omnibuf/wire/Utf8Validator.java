@@ -33,24 +33,16 @@ public final class Utf8Validator {
      * above {@code U+10FFFF}).
      */
     public static boolean isValidUtf8(byte[] buf, int off, int len) {
-        if (off < 0 || len < 0 || off + len > buf.length) {
+        if (buf == null || off < 0 || len < 0 || len > buf.length - off) {
             return false;
+        }
+        if (len == 0 || isPureAscii(buf, off, len)) {
+            return true;
         }
         int end = off + len;
         int i = off;
-
-        // Fast 8-byte ASCII word scan using little-endian VarHandle loads.
-        while (i + 8 <= end) {
-            if ((PrefixVarint.getLongLE(buf, i) & 0x8080_8080_8080_8080L) != 0L) {
-                break;
-            }
+        while (i + 8 <= end && (PrefixVarint.getLongLE(buf, i) & 0x8080_8080_8080_8080L) == 0L) {
             i += 8;
-        }
-        while (i < end && buf[i] >= 0) {
-            i++;
-        }
-        if (i == end) {
-            return true;
         }
         return isValidUtf8Slow(buf, i, end);
     }
@@ -123,11 +115,11 @@ public final class Utf8Validator {
      * Throws {@link OmniBufException} if the slice is not valid UTF-8.
      */
     public static String decodeStrict(byte[] buf, int off, int len) {
+        if (buf == null || off < 0 || len < 0 || len > buf.length - off) {
+            throw new OmniBufException("omnibuf: string slice out of bounds");
+        }
         if (len == 0) {
             return "";
-        }
-        if (off < 0 || len < 0 || off + len > buf.length) {
-            throw new OmniBufException("omnibuf: string slice out of bounds");
         }
         // Fast path for pure ASCII strings (common for keys, router IDs, labels).
         if (isPureAscii(buf, off, len)) {
@@ -145,19 +137,24 @@ public final class Utf8Validator {
 
     private static boolean isPureAscii(byte[] buf, int off, int len) {
         int end = off + len;
-        int i = off;
-        while (i + 8 <= end) {
-            if ((PrefixVarint.getLongLE(buf, i) & 0x8080_8080_8080_8080L) != 0L) {
-                return false;
-            }
-            i += 8;
+        if (len >= 8) {
+            int i = off;
+            do {
+                if ((PrefixVarint.getLongLE(buf, i) & 0x8080_8080_8080_8080L) != 0L) {
+                    return false;
+                }
+                i += 8;
+            } while (i + 8 <= end);
+            return i == end || (PrefixVarint.getLongLE(buf, end - 8) & 0x8080_8080_8080_8080L) == 0L;
         }
-        while (i < end) {
-            if (buf[i++] < 0) {
-                return false;
-            }
+        if (len >= 4) {
+            return ((PrefixVarint.getIntLE(buf, off) | PrefixVarint.getIntLE(buf, end - 4)) & 0x8080_8080) == 0;
         }
-        return true;
+        int m = buf[off];
+        if (len > 1) {
+            m |= buf[off + 1] | buf[end - 1];
+        }
+        return m >= 0;
     }
 
     /**

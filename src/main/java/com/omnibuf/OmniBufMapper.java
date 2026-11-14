@@ -3,16 +3,14 @@ package com.omnibuf;
 import com.omnibuf.annotation.OmniBufField;
 import com.omnibuf.annotation.OmniBufMessage;
 import com.omnibuf.annotation.WireKind;
+import com.omnibuf.wire.CodecPool;
 import com.omnibuf.wire.OmniBufDecoder;
 import com.omnibuf.wire.OmniBufEncoder;
 import com.omnibuf.wire.PrefixVarint;
-import com.omnibuf.wire.Utf8Validator;
 import com.omnibuf.wire.WireType;
-import java.io.ByteArrayOutputStream;
 import java.lang.invoke.MethodHandle;
 import java.lang.invoke.MethodHandles;
 import java.lang.invoke.MethodType;
-import java.lang.invoke.VarHandle;
 import java.lang.reflect.Constructor;
 import java.lang.reflect.Field;
 import java.lang.reflect.Modifier;
@@ -30,8 +28,8 @@ import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
- * High-performance reflection/VarHandle codec for Java classes and Java 21 {@code record} types
- * annotated with {@link OmniBufMessage} and {@link OmniBufField} ({@code TIER_ANNOTATED_STRUCT}).
+ * High-performance exact-{@link MethodHandle} codec for Java classes and Java 21 {@code record}
+ * types annotated with {@link OmniBufMessage} and {@link OmniBufField} ({@code TIER_ANNOTATED_STRUCT}).
  */
 public final class OmniBufMapper {
 
@@ -42,9 +40,6 @@ public final class OmniBufMapper {
 
     private static final ConcurrentHashMap<Class<?>, ClassCodec<?>> CODEC_CACHE =
         new ConcurrentHashMap<>();
-
-    private static final ThreadLocal<OmniBufEncoder> ENCODER_POOL =
-        ThreadLocal.withInitial(() -> new OmniBufEncoder(512));
 
     private OmniBufMapper() {}
 
@@ -59,16 +54,23 @@ public final class OmniBufMapper {
         }
         MarshalOptions opts = options == null ? MarshalOptions.DEFAULT : options;
         ClassCodec<T> codec = (ClassCodec<T>) getCodec(message.getClass());
-        OmniBufEncoder enc = ENCODER_POOL.get();
-        enc.reset();
-        if (opts.selfDescribing()) {
-            enc.writeRawBytes(codec.getField0Bytes());
+        OmniBufEncoder enc = CodecPool.acquireEncoder();
+        try {
+            if (opts.selfDescribing()) {
+                codec.writeSelfDescribingField0(enc, message, opts.deterministic());
+            }
+            codec.encode(enc, message, opts.deterministic());
+            return enc.toByteArray();
+        } finally {
+            CodecPool.releaseEncoder(enc);
         }
-        codec.encode(enc, message, opts.deterministic());
-        return enc.toByteArray();
     }
 
     public static <T> T unmarshal(byte[] data, Class<T> type) {
+        return unmarshal(data, type, UnmarshalOptions.DEFAULT);
+    }
+
+    public static <T> T unmarshal(byte[] data, Class<T> type, UnmarshalOptions options) {
         if (data == null) {
             throw new OmniBufException("omnibuf: null packet buffer");
         }
@@ -76,11 +78,20 @@ public final class OmniBufMapper {
             throw new OmniBufException("omnibuf: null target class");
         }
         ClassCodec<T> codec = getCodec(type);
-        return codec.decodeNew(data, 0, data.length, 0);
+        OmniBufDecoder dec = CodecPool.acquireDecoder(data, 0, data.length, options);
+        try {
+            return codec.decodeNewFrom(dec, 0);
+        } finally {
+            CodecPool.releaseDecoder(dec);
+        }
+    }
+
+    public static <T> void unmarshal(byte[] data, T target) {
+        unmarshal(data, target, UnmarshalOptions.DEFAULT);
     }
 
     @SuppressWarnings("unchecked")
-    public static <T> void unmarshal(byte[] data, T target) {
+    public static <T> void unmarshal(byte[] data, T target, UnmarshalOptions options) {
         if (data == null) {
             throw new OmniBufException("omnibuf: null packet buffer");
         }
@@ -93,8 +104,13 @@ public final class OmniBufMapper {
             );
         }
         ClassCodec<T> codec = (ClassCodec<T>) getCodec(target.getClass());
-        codec.resetInstance(target);
-        codec.decodeInto(data, 0, data.length, target, 0);
+        OmniBufDecoder dec = CodecPool.acquireDecoder(data, 0, data.length, options);
+        try {
+            codec.resetInstance(target);
+            codec.decodeFrom(dec, target, 0);
+        } finally {
+            CodecPool.releaseDecoder(dec);
+        }
     }
 
     public static SchemaMeta schemaMetaFor(Class<?> type) {
@@ -123,6 +139,7 @@ public final class OmniBufMapper {
         DOUBLE_SCALAR,
         STRING_SCALAR,
         BYTES_SCALAR,
+        ENUM_SCALAR,
         INT_ARRAY,
         LONG_ARRAY,
         LIST,
@@ -130,8 +147,70 @@ public final class OmniBufMapper {
         SUB_MSG
     }
 
+    private static final class AccessorHandles {
+        final MethodHandle objGetter;
+        final MethodHandle intGetter;
+        final MethodHandle longGetter;
+        final MethodHandle boolGetter;
+        final MethodHandle floatGetter;
+        final MethodHandle doubleGetter;
+
+        final MethodHandle objSetter;
+        final MethodHandle intSetter;
+        final MethodHandle longSetter;
+        final MethodHandle boolSetter;
+        final MethodHandle floatSetter;
+        final MethodHandle doubleSetter;
+
+        AccessorHandles(Class<?> rawType, MethodHandle rawGetter, MethodHandle rawSetter) {
+            this.objGetter = rawGetter.asType(MethodType.methodType(Object.class, Object.class));
+            this.intGetter = rawType == int.class
+                ? rawGetter.asType(MethodType.methodType(int.class, Object.class))
+                : null;
+            this.longGetter = rawType == long.class
+                ? rawGetter.asType(MethodType.methodType(long.class, Object.class))
+                : null;
+            this.boolGetter = rawType == boolean.class
+                ? rawGetter.asType(MethodType.methodType(boolean.class, Object.class))
+                : null;
+            this.floatGetter = rawType == float.class
+                ? rawGetter.asType(MethodType.methodType(float.class, Object.class))
+                : null;
+            this.doubleGetter = rawType == double.class
+                ? rawGetter.asType(MethodType.methodType(double.class, Object.class))
+                : null;
+
+            if (rawSetter != null) {
+                this.objSetter = rawSetter.asType(MethodType.methodType(void.class, Object.class, Object.class));
+                this.intSetter = rawType == int.class
+                    ? rawSetter.asType(MethodType.methodType(void.class, Object.class, int.class))
+                    : null;
+                this.longSetter = rawType == long.class
+                    ? rawSetter.asType(MethodType.methodType(void.class, Object.class, long.class))
+                    : null;
+                this.boolSetter = rawType == boolean.class
+                    ? rawSetter.asType(MethodType.methodType(void.class, Object.class, boolean.class))
+                    : null;
+                this.floatSetter = rawType == float.class
+                    ? rawSetter.asType(MethodType.methodType(void.class, Object.class, float.class))
+                    : null;
+                this.doubleSetter = rawType == double.class
+                    ? rawSetter.asType(MethodType.methodType(void.class, Object.class, double.class))
+                    : null;
+            } else {
+                this.objSetter = null;
+                this.intSetter = null;
+                this.longSetter = null;
+                this.boolSetter = null;
+                this.floatSetter = null;
+                this.doubleSetter = null;
+            }
+        }
+    }
+
     private static final class FieldDescriptorSlot {
-        final int index;
+        int slotIndex;
+        final int recordComponentIndex;
         final int fieldNumber;
         final String schemaName;
         final FieldCategory category;
@@ -140,13 +219,14 @@ public final class OmniBufMapper {
         final int elemWireType;
         final int mapKeyWireType;
         final int mapValWireType;
+        final Class<?> mapKeyClass;
         final Class<?> elemClass;
+        final Object[] enumConstants;
         ClassCodec<?> subCodec;
-        final VarHandle varHandle;
-        final MethodHandle getter;
+        final AccessorHandles handles;
 
         FieldDescriptorSlot(
-                int index,
+                int recordComponentIndex,
                 int fieldNumber,
                 String schemaName,
                 FieldCategory category,
@@ -155,10 +235,10 @@ public final class OmniBufMapper {
                 int elemWireType,
                 int mapKeyWireType,
                 int mapValWireType,
+                Class<?> mapKeyClass,
                 Class<?> elemClass,
-                VarHandle varHandle,
-                MethodHandle getter) {
-            this.index = index;
+                AccessorHandles handles) {
+            this.recordComponentIndex = recordComponentIndex;
             this.fieldNumber = fieldNumber;
             this.schemaName = schemaName;
             this.category = category;
@@ -167,104 +247,163 @@ public final class OmniBufMapper {
             this.elemWireType = elemWireType;
             this.mapKeyWireType = mapKeyWireType;
             this.mapValWireType = mapValWireType;
+            this.mapKeyClass = mapKeyClass;
             this.elemClass = elemClass;
-            this.varHandle = varHandle;
-            this.getter = getter;
+            this.enumConstants = rawType.isEnum() ? rawType.getEnumConstants() : null;
+            this.handles = handles;
         }
 
         Object readObject(Object instance) {
             try {
-                return varHandle != null ? varHandle.get(instance) : getter.invoke(instance);
+                return handles.objGetter.invokeExact(instance);
             } catch (Throwable t) {
                 throw new OmniBufException("omnibuf: failed reading field " + schemaName, t);
             }
         }
 
         int readInt(Object instance) {
-            if (varHandle != null && rawType == int.class) {
-                return (int) varHandle.get(instance);
+            try {
+                if (handles.intGetter != null) {
+                    return (int) handles.intGetter.invokeExact(instance);
+                }
+                Object v = handles.objGetter.invokeExact(instance);
+                return v == null ? 0 : ((Number) v).intValue();
+            } catch (Throwable t) {
+                throw new OmniBufException("omnibuf: failed reading int field " + schemaName, t);
             }
-            Object v = readObject(instance);
-            return v == null ? 0 : ((Number) v).intValue();
         }
 
         long readLong(Object instance) {
-            if (varHandle != null && rawType == long.class) {
-                return (long) varHandle.get(instance);
+            try {
+                if (handles.longGetter != null) {
+                    return (long) handles.longGetter.invokeExact(instance);
+                }
+                Object v = handles.objGetter.invokeExact(instance);
+                return v == null ? 0L : ((Number) v).longValue();
+            } catch (Throwable t) {
+                throw new OmniBufException("omnibuf: failed reading long field " + schemaName, t);
             }
-            Object v = readObject(instance);
-            return v == null ? 0L : ((Number) v).longValue();
         }
 
         boolean readBoolean(Object instance) {
-            if (varHandle != null && rawType == boolean.class) {
-                return (boolean) varHandle.get(instance);
+            try {
+                if (handles.boolGetter != null) {
+                    return (boolean) handles.boolGetter.invokeExact(instance);
+                }
+                Object v = handles.objGetter.invokeExact(instance);
+                return Boolean.TRUE.equals(v);
+            } catch (Throwable t) {
+                throw new OmniBufException("omnibuf: failed reading boolean field " + schemaName, t);
             }
-            Object v = readObject(instance);
-            return Boolean.TRUE.equals(v);
         }
 
         float readFloat(Object instance) {
-            if (varHandle != null && rawType == float.class) {
-                return (float) varHandle.get(instance);
+            try {
+                if (handles.floatGetter != null) {
+                    return (float) handles.floatGetter.invokeExact(instance);
+                }
+                Object v = handles.objGetter.invokeExact(instance);
+                return v == null ? 0.0f : ((Number) v).floatValue();
+            } catch (Throwable t) {
+                throw new OmniBufException("omnibuf: failed reading float field " + schemaName, t);
             }
-            Object v = readObject(instance);
-            return v == null ? 0.0f : ((Number) v).floatValue();
         }
 
         double readDouble(Object instance) {
-            if (varHandle != null && rawType == double.class) {
-                return (double) varHandle.get(instance);
+            try {
+                if (handles.doubleGetter != null) {
+                    return (double) handles.doubleGetter.invokeExact(instance);
+                }
+                Object v = handles.objGetter.invokeExact(instance);
+                return v == null ? 0.0d : ((Number) v).doubleValue();
+            } catch (Throwable t) {
+                throw new OmniBufException("omnibuf: failed reading double field " + schemaName, t);
             }
-            Object v = readObject(instance);
-            return v == null ? 0.0d : ((Number) v).doubleValue();
         }
 
         void writeInt(Object target, int value) {
-            if (rawType == int.class) {
-                varHandle.set(target, value);
-            } else {
-                varHandle.set(target, Integer.valueOf(value));
+            try {
+                if (handles.intSetter != null) {
+                    handles.intSetter.invokeExact(target, value);
+                } else {
+                    handles.objSetter.invokeExact(target, (Object) Integer.valueOf(value));
+                }
+            } catch (Throwable t) {
+                throw new OmniBufException("omnibuf: failed writing int field " + schemaName, t);
             }
         }
 
         void writeLong(Object target, long value) {
-            if (rawType == long.class) {
-                varHandle.set(target, value);
-            } else {
-                varHandle.set(target, Long.valueOf(value));
+            try {
+                if (handles.longSetter != null) {
+                    handles.longSetter.invokeExact(target, value);
+                } else {
+                    handles.objSetter.invokeExact(target, (Object) Long.valueOf(value));
+                }
+            } catch (Throwable t) {
+                throw new OmniBufException("omnibuf: failed writing long field " + schemaName, t);
             }
         }
 
         void writeBoolean(Object target, boolean value) {
-            if (rawType == boolean.class) {
-                varHandle.set(target, value);
-            } else {
-                varHandle.set(target, Boolean.valueOf(value));
+            try {
+                if (handles.boolSetter != null) {
+                    handles.boolSetter.invokeExact(target, value);
+                } else {
+                    handles.objSetter.invokeExact(target, (Object) Boolean.valueOf(value));
+                }
+            } catch (Throwable t) {
+                throw new OmniBufException("omnibuf: failed writing boolean field " + schemaName, t);
             }
         }
 
         void writeFloat(Object target, float value) {
-            if (rawType == float.class) {
-                varHandle.set(target, value);
-            } else {
-                varHandle.set(target, Float.valueOf(value));
+            try {
+                if (handles.floatSetter != null) {
+                    handles.floatSetter.invokeExact(target, value);
+                } else {
+                    handles.objSetter.invokeExact(target, (Object) Float.valueOf(value));
+                }
+            } catch (Throwable t) {
+                throw new OmniBufException("omnibuf: failed writing float field " + schemaName, t);
             }
         }
 
         void writeDouble(Object target, double value) {
-            if (rawType == double.class) {
-                varHandle.set(target, value);
-            } else {
-                varHandle.set(target, Double.valueOf(value));
+            try {
+                if (handles.doubleSetter != null) {
+                    handles.doubleSetter.invokeExact(target, value);
+                } else {
+                    handles.objSetter.invokeExact(target, (Object) Double.valueOf(value));
+                }
+            } catch (Throwable t) {
+                throw new OmniBufException("omnibuf: failed writing double field " + schemaName, t);
             }
         }
 
         void writeObject(Object target, Object value) {
-            varHandle.set(target, value);
+            try {
+                handles.objSetter.invokeExact(target, value);
+            } catch (Throwable t) {
+                throw new OmniBufException("omnibuf: failed writing field " + schemaName, t);
+            }
         }
 
-        Object defaultComponentValue() {
+        Object decodeEnumScalar(OmniBufDecoder dec) {
+            int ord = dec.readSint32();
+            if (enumConstants == null || ord < 0 || ord >= enumConstants.length) {
+                throw new OmniBufException(
+                    "omnibuf: unknown enum ordinal " + ord + " for " + rawType.getSimpleName()
+                );
+            }
+            return enumConstants[ord];
+        }
+
+        Object defaultEnumValue() {
+            return enumConstants != null && enumConstants.length > 0 ? enumConstants[0] : null;
+        }
+
+        Object immutableRecordDefault() {
             return switch (category) {
                 case INT_SCALAR -> 0;
                 case LONG_SCALAR -> 0L;
@@ -273,11 +412,10 @@ public final class OmniBufMapper {
                 case DOUBLE_SCALAR -> 0.0d;
                 case STRING_SCALAR -> "";
                 case BYTES_SCALAR -> EMPTY_BYTES;
+                case ENUM_SCALAR -> defaultEnumValue();
                 case INT_ARRAY -> EMPTY_INTS;
                 case LONG_ARRAY -> EMPTY_LONGS;
-                case LIST -> new ArrayList<>();
-                case MAP -> new LinkedHashMap<>();
-                case SUB_MSG -> null;
+                case LIST, MAP, SUB_MSG -> null;
             };
         }
 
@@ -289,21 +427,195 @@ public final class OmniBufMapper {
         }
     }
 
+    /**
+     * Per-slice incremental builder used when an immutable Java {@code record} sub-message appears
+     * multiple times on the wire (via packet concatenation or repeated field overrides). Validates
+     * every slice boundary independently without concatenating raw unvalidated byte slices.
+     */
+    private static final class RecordBuildState<T> {
+        private final ClassCodec<T> codec;
+        private final Object[] args;
+        private Map<Integer, List<Number>> primArrayAccum;
+        private Map<Integer, RecordBuildState<?>> subRecordStates;
+
+        RecordBuildState(ClassCodec<T> codec) {
+            this.codec = codec;
+            this.args = codec.defaultRecordTemplate.clone();
+        }
+
+        RecordBuildState(ClassCodec<T> codec, Object existingRecord) {
+            this.codec = codec;
+            int arity = codec.recordComponentsByIndex.length;
+            this.args = new Object[arity];
+            for (int i = 0; i < arity; i++) {
+                FieldDescriptorSlot slot = codec.recordComponentsByIndex[i];
+                Object val = slot.readObject(existingRecord);
+                if (slot.category == FieldCategory.LIST && val instanceof List<?> prevList) {
+                    this.args[i] = new ArrayList<Object>(prevList);
+                } else if (slot.category == FieldCategory.MAP && val instanceof Map<?, ?> prevMap) {
+                    this.args[i] = new LinkedHashMap<Object, Object>(prevMap);
+                } else {
+                    this.args[i] = val;
+                }
+            }
+        }
+
+        @SuppressWarnings("unchecked")
+        void applySlice(OmniBufDecoder dec, int depth) {
+            if (depth > dec.maxNestingDepth()) {
+                throw new OmniBufException("omnibuf: nesting depth exceeds MaxNestingDepth");
+            }
+            while (dec.hasRemaining()) {
+                long tag = dec.readTag();
+                int fnum = (int) (tag >>> 4);
+                int wt = (int) (tag & 0x0FL);
+                if (fnum == 0) {
+                    dec.skipOrValidateUnknown(0, wt, depth);
+                    continue;
+                }
+                FieldDescriptorSlot slot = codec.lookupSlot(fnum);
+                if (slot == null || !slot.matchesWireType(wt)) {
+                    dec.skipOrValidateUnknown(fnum, wt, depth);
+                    continue;
+                }
+                int compIdx = slot.recordComponentIndex;
+                switch (slot.category) {
+                    case INT_SCALAR -> args[compIdx] = decodeIntScalar(dec, wt);
+                    case LONG_SCALAR -> args[compIdx] = decodeLongScalar(dec, wt);
+                    case BOOL_SCALAR -> args[compIdx] = (wt == WireType.WIRE_BOOL_TRUE);
+                    case FLOAT_SCALAR -> args[compIdx] = dec.readFloat32();
+                    case DOUBLE_SCALAR -> args[compIdx] = dec.readFloat64();
+                    case STRING_SCALAR -> args[compIdx] = dec.readString();
+                    case BYTES_SCALAR -> args[compIdx] = dec.readBytes();
+                    case ENUM_SCALAR -> args[compIdx] = slot.decodeEnumScalar(dec);
+                    case INT_ARRAY -> {
+                        if (primArrayAccum == null) {
+                            primArrayAccum = new HashMap<>();
+                        }
+                        List<Number> acc = primArrayAccum.get(compIdx);
+                        if (acc == null) {
+                            acc = new ArrayList<>();
+                            if (args[compIdx] instanceof int[] prev && prev.length > 0) {
+                                for (int v : prev) {
+                                    acc.add(v);
+                                }
+                            }
+                            primArrayAccum.put(compIdx, acc);
+                        }
+                        decodePrimitiveArrayIntoList(dec, slot, acc, depth);
+                    }
+                    case LONG_ARRAY -> {
+                        if (primArrayAccum == null) {
+                            primArrayAccum = new HashMap<>();
+                        }
+                        List<Number> acc = primArrayAccum.get(compIdx);
+                        if (acc == null) {
+                            acc = new ArrayList<>();
+                            if (args[compIdx] instanceof long[] prev && prev.length > 0) {
+                                for (long v : prev) {
+                                    acc.add(v);
+                                }
+                            }
+                            primArrayAccum.put(compIdx, acc);
+                        }
+                        decodePrimitiveArrayIntoList(dec, slot, acc, depth);
+                    }
+                    case LIST -> {
+                        List<Object> list = (List<Object>) args[compIdx];
+                        args[compIdx] = decodeListInto(dec, slot, list, depth);
+                    }
+                    case MAP -> {
+                        Map<Object, Object> map = (Map<Object, Object>) args[compIdx];
+                        args[compIdx] = decodeMapInto(dec, slot, map, depth);
+                    }
+                    case SUB_MSG -> {
+                        int subSaved = dec.readLengthPrefixedLimit(0);
+                        if (slot.subCodec.isRecord) {
+                            if (subRecordStates == null) {
+                                subRecordStates = new HashMap<>();
+                            }
+                            RecordBuildState<?> childState = subRecordStates.get(compIdx);
+                            if (childState == null) {
+                                Object prevRec = args[compIdx];
+                                args[compIdx] = null;
+                                childState = prevRec != null
+                                    ? slot.subCodec.newRecordStateFromInstance(prevRec)
+                                    : slot.subCodec.newBlankRecordState();
+                                subRecordStates.put(compIdx, childState);
+                            }
+                            childState.applySlice(dec, depth + 1);
+                        } else {
+                            Object sub = args[compIdx];
+                            if (sub == null) {
+                                sub = slot.subCodec.newBlankMutableInstance();
+                                args[compIdx] = sub;
+                            }
+                            slot.subCodec.decodeFrom(dec, sub, depth + 1);
+                        }
+                        dec.endContainer(subSaved);
+                    }
+                }
+            }
+        }
+
+        T build() {
+            if (subRecordStates != null) {
+                for (Map.Entry<Integer, RecordBuildState<?>> entry : subRecordStates.entrySet()) {
+                    args[entry.getKey()] = entry.getValue().build();
+                }
+            }
+            if (primArrayAccum != null) {
+                for (Map.Entry<Integer, List<Number>> entry : primArrayAccum.entrySet()) {
+                    int compIdx = entry.getKey();
+                    List<Number> nums = entry.getValue();
+                    if (codec.recordComponentsByIndex[compIdx].category == FieldCategory.INT_ARRAY) {
+                        int[] arr = new int[nums.size()];
+                        for (int i = 0; i < arr.length; i++) {
+                            arr[i] = nums.get(i).intValue();
+                        }
+                        args[compIdx] = arr;
+                    } else {
+                        long[] arr = new long[nums.size()];
+                        for (int i = 0; i < arr.length; i++) {
+                            arr[i] = nums.get(i).longValue();
+                        }
+                        args[compIdx] = arr;
+                    }
+                }
+            }
+            return codec.instantiateRecord(args);
+        }
+    }
+
     private static final class ClassCodec<T> {
         final Class<T> type;
         final String typeName;
         final boolean isRecord;
         MethodHandle constructorHandle;
+        MethodHandle recordSpreaderHandle;
+        FieldDescriptorSlot[] recordComponentsByIndex;
+        Object[] defaultRecordTemplate;
+        boolean hasCollectionComponents;
+        boolean cleanFreshConstructor;
         FieldDescriptorSlot[] orderedFields;
         FieldDescriptorSlot[] directByNum;
         Map<Integer, FieldDescriptorSlot> overflowByNum;
         volatile SchemaMeta cachedMeta;
         volatile byte[] cachedField0;
+        volatile boolean cyclicSchema;
 
         ClassCodec(Class<T> type, String typeName, boolean isRecord) {
             this.type = type;
             this.typeName = typeName;
             this.isRecord = isRecord;
+        }
+
+        RecordBuildState<T> newBlankRecordState() {
+            return new RecordBuildState<>(this);
+        }
+
+        RecordBuildState<T> newRecordStateFromInstance(Object existing) {
+            return new RecordBuildState<>(this, existing);
         }
 
         SchemaMeta getSchemaMeta() {
@@ -312,7 +624,9 @@ public final class OmniBufMapper {
                 synchronized (this) {
                     m = cachedMeta;
                     if (m == null) {
-                        m = buildSchemaMeta(0, new HashSet<>());
+                        boolean[] cyclicOut = new boolean[1];
+                        m = buildSchemaMeta(1, new HashSet<>(), cyclicOut);
+                        cyclicSchema = cyclicOut[0];
                         cachedMeta = m;
                     }
                 }
@@ -334,8 +648,29 @@ public final class OmniBufMapper {
             return b;
         }
 
-        private SchemaMeta buildSchemaMeta(int depth, Set<Class<?>> active) {
-            if (depth > OmniBufDecoder.MAX_CONTAINER_DEPTH || !active.add(type)) {
+        void writeSelfDescribingField0(OmniBufEncoder enc, T message, boolean deterministic) {
+            SchemaMeta staticMeta = getSchemaMeta();
+            if (cyclicSchema) {
+                SchemaMeta dynMeta = buildValueSchemaMeta(message, 1);
+                if (dynMeta != null) {
+                    dynMeta.writeField0(enc, deterministic);
+                }
+                return;
+            }
+            if (deterministic) {
+                enc.writeRawBytes(getField0Bytes());
+            } else if (staticMeta != null) {
+                staticMeta.writeField0(enc, false);
+            }
+        }
+
+        private SchemaMeta buildSchemaMeta(int schemaDepth, Set<Class<?>> active, boolean[] cyclicOut) {
+            if (!active.add(type)) {
+                cyclicOut[0] = true;
+                return null;
+            }
+            if (schemaDepth + 1 > OmniBufDecoder.MAX_CONTAINER_DEPTH) {
+                active.remove(type);
                 return null;
             }
             try {
@@ -344,11 +679,8 @@ public final class OmniBufMapper {
                 for (FieldDescriptorSlot slot : orderedFields) {
                     fieldNames.put(slot.fieldNumber, slot.schemaName);
                     if (slot.subCodec != null) {
-                        int nextDepth = (slot.wireType == WireType.WIRE_ARRAY || slot.wireType == WireType.WIRE_MAP)
-                            ? depth + 2
-                            : depth + 1;
-                        SchemaMeta child = slot.subCodec.buildSchemaMeta(nextDepth, active);
-                        if (child != null) {
+                        SchemaMeta child = slot.subCodec.buildSchemaMeta(schemaDepth + 2, active, cyclicOut);
+                        if (child != null && schemaDepth + 3 <= OmniBufDecoder.MAX_CONTAINER_DEPTH) {
                             if (childMetas == null) {
                                 childMetas = new LinkedHashMap<>();
                             }
@@ -362,6 +694,52 @@ public final class OmniBufMapper {
             }
         }
 
+        SchemaMeta buildValueSchemaMeta(Object instance, int schemaDepth) {
+            if (instance == null || schemaDepth + 1 > OmniBufDecoder.MAX_CONTAINER_DEPTH) {
+                return null;
+            }
+            Map<Integer, String> fieldNames = new LinkedHashMap<>(orderedFields.length);
+            Map<Integer, SchemaMeta> childMetas = null;
+            for (FieldDescriptorSlot slot : orderedFields) {
+                fieldNames.put(slot.fieldNumber, slot.schemaName);
+                if (slot.subCodec == null || schemaDepth + 3 > OmniBufDecoder.MAX_CONTAINER_DEPTH) {
+                    continue;
+                }
+                Object raw = slot.readObject(instance);
+                if (raw == null) {
+                    continue;
+                }
+                SchemaMeta child = null;
+                if (slot.category == FieldCategory.SUB_MSG) {
+                    child = slot.subCodec.buildValueSchemaMeta(raw, schemaDepth + 2);
+                } else if (slot.category == FieldCategory.LIST && raw instanceof List<?> list && !list.isEmpty()) {
+                    for (int i = 0, n = list.size(); i < n; i++) {
+                        Object elem = list.get(i);
+                        if (elem != null) {
+                            child = SchemaMeta.merge(
+                                child, slot.subCodec.buildValueSchemaMeta(elem, schemaDepth + 2)
+                            );
+                        }
+                    }
+                } else if (slot.category == FieldCategory.MAP && raw instanceof Map<?, ?> map && !map.isEmpty()) {
+                    for (Object elem : map.values()) {
+                        if (elem != null) {
+                            child = SchemaMeta.merge(
+                                child, slot.subCodec.buildValueSchemaMeta(elem, schemaDepth + 2)
+                            );
+                        }
+                    }
+                }
+                if (child != null) {
+                    if (childMetas == null) {
+                        childMetas = new LinkedHashMap<>();
+                    }
+                    childMetas.put(slot.fieldNumber, child);
+                }
+            }
+            return new SchemaMeta(typeName, fieldNames, childMetas);
+        }
+
         FieldDescriptorSlot lookupSlot(int fieldNum) {
             if (fieldNum > 0 && fieldNum <= MAX_DIRECT_FIELD_SLOT) {
                 return directByNum[fieldNum];
@@ -370,10 +748,35 @@ public final class OmniBufMapper {
         }
 
         @SuppressWarnings("unchecked")
+        T instantiateRecord(Object[] args) {
+            if (hasCollectionComponents) {
+                for (int i = 0; i < recordComponentsByIndex.length; i++) {
+                    if (args[i] == null) {
+                        FieldCategory cat = recordComponentsByIndex[i].category;
+                        if (cat == FieldCategory.LIST) {
+                            args[i] = new ArrayList<>(0);
+                        } else if (cat == FieldCategory.MAP) {
+                            args[i] = new LinkedHashMap<>(4);
+                        }
+                    }
+                }
+            }
+            try {
+                return (T) recordSpreaderHandle.invokeExact(args);
+            } catch (OmniBufException e) {
+                throw e;
+            } catch (Throwable t) {
+                throw new OmniBufException("omnibuf: failed constructing record " + type.getName(), t);
+            }
+        }
+
+        @SuppressWarnings("unchecked")
         T newBlankMutableInstance() {
             try {
-                T inst = (T) constructorHandle.invoke();
-                resetInstance(inst);
+                T inst = (T) constructorHandle.invokeExact();
+                if (!cleanFreshConstructor) {
+                    resetInstance(inst);
+                }
                 return inst;
             } catch (Throwable t) {
                 throw new OmniBufException("omnibuf: failed instantiating " + type.getName(), t);
@@ -390,6 +793,7 @@ public final class OmniBufMapper {
                     case DOUBLE_SCALAR -> slot.writeDouble(target, 0.0d);
                     case STRING_SCALAR -> slot.writeObject(target, "");
                     case BYTES_SCALAR -> slot.writeObject(target, EMPTY_BYTES);
+                    case ENUM_SCALAR -> slot.writeObject(target, slot.defaultEnumValue());
                     case INT_ARRAY -> slot.writeObject(target, EMPTY_INTS);
                     case LONG_ARRAY -> slot.writeObject(target, EMPTY_LONGS);
                     case LIST -> slot.writeObject(target, new ArrayList<>());
@@ -441,48 +845,56 @@ public final class OmniBufMapper {
                     byte[] b = (byte[]) slot.readObject(instance);
                     enc.writeBytes(fnum, b == null ? EMPTY_BYTES : b);
                 }
+                case ENUM_SCALAR -> {
+                    Object ev = slot.readObject(instance);
+                    enc.writeSint32(fnum, ev instanceof Enum<?> e ? e.ordinal() : 0);
+                }
                 case INT_ARRAY -> {
                     int[] arr = (int[]) slot.readObject(instance);
-                    int n = arr == null ? 0 : arr.length;
-                    enc.beginTypedArray(fnum, slot.elemWireType, n);
-                    for (int i = 0; i < n; i++) {
-                        writeIntArrayElem(enc, slot.elemWireType, arr[i]);
+                    if (slot.elemWireType == WireType.WIRE_UINT) {
+                        enc.writeUint32Array(fnum, arr);
+                    } else {
+                        int n = arr == null ? 0 : arr.length;
+                        int arrPos = enc.beginTypedArrayFast(fnum, slot.elemWireType, n);
+                        for (int i = 0; i < n; i++) {
+                            writeIntArrayElem(enc, slot.elemWireType, arr[i]);
+                        }
+                        enc.endContainerAt(arrPos);
                     }
-                    enc.endTypedArray();
                 }
                 case LONG_ARRAY -> {
                     long[] arr = (long[]) slot.readObject(instance);
                     int n = arr == null ? 0 : arr.length;
-                    enc.beginTypedArray(fnum, slot.elemWireType, n);
+                    int arrPos = enc.beginTypedArrayFast(fnum, slot.elemWireType, n);
                     for (int i = 0; i < n; i++) {
                         writeLongArrayElem(enc, slot.elemWireType, arr[i]);
                     }
-                    enc.endTypedArray();
+                    enc.endContainerAt(arrPos);
                 }
                 case SUB_MSG -> {
                     Object sub = slot.readObject(instance);
                     if (sub != null) {
-                        enc.beginSubMsg(fnum);
+                        int subPos = enc.beginSubMsgFast(fnum);
                         slot.subCodec.encode(enc, sub, deterministic);
-                        enc.endSubMsg();
+                        enc.endContainerAt(subPos);
                     }
                 }
                 case LIST -> {
                     List<Object> list = (List<Object>) slot.readObject(instance);
                     if (slot.elemWireType == WireType.WIRE_SUB_MSG) {
                         int n = list == null ? 0 : list.size();
-                        enc.beginSubMsgArr(fnum);
+                        int arrPos = enc.beginTypedArrayFast(fnum, WireType.WIRE_SUB_MSG, n);
                         for (int i = 0; i < n; i++) {
-                            enc.beginSubMsgElem();
+                            int elemPos = enc.beginInlineSubMsgFast();
                             Object elem = list.get(i);
                             if (elem != null) {
                                 slot.subCodec.encode(enc, elem, deterministic);
                             }
-                            enc.endSubMsgElem();
+                            enc.endContainerAt(elemPos);
                         }
-                        enc.endSubMsgArr();
+                        enc.endContainerAt(arrPos);
                     } else {
-                        encodeScalarList(enc, fnum, slot.elemWireType, list);
+                        encodeScalarList(enc, fnum, slot.elemWireType, slot.elemClass, list);
                     }
                 }
                 case MAP -> {
@@ -492,29 +904,27 @@ public final class OmniBufMapper {
             }
         }
 
-        T decodeNew(byte[] data, int offset, int length, int depth) {
+        T decodeNewFrom(OmniBufDecoder dec, int depth) {
             if (isRecord) {
-                return decodeRecord(data, offset, length, depth);
+                return decodeRecordFrom(dec, depth);
             }
             T inst = newBlankMutableInstance();
-            decodeInto(data, offset, length, inst, depth);
+            decodeFrom(dec, inst, depth);
             return inst;
         }
 
         @SuppressWarnings("unchecked")
-        private T decodeRecord(byte[] data, int offset, int length, int depth) {
-            if (depth > OmniBufDecoder.MAX_CONTAINER_DEPTH) {
+        private T decodeRecordFrom(OmniBufDecoder dec, int depth) {
+            if (depth > dec.maxNestingDepth()) {
                 throw new OmniBufException("omnibuf: nesting depth exceeds MaxNestingDepth");
             }
-            Object[] args = new Object[orderedFields.length];
-            for (int i = 0; i < orderedFields.length; i++) {
-                args[i] = orderedFields[i].defaultComponentValue();
-            }
-            Map<Integer, ByteArrayOutputStream> recordSubStreams = null;
-            Map<Integer, OmniBufDecoder.Slice> recordSubSingle = null;
+            Object[] args = defaultRecordTemplate.clone();
+            FieldDescriptorSlot singleSubSlot = null;
+            int singleSubStart = 0;
+            int singleSubEnd = 0;
+            Map<Integer, RecordBuildState<?>> subRecordStates = null;
             Map<Integer, List<Number>> primArrayAccum = null;
 
-            OmniBufDecoder dec = new OmniBufDecoder(data, offset, length);
             while (dec.hasRemaining()) {
                 long tag = dec.readTag();
                 int fnum = (int) (tag >>> 4);
@@ -528,49 +938,68 @@ public final class OmniBufMapper {
                     dec.skipOrValidateUnknown(fnum, wt, depth);
                     continue;
                 }
-                int idx = slot.index;
+                int compIdx = slot.recordComponentIndex;
                 switch (slot.category) {
-                    case INT_SCALAR -> args[idx] = decodeIntScalar(dec, wt);
-                    case LONG_SCALAR -> args[idx] = decodeLongScalar(dec, wt);
-                    case BOOL_SCALAR -> args[idx] = (wt == WireType.WIRE_BOOL_TRUE);
-                    case FLOAT_SCALAR -> args[idx] = dec.readFloat32();
-                    case DOUBLE_SCALAR -> args[idx] = dec.readFloat64();
-                    case STRING_SCALAR -> args[idx] = dec.readString();
-                    case BYTES_SCALAR -> args[idx] = dec.readBytes();
+                    case INT_SCALAR -> args[compIdx] = decodeIntScalar(dec, wt);
+                    case LONG_SCALAR -> args[compIdx] = decodeLongScalar(dec, wt);
+                    case BOOL_SCALAR -> args[compIdx] = (wt == WireType.WIRE_BOOL_TRUE);
+                    case FLOAT_SCALAR -> args[compIdx] = dec.readFloat32();
+                    case DOUBLE_SCALAR -> args[compIdx] = dec.readFloat64();
+                    case STRING_SCALAR -> args[compIdx] = dec.readString();
+                    case BYTES_SCALAR -> args[compIdx] = dec.readBytes();
+                    case ENUM_SCALAR -> args[compIdx] = slot.decodeEnumScalar(dec);
                     case INT_ARRAY, LONG_ARRAY -> {
                         if (primArrayAccum == null) {
                             primArrayAccum = new HashMap<>();
                         }
-                        List<Number> acc = primArrayAccum.computeIfAbsent(idx, k -> new ArrayList<>());
+                        List<Number> acc = primArrayAccum.computeIfAbsent(compIdx, k -> new ArrayList<>());
                         decodePrimitiveArrayIntoList(dec, slot, acc, depth);
                     }
                     case LIST -> {
-                        List<Object> list = (List<Object>) args[idx];
-                        decodeListInto(dec, slot, list, depth);
+                        List<Object> list = (List<Object>) args[compIdx];
+                        args[compIdx] = decodeListInto(dec, slot, list, depth);
                     }
                     case MAP -> {
-                        Map<Object, Object> map = (Map<Object, Object>) args[idx];
-                        decodeMapInto(dec, slot, map, depth);
+                        Map<Object, Object> map = (Map<Object, Object>) args[compIdx];
+                        args[compIdx] = decodeMapInto(dec, slot, map, depth);
                     }
                     case SUB_MSG -> {
-                        OmniBufDecoder.Slice s = dec.readLengthPrefixedSlice(0);
-                        if (recordSubSingle == null) {
-                            recordSubSingle = new HashMap<>();
-                        }
-                        if (recordSubStreams != null && recordSubStreams.containsKey(idx)) {
-                            recordSubStreams.get(idx).write(data, s.offset(), s.length());
-                        } else if (recordSubSingle.containsKey(idx)) {
-                            OmniBufDecoder.Slice first = recordSubSingle.remove(idx);
-                            if (recordSubStreams == null) {
-                                recordSubStreams = new HashMap<>();
+                        if (!slot.subCodec.isRecord) {
+                            int subSaved = dec.readLengthPrefixedLimit(0);
+                            Object sub = args[compIdx];
+                            if (sub == null) {
+                                sub = slot.subCodec.newBlankMutableInstance();
+                                args[compIdx] = sub;
                             }
-                            ByteArrayOutputStream baos =
-                                new ByteArrayOutputStream(first.length() + s.length() + 32);
-                            baos.write(data, first.offset(), first.length());
-                            baos.write(data, s.offset(), s.length());
-                            recordSubStreams.put(idx, baos);
+                            slot.subCodec.decodeFrom(dec, sub, depth + 1);
+                            dec.endContainer(subSaved);
+                        } else if (singleSubSlot == null && subRecordStates == null) {
+                            int subSaved = dec.readLengthPrefixedLimit(0);
+                            singleSubSlot = slot;
+                            singleSubStart = dec.position();
+                            singleSubEnd = dec.limit();
+                            dec.position(singleSubEnd);
+                            dec.restoreLimit(subSaved);
                         } else {
-                            recordSubSingle.put(idx, s);
+                            if (subRecordStates == null) {
+                                subRecordStates = new HashMap<>();
+                            }
+                            if (singleSubSlot != null) {
+                                int savedPos = dec.position();
+                                int savedLim = dec.setSlice(singleSubStart, singleSubEnd);
+                                RecordBuildState<?> firstState = singleSubSlot.subCodec.newBlankRecordState();
+                                firstState.applySlice(dec, depth + 1);
+                                dec.endContainer(savedLim);
+                                dec.position(savedPos);
+                                subRecordStates.put(singleSubSlot.recordComponentIndex, firstState);
+                                singleSubSlot = null;
+                            }
+                            int subSaved = dec.readLengthPrefixedLimit(0);
+                            RecordBuildState<?> st = subRecordStates.computeIfAbsent(
+                                compIdx, k -> slot.subCodec.newBlankRecordState()
+                            );
+                            st.applySlice(dec, depth + 1);
+                            dec.endContainer(subSaved);
                         }
                     }
                 }
@@ -578,56 +1007,50 @@ public final class OmniBufMapper {
 
             if (primArrayAccum != null) {
                 for (Map.Entry<Integer, List<Number>> entry : primArrayAccum.entrySet()) {
-                    int idx = entry.getKey();
+                    int compIdx = entry.getKey();
                     List<Number> nums = entry.getValue();
-                    if (orderedFields[idx].category == FieldCategory.INT_ARRAY) {
+                    if (recordComponentsByIndex[compIdx].category == FieldCategory.INT_ARRAY) {
                         int[] arr = new int[nums.size()];
                         for (int i = 0; i < arr.length; i++) {
                             arr[i] = nums.get(i).intValue();
                         }
-                        args[idx] = arr;
+                        args[compIdx] = arr;
                     } else {
                         long[] arr = new long[nums.size()];
                         for (int i = 0; i < arr.length; i++) {
                             arr[i] = nums.get(i).longValue();
                         }
-                        args[idx] = arr;
+                        args[compIdx] = arr;
                     }
                 }
             }
-            if (recordSubSingle != null) {
-                for (Map.Entry<Integer, OmniBufDecoder.Slice> entry : recordSubSingle.entrySet()) {
-                    int idx = entry.getKey();
-                    OmniBufDecoder.Slice s = entry.getValue();
-                    args[idx] = orderedFields[idx].subCodec.decodeNew(data, s.offset(), s.length(), depth + 1);
-                }
-            }
-            if (recordSubStreams != null) {
-                for (Map.Entry<Integer, ByteArrayOutputStream> entry : recordSubStreams.entrySet()) {
-                    int idx = entry.getKey();
-                    byte[] merged = entry.getValue().toByteArray();
-                    args[idx] = orderedFields[idx].subCodec.decodeNew(merged, 0, merged.length, depth + 1);
+
+            if (singleSubSlot != null) {
+                int savedPos = dec.position();
+                int savedLim = dec.setSlice(singleSubStart, singleSubEnd);
+                args[singleSubSlot.recordComponentIndex] =
+                    singleSubSlot.subCodec.decodeRecordFrom(dec, depth + 1);
+                dec.endContainer(savedLim);
+                dec.position(savedPos);
+            } else if (subRecordStates != null) {
+                for (Map.Entry<Integer, RecordBuildState<?>> entry : subRecordStates.entrySet()) {
+                    args[entry.getKey()] = entry.getValue().build();
                 }
             }
 
-            try {
-                return (T) constructorHandle.invokeWithArguments(args);
-            } catch (OmniBufException e) {
-                throw e;
-            } catch (Throwable t) {
-                throw new OmniBufException("omnibuf: failed constructing record " + type.getName(), t);
-            }
+            return instantiateRecord(args);
         }
 
         @SuppressWarnings("unchecked")
-        void decodeInto(byte[] data, int offset, int length, Object target, int depth) {
-            if (depth > OmniBufDecoder.MAX_CONTAINER_DEPTH) {
+        void decodeFrom(OmniBufDecoder dec, Object target, int depth) {
+            if (depth > dec.maxNestingDepth()) {
                 throw new OmniBufException("omnibuf: nesting depth exceeds MaxNestingDepth");
             }
-            Map<Integer, ByteArrayOutputStream> recordSubStreams = null;
-            Map<Integer, OmniBufDecoder.Slice> recordSubSingle = null;
+            FieldDescriptorSlot singleRecSlot = null;
+            int singleRecStart = 0;
+            int singleRecEnd = 0;
+            Map<Integer, RecordBuildState<?>> recordSubStates = null;
 
-            OmniBufDecoder dec = new OmniBufDecoder(data, offset, length);
             while (dec.hasRemaining()) {
                 long tag = dec.readTag();
                 int fnum = (int) (tag >>> 4);
@@ -649,6 +1072,7 @@ public final class OmniBufMapper {
                     case DOUBLE_SCALAR -> slot.writeDouble(target, dec.readFloat64());
                     case STRING_SCALAR -> slot.writeObject(target, dec.readString());
                     case BYTES_SCALAR -> slot.writeObject(target, dec.readBytes());
+                    case ENUM_SCALAR -> slot.writeObject(target, slot.decodeEnumScalar(dec));
                     case INT_ARRAY -> {
                         int[] prev = (int[]) slot.readObject(target);
                         List<Number> acc = new ArrayList<>(prev == null ? 4 : prev.length + 4);
@@ -681,66 +1105,76 @@ public final class OmniBufMapper {
                     }
                     case LIST -> {
                         List<Object> list = (List<Object>) slot.readObject(target);
-                        if (list == null) {
-                            list = new ArrayList<>();
-                            slot.writeObject(target, list);
+                        List<Object> updated = decodeListInto(dec, slot, list, depth);
+                        if (updated != list) {
+                            slot.writeObject(target, updated);
                         }
-                        decodeListInto(dec, slot, list, depth);
                     }
                     case MAP -> {
                         Map<Object, Object> map = (Map<Object, Object>) slot.readObject(target);
-                        if (map == null) {
-                            map = new LinkedHashMap<>();
-                            slot.writeObject(target, map);
+                        Map<Object, Object> updated = decodeMapInto(dec, slot, map, depth);
+                        if (updated != map) {
+                            slot.writeObject(target, updated);
                         }
-                        decodeMapInto(dec, slot, map, depth);
                     }
                     case SUB_MSG -> {
-                        OmniBufDecoder.Slice s = dec.readLengthPrefixedSlice(0);
                         if (slot.subCodec.isRecord) {
-                            int idx = slot.index;
-                            if (recordSubSingle == null) {
-                                recordSubSingle = new HashMap<>();
-                            }
-                            if (recordSubStreams != null && recordSubStreams.containsKey(idx)) {
-                                recordSubStreams.get(idx).write(data, s.offset(), s.length());
-                            } else if (recordSubSingle.containsKey(idx)) {
-                                OmniBufDecoder.Slice first = recordSubSingle.remove(idx);
-                                if (recordSubStreams == null) {
-                                    recordSubStreams = new HashMap<>();
-                                }
-                                ByteArrayOutputStream baos =
-                                    new ByteArrayOutputStream(first.length() + s.length() + 32);
-                                baos.write(data, first.offset(), first.length());
-                                baos.write(data, s.offset(), s.length());
-                                recordSubStreams.put(idx, baos);
+                            Object existingRec = slot.readObject(target);
+                            if (existingRec == null && singleRecSlot == null && recordSubStates == null) {
+                                int subSaved = dec.readLengthPrefixedLimit(0);
+                                singleRecSlot = slot;
+                                singleRecStart = dec.position();
+                                singleRecEnd = dec.limit();
+                                dec.position(singleRecEnd);
+                                dec.restoreLimit(subSaved);
                             } else {
-                                recordSubSingle.put(idx, s);
+                                if (recordSubStates == null) {
+                                    recordSubStates = new HashMap<>();
+                                }
+                                if (singleRecSlot != null) {
+                                    int savedPos = dec.position();
+                                    int savedLim = dec.setSlice(singleRecStart, singleRecEnd);
+                                    RecordBuildState<?> firstState = singleRecSlot.subCodec.newBlankRecordState();
+                                    firstState.applySlice(dec, depth + 1);
+                                    dec.endContainer(savedLim);
+                                    dec.position(savedPos);
+                                    recordSubStates.put(singleRecSlot.slotIndex, firstState);
+                                    singleRecSlot = null;
+                                }
+                                RecordBuildState<?> st = recordSubStates.get(slot.slotIndex);
+                                if (st == null) {
+                                    st = existingRec != null
+                                        ? slot.subCodec.newRecordStateFromInstance(existingRec)
+                                        : slot.subCodec.newBlankRecordState();
+                                    recordSubStates.put(slot.slotIndex, st);
+                                }
+                                int subSaved = dec.readLengthPrefixedLimit(0);
+                                st.applySlice(dec, depth + 1);
+                                dec.endContainer(subSaved);
                             }
                         } else {
+                            int subSaved = dec.readLengthPrefixedLimit(0);
                             Object sub = slot.readObject(target);
                             if (sub == null) {
                                 sub = slot.subCodec.newBlankMutableInstance();
                                 slot.writeObject(target, sub);
                             }
-                            slot.subCodec.decodeInto(data, s.offset(), s.length(), sub, depth + 1);
+                            slot.subCodec.decodeFrom(dec, sub, depth + 1);
+                            dec.endContainer(subSaved);
                         }
                     }
                 }
             }
 
-            if (recordSubSingle != null) {
-                for (Map.Entry<Integer, OmniBufDecoder.Slice> entry : recordSubSingle.entrySet()) {
-                    FieldDescriptorSlot slot = orderedFields[entry.getKey()];
-                    OmniBufDecoder.Slice s = entry.getValue();
-                    slot.writeObject(target, slot.subCodec.decodeNew(data, s.offset(), s.length(), depth + 1));
-                }
-            }
-            if (recordSubStreams != null) {
-                for (Map.Entry<Integer, ByteArrayOutputStream> entry : recordSubStreams.entrySet()) {
-                    FieldDescriptorSlot slot = orderedFields[entry.getKey()];
-                    byte[] merged = entry.getValue().toByteArray();
-                    slot.writeObject(target, slot.subCodec.decodeNew(merged, 0, merged.length, depth + 1));
+            if (singleRecSlot != null) {
+                int savedPos = dec.position();
+                int savedLim = dec.setSlice(singleRecStart, singleRecEnd);
+                singleRecSlot.writeObject(target, singleRecSlot.subCodec.decodeRecordFrom(dec, depth + 1));
+                dec.endContainer(savedLim);
+                dec.position(savedPos);
+            } else if (recordSubStates != null) {
+                for (Map.Entry<Integer, RecordBuildState<?>> entry : recordSubStates.entrySet()) {
+                    orderedFields[entry.getKey()].writeObject(target, entry.getValue().build());
                 }
             }
         }
@@ -772,11 +1206,7 @@ public final class OmniBufMapper {
         switch (elemWT) {
             case WireType.WIRE_UINT -> enc.writeVarint(Integer.toUnsignedLong(v));
             case WireType.WIRE_SINT -> enc.writeVarint(PrefixVarint.encodeZigZag32(v));
-            case WireType.WIRE_FIXED32, WireType.WIRE_SFIXED32 -> {
-                byte[] tmp = new byte[4];
-                PrefixVarint.setIntLE(tmp, 0, v);
-                enc.writeRawBytes(tmp, 0, 4);
-            }
+            case WireType.WIRE_FIXED32, WireType.WIRE_SFIXED32 -> enc.writeInlineFixed32(v);
             default -> throw new OmniBufException("omnibuf: unsupported int[] element wire type");
         }
     }
@@ -785,67 +1215,75 @@ public final class OmniBufMapper {
         switch (elemWT) {
             case WireType.WIRE_UINT -> enc.writeVarint(v);
             case WireType.WIRE_SINT -> enc.writeVarint(PrefixVarint.encodeZigZag64(v));
-            case WireType.WIRE_FIXED64, WireType.WIRE_SFIXED64 -> {
-                byte[] tmp = new byte[8];
-                PrefixVarint.setLongLE(tmp, 0, v);
-                enc.writeRawBytes(tmp, 0, 8);
-            }
+            case WireType.WIRE_FIXED64, WireType.WIRE_SFIXED64 -> enc.writeInlineFixed64(v);
             default -> throw new OmniBufException("omnibuf: unsupported long[] element wire type");
         }
     }
 
+    @SuppressWarnings("unchecked")
     private static void encodeScalarList(
-            OmniBufEncoder enc, int fnum, int elemWT, List<Object> list) {
-        int n = list == null ? 0 : list.size();
-        enc.beginTypedArray(fnum, elemWT, n);
-        for (int i = 0; i < n; i++) {
-            writeInlineValue(enc, elemWT, null, list.get(i), false);
+            OmniBufEncoder enc, int fnum, int elemWT, Class<?> elemClass, List<Object> list) {
+        if (elemClass != null && elemClass.isEnum()) {
+            int n = list == null ? 0 : list.size();
+            int arrPos = enc.beginTypedArrayFast(fnum, WireType.WIRE_SINT, n);
+            for (int i = 0; i < n; i++) {
+                Object elem = list.get(i);
+                int ord = elem instanceof Enum<?> ev ? ev.ordinal() : 0;
+                enc.writeVarint(PrefixVarint.encodeZigZag32(ord));
+            }
+            enc.endContainerAt(arrPos);
+            return;
         }
-        enc.endTypedArray();
+        switch (elemWT) {
+            case WireType.WIRE_STRING -> enc.writeStringList(fnum, (List<String>) (List<?>) list);
+            case WireType.WIRE_BYTES -> enc.writeBytesList(fnum, (List<byte[]>) (List<?>) list);
+            case WireType.WIRE_UINT -> {
+                if (elemClass == Integer.class) {
+                    enc.writeUint32List(fnum, (List<Integer>) (List<?>) list);
+                } else {
+                    enc.writeUint64List(fnum, (List<Long>) (List<?>) list);
+                }
+            }
+            case WireType.WIRE_SINT -> {
+                if (elemClass == Integer.class) {
+                    enc.writeSint32List(fnum, (List<Integer>) (List<?>) list);
+                } else {
+                    enc.writeSint64List(fnum, (List<Long>) (List<?>) list);
+                }
+            }
+            case WireType.WIRE_BOOL_FALSE -> enc.writeBoolList(fnum, (List<Boolean>) (List<?>) list);
+            case WireType.WIRE_FIXED32, WireType.WIRE_SFIXED32 ->
+                enc.writeFixed32List(fnum, elemWT, (List<Integer>) (List<?>) list);
+            case WireType.WIRE_FIXED64, WireType.WIRE_SFIXED64 ->
+                enc.writeFixed64List(fnum, elemWT, (List<Long>) (List<?>) list);
+            case WireType.WIRE_FLOAT32 -> enc.writeFloat32List(fnum, (List<Float>) (List<?>) list);
+            case WireType.WIRE_FLOAT64 -> enc.writeFloat64List(fnum, (List<Double>) (List<?>) list);
+            default -> {
+                int n = list == null ? 0 : list.size();
+                int arrPos = enc.beginTypedArrayFast(fnum, elemWT, n);
+                for (int i = 0; i < n; i++) {
+                    writeInlineValue(enc, elemWT, null, list.get(i), false);
+                }
+                enc.endContainerAt(arrPos);
+            }
+        }
     }
 
-    @SuppressWarnings("unchecked")
     private static void encodeMapField(
             OmniBufEncoder enc,
             FieldDescriptorSlot slot,
             Map<Object, Object> map,
             boolean deterministic) {
         int n = map == null ? 0 : map.size();
-        enc.beginTypedMap(slot.fieldNumber, slot.mapKeyWireType, slot.mapValWireType, n);
+        int mapPos = enc.beginTypedMapFast(slot.fieldNumber, slot.mapKeyWireType, slot.mapValWireType, n);
         if (n > 0) {
-            Iterable<Map.Entry<Object, Object>> entries;
-            if (deterministic && n > 1) {
-                List<Map.Entry<Object, Object>> sorted = new ArrayList<>(map.entrySet());
-                Comparator<Object> keyCmp = mapKeyComparator(slot.mapKeyWireType);
-                sorted.sort((a, b) -> keyCmp.compare(a.getKey(), b.getKey()));
-                entries = sorted;
-            } else {
-                entries = map.entrySet();
-            }
-            for (Map.Entry<Object, Object> entry : entries) {
+            for (Map.Entry<Object, Object> entry :
+                    OmniBufEncoder.sortMapEntries(map, slot.mapKeyWireType, deterministic)) {
                 writeInlineValue(enc, slot.mapKeyWireType, null, entry.getKey(), deterministic);
                 writeInlineValue(enc, slot.mapValWireType, slot.subCodec, entry.getValue(), deterministic);
             }
         }
-        enc.endTypedMap();
-    }
-
-    private static Comparator<Object> mapKeyComparator(int keyWT) {
-        return switch (keyWT) {
-            case WireType.WIRE_STRING ->
-                (a, b) -> Utf8Validator.compareUtf8(a == null ? "" : a.toString(), b == null ? "" : b.toString());
-            case WireType.WIRE_BOOL_FALSE ->
-                (a, b) -> Boolean.compare(Boolean.TRUE.equals(a), Boolean.TRUE.equals(b));
-            case WireType.WIRE_UINT, WireType.WIRE_FIXED64 ->
-                (a, b) -> Long.compareUnsigned(((Number) a).longValue(), ((Number) b).longValue());
-            case WireType.WIRE_FIXED32 ->
-                (a, b) -> Integer.compareUnsigned(((Number) a).intValue(), ((Number) b).intValue());
-            case WireType.WIRE_SINT, WireType.WIRE_SFIXED64 ->
-                (a, b) -> Long.compare(((Number) a).longValue(), ((Number) b).longValue());
-            case WireType.WIRE_SFIXED32 ->
-                (a, b) -> Integer.compare(((Number) a).intValue(), ((Number) b).intValue());
-            default -> (a, b) -> 0;
-        };
+        enc.endContainerAt(mapPos);
     }
 
     private static void writeInlineValue(
@@ -865,7 +1303,9 @@ public final class OmniBufMapper {
                 }
             }
             case WireType.WIRE_SINT -> {
-                if (val instanceof Integer iv) {
+                if (val instanceof Enum<?> ev) {
+                    enc.writeVarint(PrefixVarint.encodeZigZag32(ev.ordinal()));
+                } else if (val instanceof Integer iv) {
                     enc.writeVarint(PrefixVarint.encodeZigZag32(iv));
                 } else if (val instanceof Number nv) {
                     enc.writeVarint(PrefixVarint.encodeZigZag64(nv.longValue()));
@@ -874,38 +1314,22 @@ public final class OmniBufMapper {
                 }
             }
             case WireType.WIRE_BOOL_FALSE -> enc.writeRawByte(Boolean.TRUE.equals(val) ? 1 : 0);
-            case WireType.WIRE_FIXED32, WireType.WIRE_SFIXED32 -> {
-                int v = val instanceof Number nv ? nv.intValue() : 0;
-                byte[] tmp = new byte[4];
-                PrefixVarint.setIntLE(tmp, 0, v);
-                enc.writeRawBytes(tmp, 0, 4);
-            }
-            case WireType.WIRE_FLOAT32 -> {
-                float v = val instanceof Number nv ? nv.floatValue() : 0.0f;
-                byte[] tmp = new byte[4];
-                PrefixVarint.setIntLE(tmp, 0, Float.floatToRawIntBits(v));
-                enc.writeRawBytes(tmp, 0, 4);
-            }
-            case WireType.WIRE_FIXED64, WireType.WIRE_SFIXED64 -> {
-                long v = val instanceof Number nv ? nv.longValue() : 0L;
-                byte[] tmp = new byte[8];
-                PrefixVarint.setLongLE(tmp, 0, v);
-                enc.writeRawBytes(tmp, 0, 8);
-            }
-            case WireType.WIRE_FLOAT64 -> {
-                double v = val instanceof Number nv ? nv.doubleValue() : 0.0d;
-                byte[] tmp = new byte[8];
-                PrefixVarint.setLongLE(tmp, 0, Double.doubleToRawLongBits(v));
-                enc.writeRawBytes(tmp, 0, 8);
-            }
+            case WireType.WIRE_FIXED32, WireType.WIRE_SFIXED32 ->
+                enc.writeInlineFixed32(val instanceof Number nv ? nv.intValue() : 0);
+            case WireType.WIRE_FLOAT32 ->
+                enc.writeInlineFixed32(Float.floatToRawIntBits(val instanceof Number nv ? nv.floatValue() : 0.0f));
+            case WireType.WIRE_FIXED64, WireType.WIRE_SFIXED64 ->
+                enc.writeInlineFixed64(val instanceof Number nv ? nv.longValue() : 0L);
+            case WireType.WIRE_FLOAT64 ->
+                enc.writeInlineFixed64(Double.doubleToRawLongBits(val instanceof Number nv ? nv.doubleValue() : 0.0d));
             case WireType.WIRE_STRING -> enc.writeStringElement(val == null ? "" : val.toString());
             case WireType.WIRE_BYTES -> enc.writeBytesElement(val instanceof byte[] b ? b : EMPTY_BYTES);
             case WireType.WIRE_SUB_MSG -> {
-                enc.beginInlineSubMsg();
+                int elemPos = enc.beginInlineSubMsgFast();
                 if (val != null && subCodec != null) {
                     subCodec.encode(enc, val, deterministic);
                 }
-                enc.endInlineSubMsg();
+                enc.endContainerAt(elemPos);
             }
             default -> throw new OmniBufException("omnibuf: unsupported inline wire type: " + wt);
         }
@@ -913,91 +1337,99 @@ public final class OmniBufMapper {
 
     private static void decodePrimitiveArrayIntoList(
             OmniBufDecoder dec, FieldDescriptorSlot slot, List<Number> target, int depth) {
-        if (depth + 1 > OmniBufDecoder.MAX_CONTAINER_DEPTH) {
-            throw new OmniBufException("omnibuf: WireArray exceeds MaxNestingDepth");
-        }
-        OmniBufDecoder.Slice body = dec.readLengthPrefixedSlice(2);
-        byte[] buf = dec.buffer();
-        OmniBufDecoder.ArrayHeader hdr =
-            OmniBufDecoder.parseArrayHeader(buf, body.offset(), body.end());
-        if (hdr.elemWireType() != slot.elemWireType) {
-            OmniBufDecoder.validateValue(buf, body.offset() - PrefixVarint.encodedLength(body.length()), body.end(), WireType.WIRE_ARRAY, depth);
+        long arrState = dec.beginArray(slot.elemWireType, depth);
+        if (arrState < 0L) {
             return;
         }
-        OmniBufDecoder elemDec =
-            new OmniBufDecoder(buf, hdr.payloadStart(), hdr.payloadEnd() - hdr.payloadStart());
-        for (int i = 0; i < hdr.count(); i++) {
+        int count = (int) arrState;
+        int arrLimit = (int) (arrState >>> 32);
+        if ((long) target.size() + count > dec.maxCollectionElements()) {
+            throw new OmniBufException("omnibuf: accumulated WireArray count exceeds maxCollectionElements");
+        }
+        for (int i = 0; i < count; i++) {
             if (slot.category == FieldCategory.INT_ARRAY) {
-                target.add(decodeIntScalar(elemDec, slot.elemWireType));
+                target.add(decodeIntScalar(dec, slot.elemWireType));
             } else {
-                target.add(decodeLongScalar(elemDec, slot.elemWireType));
+                target.add(decodeLongScalar(dec, slot.elemWireType));
             }
         }
-        if (elemDec.hasRemaining()) {
-            throw new OmniBufException("omnibuf: WireArray has trailing payload bytes");
-        }
+        dec.endContainer(arrLimit);
     }
 
-    private static void decodeListInto(
+    private static List<Object> decodeListInto(
             OmniBufDecoder dec, FieldDescriptorSlot slot, List<Object> target, int depth) {
-        if (depth + 1 > OmniBufDecoder.MAX_CONTAINER_DEPTH) {
-            throw new OmniBufException("omnibuf: WireArray exceeds MaxNestingDepth");
+        long arrState = dec.beginArray(slot.elemWireType, depth);
+        if (arrState < 0L) {
+            return target == null ? new ArrayList<>(0) : target;
         }
-        int arrayFieldValuePos = dec.position();
-        OmniBufDecoder.Slice body = dec.readLengthPrefixedSlice(2);
-        byte[] buf = dec.buffer();
-        OmniBufDecoder.ArrayHeader hdr =
-            OmniBufDecoder.parseArrayHeader(buf, body.offset(), body.end());
-        if (hdr.elemWireType() != slot.elemWireType) {
-            OmniBufDecoder.validateValue(buf, arrayFieldValuePos, dec.limit(), WireType.WIRE_ARRAY, depth);
-            return;
+        int count = (int) arrState;
+        int arrLimit = (int) (arrState >>> 32);
+        int prevSize = target == null ? 0 : target.size();
+        if ((long) prevSize + count > dec.maxCollectionElements()) {
+            throw new OmniBufException("omnibuf: accumulated WireArray count exceeds maxCollectionElements");
         }
-        OmniBufDecoder elemDec =
-            new OmniBufDecoder(buf, hdr.payloadStart(), hdr.payloadEnd() - hdr.payloadStart());
-        for (int i = 0; i < hdr.count(); i++) {
-            target.add(readInlineValue(elemDec, slot.elemWireType, slot.elemClass, slot.subCodec, depth + 1));
+        List<Object> list = target;
+        if (list == null) {
+            list = new ArrayList<>(Math.min(count, 4096));
+        } else if (!(list instanceof ArrayList<?>)) {
+            ArrayList<Object> copy = new ArrayList<>(prevSize + Math.min(count, 4096));
+            copy.addAll(list);
+            list = copy;
+        } else if (list.isEmpty() && count > 10 && count <= 4096) {
+            ((ArrayList<?>) list).ensureCapacity(count);
         }
-        if (elemDec.hasRemaining()) {
-            throw new OmniBufException("omnibuf: WireArray has trailing payload bytes");
+        int elemWT = slot.elemWireType;
+        if (elemWT == WireType.WIRE_STRING) {
+            for (int i = 0; i < count; i++) {
+                list.add(dec.readString());
+            }
+        } else if (elemWT == WireType.WIRE_UINT && slot.elemClass == Integer.class) {
+            for (int i = 0; i < count; i++) {
+                list.add(dec.readUint32());
+            }
+        } else if (elemWT == WireType.WIRE_SUB_MSG) {
+            ClassCodec<?> subCodec = slot.subCodec;
+            for (int i = 0; i < count; i++) {
+                int elemLimit = dec.readLengthPrefixedLimit(0);
+                list.add(subCodec.decodeNewFrom(dec, depth + 2));
+                dec.endContainer(elemLimit);
+            }
+        } else {
+            for (int i = 0; i < count; i++) {
+                list.add(readInlineValue(dec, elemWT, slot.elemClass, slot.subCodec, depth + 1));
+            }
         }
+        dec.endContainer(arrLimit);
+        return list;
     }
 
-    private static void decodeMapInto(
+    private static Map<Object, Object> decodeMapInto(
             OmniBufDecoder dec, FieldDescriptorSlot slot, Map<Object, Object> target, int depth) {
-        if (depth + 1 > OmniBufDecoder.MAX_CONTAINER_DEPTH) {
-            throw new OmniBufException("omnibuf: WireMap exceeds MaxNestingDepth");
+        long mapState = dec.beginMap(slot.mapKeyWireType, slot.mapValWireType, depth);
+        if (mapState < 0L) {
+            return target == null ? new LinkedHashMap<>(4) : target;
         }
-        int mapFieldValuePos = dec.position();
-        OmniBufDecoder.Slice body = dec.readLengthPrefixedSlice(3);
-        byte[] buf = dec.buffer();
-        OmniBufDecoder.MapHeader hdr =
-            OmniBufDecoder.parseMapHeader(buf, body.offset(), body.end());
-        if (hdr.keyWireType() != slot.mapKeyWireType || hdr.valWireType() != slot.mapValWireType) {
-            OmniBufDecoder.validateValue(buf, mapFieldValuePos, dec.limit(), WireType.WIRE_MAP, depth);
-            return;
-        }
-        Class<?> keyClass = mapKeyBoxClass(slot.mapKeyWireType);
-        OmniBufDecoder entryDec =
-            new OmniBufDecoder(buf, hdr.payloadStart(), hdr.payloadEnd() - hdr.payloadStart());
-        for (int i = 0; i < hdr.count(); i++) {
-            Object k = readInlineValue(entryDec, slot.mapKeyWireType, keyClass, null, depth + 1);
+        int count = (int) mapState;
+        int mapLimit = (int) (mapState >>> 32);
+        int capHint = Math.min(count, 4096);
+        Map<Object, Object> map = target != null
+            ? target
+            : new LinkedHashMap<>(Math.max(4, capHint + (capHint >>> 1) + 1));
+        Class<?> keyClass = slot.mapKeyClass;
+        Class<?> valClass = slot.elemClass;
+        int maxElems = dec.maxCollectionElements();
+        for (int i = 0; i < count; i++) {
+            Object k = readInlineValue(dec, slot.mapKeyWireType, keyClass, null, depth + 1);
             Object v = readInlineValue(
-                entryDec, slot.mapValWireType, slot.elemClass, slot.subCodec, depth + 1
+                dec, slot.mapValWireType, valClass, slot.subCodec, depth + 1
             );
-            target.put(k, v);
+            if (!map.containsKey(k) && map.size() >= maxElems) {
+                throw new OmniBufException("omnibuf: accumulated WireMap count exceeds maxCollectionElements");
+            }
+            map.put(k, v);
         }
-        if (entryDec.hasRemaining()) {
-            throw new OmniBufException("omnibuf: WireMap has trailing payload bytes");
-        }
-    }
-
-    private static Class<?> mapKeyBoxClass(int keyWT) {
-        return switch (keyWT) {
-            case WireType.WIRE_STRING -> String.class;
-            case WireType.WIRE_BOOL_FALSE -> Boolean.class;
-            case WireType.WIRE_FIXED32, WireType.WIRE_SFIXED32 -> Integer.class;
-            default -> Long.class;
-        };
+        dec.endContainer(mapLimit);
+        return map;
     }
 
     private static Object readInlineValue(
@@ -1007,21 +1439,40 @@ public final class OmniBufMapper {
             ClassCodec<?> subCodec,
             int containerDepth) {
         return switch (wt) {
-            case WireType.WIRE_UINT ->
-                targetClass == Integer.class ? dec.readUint32() : dec.readUint64();
-            case WireType.WIRE_SINT ->
-                targetClass == Integer.class ? dec.readSint32() : dec.readSint64();
+            case WireType.WIRE_UINT -> {
+                if (targetClass == Integer.class) {
+                    yield Integer.valueOf(dec.readUint32());
+                }
+                yield Long.valueOf(dec.readUint64());
+            }
+            case WireType.WIRE_SINT -> {
+                if (targetClass != null && targetClass.isEnum()) {
+                    int ord = dec.readSint32();
+                    Object[] consts = targetClass.getEnumConstants();
+                    if (consts == null || ord < 0 || ord >= consts.length) {
+                        throw new OmniBufException(
+                            "omnibuf: unknown enum ordinal " + ord + " for " + targetClass.getSimpleName()
+                        );
+                    }
+                    yield consts[ord];
+                }
+                if (targetClass == Integer.class) {
+                    yield Integer.valueOf(dec.readSint32());
+                }
+                yield Long.valueOf(dec.readSint64());
+            }
             case WireType.WIRE_BOOL_FALSE -> dec.readContainerBool();
-            case WireType.WIRE_FIXED32, WireType.WIRE_SFIXED32 ->
-                targetClass == Long.class ? Integer.toUnsignedLong(dec.readFixed32()) : dec.readFixed32();
+            case WireType.WIRE_FIXED32, WireType.WIRE_SFIXED32 -> dec.readFixed32();
             case WireType.WIRE_FLOAT32 -> dec.readFloat32();
             case WireType.WIRE_FIXED64, WireType.WIRE_SFIXED64 -> dec.readFixed64();
             case WireType.WIRE_FLOAT64 -> dec.readFloat64();
             case WireType.WIRE_STRING -> dec.readString();
             case WireType.WIRE_BYTES -> dec.readBytes();
             case WireType.WIRE_SUB_MSG -> {
-                OmniBufDecoder.Slice s = dec.readLengthPrefixedSlice(0);
-                yield subCodec.decodeNew(dec.buffer(), s.offset(), s.length(), containerDepth + 1);
+                int elemLimit = dec.readLengthPrefixedLimit(0);
+                Object sub = subCodec.decodeNewFrom(dec, containerDepth + 1);
+                dec.endContainer(elemLimit);
+                yield sub;
             }
             default -> throw new OmniBufException("omnibuf: unsupported container value wire type: " + wt);
         };
@@ -1037,6 +1488,9 @@ public final class OmniBufMapper {
         ClassCodec<T> inProgress = (ClassCodec<T>) building.get(type);
         if (inProgress != null) {
             return inProgress;
+        }
+        if (type.isPrimitive() || type.isArray() || type.isInterface() || type.isEnum()) {
+            throw new OmniBufException("omnibuf: invalid message type " + type.getName());
         }
 
         OmniBufMessage msgAnn = type.getAnnotation(OmniBufMessage.class);
@@ -1056,6 +1510,7 @@ public final class OmniBufMapper {
             if (isRecord) {
                 RecordComponent[] comps = type.getRecordComponents();
                 Class<?>[] paramTypes = new Class<?>[comps.length];
+                FieldDescriptorSlot[] byCompIdx = new FieldDescriptorSlot[comps.length];
                 for (int i = 0; i < comps.length; i++) {
                     RecordComponent rc = comps[i];
                     paramTypes[i] = rc.getType();
@@ -1071,22 +1526,27 @@ public final class OmniBufMapper {
                         );
                     }
                     MethodHandle getter = lookup.unreflect(rc.getAccessor());
+                    AccessorHandles handles = new AccessorHandles(rc.getType(), getter, null);
                     FieldDescriptorSlot slot = buildSlot(
-                        slots.size(),
+                        i,
                         rc.getName(),
                         rc.getType(),
                         rc.getGenericType(),
                         ann,
-                        null,
-                        getter,
+                        handles,
                         seenFieldNums,
                         building
                     );
+                    byCompIdx[i] = slot;
                     slots.add(slot);
                 }
+                codec.recordComponentsByIndex = byCompIdx;
                 Constructor<T> canonical = type.getDeclaredConstructor(paramTypes);
                 canonical.setAccessible(true);
                 codec.constructorHandle = lookup.unreflectConstructor(canonical);
+                codec.recordSpreaderHandle = codec.constructorHandle
+                    .asSpreader(Object[].class, paramTypes.length)
+                    .asType(MethodType.methodType(Object.class, Object[].class));
             } else {
                 Constructor<T> ctor = type.getDeclaredConstructor();
                 ctor.setAccessible(true);
@@ -1098,20 +1558,29 @@ public final class OmniBufMapper {
                     if (ann == null) {
                         continue;
                     }
-                    VarHandle vh = lookup.unreflectVarHandle(f);
+                    f.setAccessible(true);
+                    MethodHandle rawGetter = lookup.unreflectGetter(f);
+                    MethodHandle rawSetter = lookup.unreflectSetter(f);
+                    AccessorHandles handles = new AccessorHandles(f.getType(), rawGetter, rawSetter);
                     FieldDescriptorSlot slot = buildSlot(
-                        slots.size(),
+                        -1,
                         f.getName(),
                         f.getType(),
                         f.getGenericType(),
                         ann,
-                        vh,
-                        null,
+                        handles,
                         seenFieldNums,
                         building
                     );
                     slots.add(slot);
                 }
+            }
+
+            // Always sort orderedFields by ascending wire field number so encoding and SchemaMeta
+            // emit canonical ascending field numbers regardless of Java declaration order.
+            slots.sort(Comparator.comparingInt(s -> s.fieldNumber));
+            for (int i = 0; i < slots.size(); i++) {
+                slots.get(i).slotIndex = i;
             }
 
             codec.orderedFields = slots.toArray(FieldDescriptorSlot[]::new);
@@ -1126,12 +1595,106 @@ public final class OmniBufMapper {
                     codec.overflowByNum.put(slot.fieldNumber, slot);
                 }
             }
+
+            if (isRecord) {
+                int arity = codec.recordComponentsByIndex.length;
+                Object[] tmpl = new Object[arity];
+                boolean hasColls = false;
+                for (int i = 0; i < arity; i++) {
+                    FieldDescriptorSlot s = codec.recordComponentsByIndex[i];
+                    tmpl[i] = s.immutableRecordDefault();
+                    if (s.category == FieldCategory.LIST || s.category == FieldCategory.MAP) {
+                        hasColls = true;
+                    }
+                }
+                codec.defaultRecordTemplate = tmpl;
+                codec.hasCollectionComponents = hasColls;
+            } else {
+                Object probe = codec.constructorHandle.invokeExact();
+                codec.cleanFreshConstructor = isFreshInstanceClean(probe, codec.orderedFields);
+            }
+
             return codec;
         } catch (OmniBufException e) {
             throw e;
         } catch (Throwable t) {
             throw new OmniBufException("omnibuf: failed compiling codec for " + type.getName(), t);
         }
+    }
+
+    private static boolean isFreshInstanceClean(Object probe, FieldDescriptorSlot[] slots) {
+        for (FieldDescriptorSlot slot : slots) {
+            switch (slot.category) {
+                case INT_SCALAR -> {
+                    if (slot.readInt(probe) != 0 || (slot.rawType != int.class && slot.readObject(probe) == null)) {
+                        return false;
+                    }
+                }
+                case LONG_SCALAR -> {
+                    if (slot.readLong(probe) != 0L || (slot.rawType != long.class && slot.readObject(probe) == null)) {
+                        return false;
+                    }
+                }
+                case BOOL_SCALAR -> {
+                    if (slot.readBoolean(probe) || (slot.rawType != boolean.class && slot.readObject(probe) == null)) {
+                        return false;
+                    }
+                }
+                case FLOAT_SCALAR -> {
+                    if (Float.floatToRawIntBits(slot.readFloat(probe)) != 0
+                            || (slot.rawType != float.class && slot.readObject(probe) == null)) {
+                        return false;
+                    }
+                }
+                case DOUBLE_SCALAR -> {
+                    if (Double.doubleToRawLongBits(slot.readDouble(probe)) != 0L
+                            || (slot.rawType != double.class && slot.readObject(probe) == null)) {
+                        return false;
+                    }
+                }
+                case STRING_SCALAR -> {
+                    if (!"".equals(slot.readObject(probe))) {
+                        return false;
+                    }
+                }
+                case BYTES_SCALAR -> {
+                    if (!(slot.readObject(probe) instanceof byte[] b) || b.length != 0) {
+                        return false;
+                    }
+                }
+                case ENUM_SCALAR -> {
+                    if (slot.readObject(probe) != slot.defaultEnumValue()) {
+                        return false;
+                    }
+                }
+                case INT_ARRAY -> {
+                    if (!(slot.readObject(probe) instanceof int[] a) || a.length != 0) {
+                        return false;
+                    }
+                }
+                case LONG_ARRAY -> {
+                    if (!(slot.readObject(probe) instanceof long[] a) || a.length != 0) {
+                        return false;
+                    }
+                }
+                case LIST -> {
+                    if (!(slot.readObject(probe) instanceof ArrayList<?> al) || !al.isEmpty()) {
+                        return false;
+                    }
+                }
+                case MAP -> {
+                    if (!(slot.readObject(probe) instanceof LinkedHashMap<?, ?> lhm) || !lhm.isEmpty()) {
+                        return false;
+                    }
+                }
+                case SUB_MSG -> {
+                    if (slot.readObject(probe) != null) {
+                        return false;
+                    }
+                }
+            }
+        }
+        return true;
     }
 
     private static List<Field> collectInstanceFields(Class<?> type) {
@@ -1146,14 +1709,21 @@ public final class OmniBufMapper {
         return out;
     }
 
+    private static void ensureNonMapFieldOptions(OmniBufField ann, String javaName) {
+        if (ann.keyWire() != WireKind.AUTO || ann.valueWire() != WireKind.AUTO) {
+            throw new OmniBufException(
+                "omnibuf: keyWire and valueWire are only supported on Map fields (" + javaName + ")"
+            );
+        }
+    }
+
     private static FieldDescriptorSlot buildSlot(
-            int index,
+            int recordComponentIndex,
             String javaName,
             Class<?> rawType,
             Type genericType,
             OmniBufField ann,
-            VarHandle varHandle,
-            MethodHandle getter,
+            AccessorHandles handles,
             Set<Integer> seenFieldNums,
             Map<Class<?>, ClassCodec<?>> building) {
         int id = ann.id();
@@ -1165,239 +1735,173 @@ public final class OmniBufMapper {
         }
         String schemaName = ann.name().isEmpty() ? camelToSnake(javaName) : ann.name();
 
+        if (!Map.class.isAssignableFrom(rawType)) {
+            ensureNonMapFieldOptions(ann, javaName);
+        }
+
         if (rawType == int.class || rawType == Integer.class) {
-            int wt = resolveScalarWire(rawType, ann.wire());
+            int wt = resolveScalarWire(rawType, ann.wire(), javaName);
             return new FieldDescriptorSlot(
-                index, id, schemaName, FieldCategory.INT_SCALAR, rawType, wt, 0, 0, 0, null, varHandle, getter
+                recordComponentIndex, id, schemaName, FieldCategory.INT_SCALAR, rawType,
+                wt, 0, 0, 0, null, null, handles
             );
         }
         if (rawType == long.class || rawType == Long.class) {
-            int wt = resolveScalarWire(rawType, ann.wire());
+            int wt = resolveScalarWire(rawType, ann.wire(), javaName);
             return new FieldDescriptorSlot(
-                index, id, schemaName, FieldCategory.LONG_SCALAR, rawType, wt, 0, 0, 0, null, varHandle, getter
+                recordComponentIndex, id, schemaName, FieldCategory.LONG_SCALAR, rawType,
+                wt, 0, 0, 0, null, null, handles
             );
         }
         if (rawType == boolean.class || rawType == Boolean.class) {
+            int wt = resolveScalarWire(rawType, ann.wire(), javaName);
             return new FieldDescriptorSlot(
-                index,
-                id,
-                schemaName,
-                FieldCategory.BOOL_SCALAR,
-                rawType,
-                WireType.WIRE_BOOL_FALSE,
-                0,
-                0,
-                0,
-                null,
-                varHandle,
-                getter
+                recordComponentIndex, id, schemaName, FieldCategory.BOOL_SCALAR, rawType,
+                wt, 0, 0, 0, null, null, handles
             );
         }
         if (rawType == float.class || rawType == Float.class) {
+            int wt = resolveScalarWire(rawType, ann.wire(), javaName);
             return new FieldDescriptorSlot(
-                index,
-                id,
-                schemaName,
-                FieldCategory.FLOAT_SCALAR,
-                rawType,
-                WireType.WIRE_FLOAT32,
-                0,
-                0,
-                0,
-                null,
-                varHandle,
-                getter
+                recordComponentIndex, id, schemaName, FieldCategory.FLOAT_SCALAR, rawType,
+                wt, 0, 0, 0, null, null, handles
             );
         }
         if (rawType == double.class || rawType == Double.class) {
+            int wt = resolveScalarWire(rawType, ann.wire(), javaName);
             return new FieldDescriptorSlot(
-                index,
-                id,
-                schemaName,
-                FieldCategory.DOUBLE_SCALAR,
-                rawType,
-                WireType.WIRE_FLOAT64,
-                0,
-                0,
-                0,
-                null,
-                varHandle,
-                getter
+                recordComponentIndex, id, schemaName, FieldCategory.DOUBLE_SCALAR, rawType,
+                wt, 0, 0, 0, null, null, handles
             );
         }
         if (rawType == String.class) {
+            int wt = resolveScalarWire(rawType, ann.wire(), javaName);
             return new FieldDescriptorSlot(
-                index,
-                id,
-                schemaName,
-                FieldCategory.STRING_SCALAR,
-                rawType,
-                WireType.WIRE_STRING,
-                0,
-                0,
-                0,
-                null,
-                varHandle,
-                getter
+                recordComponentIndex, id, schemaName, FieldCategory.STRING_SCALAR, rawType,
+                wt, 0, 0, 0, null, null, handles
             );
         }
         if (rawType == byte[].class) {
+            int wt = resolveScalarWire(rawType, ann.wire(), javaName);
             return new FieldDescriptorSlot(
-                index,
-                id,
-                schemaName,
-                FieldCategory.BYTES_SCALAR,
-                rawType,
-                WireType.WIRE_BYTES,
-                0,
-                0,
-                0,
-                null,
-                varHandle,
-                getter
+                recordComponentIndex, id, schemaName, FieldCategory.BYTES_SCALAR, rawType,
+                wt, 0, 0, 0, null, null, handles
+            );
+        }
+        if (rawType.isEnum()) {
+            int wt = resolveScalarWire(rawType, ann.wire(), javaName);
+            return new FieldDescriptorSlot(
+                recordComponentIndex, id, schemaName, FieldCategory.ENUM_SCALAR, rawType,
+                wt, 0, 0, 0, null, null, handles
             );
         }
         if (rawType == int[].class) {
-            int elemWT = resolveScalarWire(int.class, ann.wire());
+            int elemWT = resolveScalarWire(int.class, ann.wire(), javaName);
             return new FieldDescriptorSlot(
-                index,
-                id,
-                schemaName,
-                FieldCategory.INT_ARRAY,
-                rawType,
-                WireType.WIRE_ARRAY,
-                elemWT,
-                0,
-                0,
-                Integer.class,
-                varHandle,
-                getter
+                recordComponentIndex, id, schemaName, FieldCategory.INT_ARRAY, rawType,
+                WireType.WIRE_ARRAY, elemWT, 0, 0, null, Integer.class, handles
             );
         }
         if (rawType == long[].class) {
-            int elemWT = resolveScalarWire(long.class, ann.wire());
+            int elemWT = resolveScalarWire(long.class, ann.wire(), javaName);
             return new FieldDescriptorSlot(
-                index,
-                id,
-                schemaName,
-                FieldCategory.LONG_ARRAY,
-                rawType,
-                WireType.WIRE_ARRAY,
-                elemWT,
-                0,
-                0,
-                Long.class,
-                varHandle,
-                getter
+                recordComponentIndex, id, schemaName, FieldCategory.LONG_ARRAY, rawType,
+                WireType.WIRE_ARRAY, elemWT, 0, 0, null, Long.class, handles
             );
         }
         if (List.class.isAssignableFrom(rawType)) {
             Class<?> elemClass = extractTypeArgument(genericType, 0, javaName);
-            if (isScalarOrBytesClass(elemClass)) {
-                int elemWT = resolveContainerElementWire(elemClass, ann.wire());
+            if (isScalarBytesOrEnumClass(elemClass)) {
+                int elemWT = resolveContainerElementWire(elemClass, ann.wire(), javaName);
                 return new FieldDescriptorSlot(
-                    index,
-                    id,
-                    schemaName,
-                    FieldCategory.LIST,
-                    rawType,
-                    WireType.WIRE_ARRAY,
-                    elemWT,
-                    0,
-                    0,
-                    elemClass,
-                    varHandle,
-                    getter
+                    recordComponentIndex, id, schemaName, FieldCategory.LIST, rawType,
+                    WireType.WIRE_ARRAY, elemWT, 0, 0, null, elemClass, handles
+                );
+            }
+            if (ann.wire() != WireKind.AUTO && ann.wire() != WireKind.SUB_MSG) {
+                throw new OmniBufException(
+                    "omnibuf: incompatible WireKind " + ann.wire() + " for sub-message List on " + javaName
                 );
             }
             FieldDescriptorSlot slot = new FieldDescriptorSlot(
-                index,
-                id,
-                schemaName,
-                FieldCategory.LIST,
-                rawType,
-                WireType.WIRE_ARRAY,
-                WireType.WIRE_SUB_MSG,
-                0,
-                0,
-                elemClass,
-                varHandle,
-                getter
+                recordComponentIndex, id, schemaName, FieldCategory.LIST, rawType,
+                WireType.WIRE_ARRAY, WireType.WIRE_SUB_MSG, 0, 0, null, elemClass, handles
             );
             slot.subCodec = compileCodec(elemClass, building);
             return slot;
         }
         if (Map.class.isAssignableFrom(rawType)) {
+            if (ann.wire() != WireKind.AUTO
+                    && ann.valueWire() != WireKind.AUTO
+                    && ann.wire() != ann.valueWire()) {
+                throw new OmniBufException(
+                    "omnibuf: conflicting wire (" + ann.wire() + ") and valueWire (" + ann.valueWire()
+                        + ") on Map field " + javaName
+                );
+            }
             Class<?> keyClass = extractTypeArgument(genericType, 0, javaName);
             Class<?> valClass = extractTypeArgument(genericType, 1, javaName);
-            int keyWT = resolveContainerElementWire(keyClass, ann.keyWire());
+            int keyWT = resolveContainerElementWire(keyClass, ann.keyWire(), javaName);
             if (!WireType.isValidMapKeyWireType(keyWT)) {
                 throw new OmniBufException("omnibuf: invalid map key wire type on " + javaName);
             }
+            WireKind vk = ann.valueWire() != WireKind.AUTO ? ann.valueWire() : ann.wire();
             int valWT;
             ClassCodec<?> subCodec = null;
-            if (isScalarOrBytesClass(valClass)) {
-                WireKind vk = ann.valueWire() != WireKind.AUTO ? ann.valueWire() : ann.wire();
-                valWT = resolveContainerElementWire(valClass, vk);
+            if (isScalarBytesOrEnumClass(valClass)) {
+                valWT = resolveContainerElementWire(valClass, vk, javaName);
             } else {
+                if (vk != WireKind.AUTO && vk != WireKind.SUB_MSG) {
+                    throw new OmniBufException(
+                        "omnibuf: incompatible value WireKind " + vk + " for sub-message Map on " + javaName
+                    );
+                }
                 valWT = WireType.WIRE_SUB_MSG;
                 subCodec = compileCodec(valClass, building);
             }
             FieldDescriptorSlot slot = new FieldDescriptorSlot(
-                index,
-                id,
-                schemaName,
-                FieldCategory.MAP,
-                rawType,
-                WireType.WIRE_MAP,
-                0,
-                keyWT,
-                valWT,
-                valClass,
-                varHandle,
-                getter
+                recordComponentIndex, id, schemaName, FieldCategory.MAP, rawType,
+                WireType.WIRE_MAP, 0, keyWT, valWT, keyClass, valClass, handles
             );
             slot.subCodec = subCodec;
             return slot;
         }
 
         // Nested sub-message class or record
+        if (ann.wire() != WireKind.AUTO && ann.wire() != WireKind.SUB_MSG) {
+            throw new OmniBufException(
+                "omnibuf: incompatible WireKind " + ann.wire() + " for sub-message field " + javaName
+            );
+        }
         FieldDescriptorSlot slot = new FieldDescriptorSlot(
-            index,
-            id,
-            schemaName,
-            FieldCategory.SUB_MSG,
-            rawType,
-            WireType.WIRE_SUB_MSG,
-            0,
-            0,
-            0,
-            rawType,
-            varHandle,
-            getter
+            recordComponentIndex, id, schemaName, FieldCategory.SUB_MSG, rawType,
+            WireType.WIRE_SUB_MSG, 0, 0, 0, null, rawType, handles
         );
         slot.subCodec = compileCodec(rawType, building);
         return slot;
     }
 
-    private static boolean isScalarOrBytesClass(Class<?> c) {
+    private static boolean isScalarBytesOrEnumClass(Class<?> c) {
         return c == Integer.class
             || c == Long.class
             || c == Boolean.class
             || c == Float.class
             || c == Double.class
             || c == String.class
-            || c == byte[].class;
+            || c == byte[].class
+            || c.isEnum();
     }
 
-    private static int resolveScalarWire(Class<?> c, WireKind kind) {
+    private static int resolveScalarWire(Class<?> c, WireKind kind, String fieldName) {
         if (c == int.class || c == Integer.class) {
             return switch (kind) {
                 case AUTO, UINT -> WireType.WIRE_UINT;
                 case SINT -> WireType.WIRE_SINT;
                 case FIXED32 -> WireType.WIRE_FIXED32;
                 case SFIXED32 -> WireType.WIRE_SFIXED32;
-                default -> throw new OmniBufException("omnibuf: incompatible WireKind " + kind + " for int");
+                default -> throw new OmniBufException(
+                    "omnibuf: incompatible WireKind " + kind + " for int on " + fieldName
+                );
             };
         }
         if (c == long.class || c == Long.class) {
@@ -1406,32 +1910,67 @@ public final class OmniBufMapper {
                 case SINT -> WireType.WIRE_SINT;
                 case FIXED64 -> WireType.WIRE_FIXED64;
                 case SFIXED64 -> WireType.WIRE_SFIXED64;
-                default -> throw new OmniBufException("omnibuf: incompatible WireKind " + kind + " for long");
+                default -> throw new OmniBufException(
+                    "omnibuf: incompatible WireKind " + kind + " for long on " + fieldName
+                );
             };
         }
-        throw new OmniBufException("omnibuf: unsupported scalar type: " + c);
-    }
-
-    private static int resolveContainerElementWire(Class<?> c, WireKind kind) {
-        if (c == Integer.class || c == Long.class) {
-            return resolveScalarWire(c, kind);
+        if (c == boolean.class || c == Boolean.class) {
+            if (kind == WireKind.AUTO || kind == WireKind.BOOL) {
+                return WireType.WIRE_BOOL_FALSE;
+            }
+            throw new OmniBufException(
+                "omnibuf: incompatible WireKind " + kind + " for boolean on " + fieldName
+            );
         }
-        if (c == Boolean.class) {
-            return WireType.WIRE_BOOL_FALSE;
+        if (c == float.class || c == Float.class) {
+            if (kind == WireKind.AUTO || kind == WireKind.FLOAT32) {
+                return WireType.WIRE_FLOAT32;
+            }
+            throw new OmniBufException(
+                "omnibuf: incompatible WireKind " + kind + " for float on " + fieldName
+            );
         }
-        if (c == Float.class) {
-            return WireType.WIRE_FLOAT32;
-        }
-        if (c == Double.class) {
-            return WireType.WIRE_FLOAT64;
+        if (c == double.class || c == Double.class) {
+            if (kind == WireKind.AUTO || kind == WireKind.FLOAT64) {
+                return WireType.WIRE_FLOAT64;
+            }
+            throw new OmniBufException(
+                "omnibuf: incompatible WireKind " + kind + " for double on " + fieldName
+            );
         }
         if (c == String.class) {
-            return WireType.WIRE_STRING;
+            if (kind == WireKind.AUTO || kind == WireKind.STRING) {
+                return WireType.WIRE_STRING;
+            }
+            throw new OmniBufException(
+                "omnibuf: incompatible WireKind " + kind + " for String on " + fieldName
+            );
         }
         if (c == byte[].class) {
-            return WireType.WIRE_BYTES;
+            if (kind == WireKind.AUTO || kind == WireKind.BYTES) {
+                return WireType.WIRE_BYTES;
+            }
+            throw new OmniBufException(
+                "omnibuf: incompatible WireKind " + kind + " for byte[] on " + fieldName
+            );
         }
-        throw new OmniBufException("omnibuf: unsupported container element type: " + c);
+        if (c.isEnum()) {
+            if (kind == WireKind.AUTO || kind == WireKind.SINT) {
+                return WireType.WIRE_SINT;
+            }
+            throw new OmniBufException(
+                "omnibuf: incompatible WireKind " + kind + " for Enum " + c.getSimpleName() + " on " + fieldName
+            );
+        }
+        throw new OmniBufException("omnibuf: unsupported scalar type " + c + " on " + fieldName);
+    }
+
+    private static int resolveContainerElementWire(Class<?> c, WireKind kind, String fieldName) {
+        if (isScalarBytesOrEnumClass(c)) {
+            return resolveScalarWire(c, kind, fieldName);
+        }
+        throw new OmniBufException("omnibuf: unsupported container element type " + c + " on " + fieldName);
     }
 
     private static Class<?> extractTypeArgument(Type genericType, int argIndex, String fieldName) {

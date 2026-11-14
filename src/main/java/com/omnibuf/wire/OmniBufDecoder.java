@@ -2,10 +2,11 @@ package com.omnibuf.wire;
 
 import com.omnibuf.OmniBufException;
 import com.omnibuf.SchemaMeta;
+import com.omnibuf.UnmarshalOptions;
 import java.util.Arrays;
 
 /**
- * Binary decoder, container header parser, and strict wire validator for OmniBuf packets.
+ * Binary decoder, single-cursor container limit reader, and strict wire validator for OmniBuf packets.
  */
 public final class OmniBufDecoder {
 
@@ -21,24 +22,63 @@ public final class OmniBufDecoder {
 
     public record MapHeader(int keyWireType, int valWireType, int count, int payloadStart, int payloadEnd) {}
 
-    private final byte[] buf;
+    private byte[] buf;
     private int pos;
-    private final int limit;
+    private int limit;
+    private int maxMessageBytes;
+    private int maxCollectionElements;
+    private int maxNestingDepth;
+
+    public OmniBufDecoder() {
+        this.buf = EMPTY_BYTES;
+        this.pos = 0;
+        this.limit = 0;
+        this.maxMessageBytes = UnmarshalOptions.DEFAULT_MAX_MESSAGE_BYTES;
+        this.maxCollectionElements = UnmarshalOptions.DEFAULT_MAX_COLLECTION_ELEMENTS;
+        this.maxNestingDepth = UnmarshalOptions.DEFAULT_MAX_NESTING_DEPTH;
+    }
 
     public OmniBufDecoder(byte[] buf) {
-        this(buf, 0, buf == null ? 0 : buf.length);
+        this(buf, 0, buf == null ? 0 : buf.length, UnmarshalOptions.DEFAULT);
     }
 
     public OmniBufDecoder(byte[] buf, int offset, int length) {
+        this(buf, offset, length, UnmarshalOptions.DEFAULT);
+    }
+
+    public OmniBufDecoder(byte[] buf, int offset, int length, UnmarshalOptions options) {
+        reset(buf, offset, length, options);
+    }
+
+    public void reset(byte[] buf, int offset, int length) {
+        reset(buf, offset, length, UnmarshalOptions.DEFAULT);
+    }
+
+    public void reset(byte[] buf, int offset, int length, UnmarshalOptions options) {
         if (buf == null) {
             throw new OmniBufException("omnibuf: null packet buffer");
         }
-        if (offset < 0 || length < 0 || offset + length > buf.length) {
+        if (offset < 0 || length < 0 || length > buf.length - offset) {
             throw new OmniBufException("omnibuf: packet slice out of bounds");
+        }
+        UnmarshalOptions opts = options == null ? UnmarshalOptions.DEFAULT : options;
+        if (length > opts.maxMessageBytes()) {
+            throw new OmniBufException(
+                "omnibuf: packet length " + length + " exceeds maxMessageBytes (" + opts.maxMessageBytes() + ")"
+            );
         }
         this.buf = buf;
         this.pos = offset;
         this.limit = offset + length;
+        this.maxMessageBytes = opts.maxMessageBytes();
+        this.maxCollectionElements = opts.maxCollectionElements();
+        this.maxNestingDepth = opts.maxNestingDepth();
+    }
+
+    public void clearBuffer() {
+        this.buf = EMPTY_BYTES;
+        this.pos = 0;
+        this.limit = 0;
     }
 
     public byte[] buffer() {
@@ -60,51 +100,106 @@ public final class OmniBufDecoder {
         return limit;
     }
 
+    public int maxMessageBytes() {
+        return maxMessageBytes;
+    }
+
+    public int maxCollectionElements() {
+        return maxCollectionElements;
+    }
+
+    public int maxNestingDepth() {
+        return maxNestingDepth;
+    }
+
+    public int setSlice(int newPos, int newLimit) {
+        if (newPos < 0 || newLimit < newPos || newLimit > buf.length) {
+            throw new OmniBufException("omnibuf: slice bounds out of range");
+        }
+        int saved = this.limit;
+        this.pos = newPos;
+        this.limit = newLimit;
+        return saved;
+    }
+
+    public void restoreLimit(int savedLimit) {
+        this.limit = savedLimit;
+    }
+
     public boolean hasRemaining() {
         return pos < limit;
     }
 
     public long readVarint() {
-        if (pos >= limit) {
+        int p = this.pos;
+        int lim = this.limit;
+        if (p >= lim) {
             throw new OmniBufException("omnibuf: unexpected EOF reading prefix-varint");
         }
-        int b0 = buf[pos] & 0xFF;
-        return switch (Integer.numberOfTrailingZeros(b0)) {
-            case 0 -> {
-                pos += 1;
-                yield b0 >>> 1;
+        int b0 = buf[p] & 0xFF;
+        if ((b0 & 1) != 0) {
+            this.pos = p + 1;
+            return b0 >>> 1;
+        }
+        if ((b0 & 2) != 0) {
+            if (p + 2 > lim) {
+                throw new OmniBufException("omnibuf: truncated 2-byte prefix-varint");
             }
-            case 1 -> {
-                if (pos + 2 > limit) {
-                    throw new OmniBufException("omnibuf: truncated 2-byte prefix-varint");
-                }
-                long v = Short.toUnsignedLong(PrefixVarint.getShortLE(buf, pos)) >>> 2;
-                pos += 2;
-                yield v;
+            long v = Short.toUnsignedLong(PrefixVarint.getShortLE(buf, p)) >>> 2;
+            this.pos = p + 2;
+            return v;
+        }
+        return readVarintSlow(p, lim, b0);
+    }
+
+    private long readVarintSlow(int p, int lim, int b0) {
+        if ((b0 & 4) != 0) {
+            if (p + 4 > lim) {
+                throw new OmniBufException("omnibuf: truncated 4-byte prefix-varint");
             }
-            case 2 -> {
-                if (pos + 4 > limit) {
-                    throw new OmniBufException("omnibuf: truncated 4-byte prefix-varint");
-                }
-                long v = Integer.toUnsignedLong(PrefixVarint.getIntLE(buf, pos)) >>> 3;
-                pos += 4;
-                yield v;
+            long v = Integer.toUnsignedLong(PrefixVarint.getIntLE(buf, p)) >>> 3;
+            this.pos = p + 4;
+            return v;
+        }
+        if (b0 == 0) {
+            if (p + 9 > lim) {
+                throw new OmniBufException("omnibuf: truncated 9-byte prefix-varint");
             }
-            case 32 -> {
-                if (pos + 9 > limit) {
-                    throw new OmniBufException("omnibuf: truncated 9-byte prefix-varint");
-                }
-                long v = PrefixVarint.getLongLE(buf, pos + 1);
-                pos += 9;
-                yield v;
-            }
-            default -> throw new OmniBufException(
-                String.format("omnibuf: reserved prefix-varint marker 0x%02x", b0)
-            );
-        };
+            long v = PrefixVarint.getLongLE(buf, p + 1);
+            this.pos = p + 9;
+            return v;
+        }
+        throw new OmniBufException(
+            String.format("omnibuf: reserved prefix-varint marker 0x%02x", b0)
+        );
     }
 
     public long readTag() {
+        int p = this.pos;
+        int lim = this.limit;
+        if (p < lim) {
+            int b0 = buf[p] & 0xFF;
+            if ((b0 & 1) != 0) {
+                int tag = b0 >>> 1;
+                if (tag < 16 && tag != WireType.WIRE_SUB_MSG) {
+                    throw new OmniBufException("omnibuf: Field #0 requires WireSubMsg");
+                }
+                this.pos = p + 1;
+                return tag;
+            }
+            if ((b0 & 2) != 0 && p + 2 <= lim) {
+                int tag = Short.toUnsignedInt(PrefixVarint.getShortLE(buf, p)) >>> 2;
+                if (tag < 16 && tag != WireType.WIRE_SUB_MSG) {
+                    throw new OmniBufException("omnibuf: Field #0 requires WireSubMsg");
+                }
+                this.pos = p + 2;
+                return tag;
+            }
+        }
+        return readTagSlow();
+    }
+
+    private long readTagSlow() {
         long tag = readVarint();
         long fnum = tag >>> 4;
         if (Long.compareUnsigned(fnum, WireType.MAX_FIELD_NUMBER) > 0) {
@@ -133,20 +228,22 @@ public final class OmniBufDecoder {
     }
 
     public int readFixed32() {
-        if (pos + 4 > limit) {
+        int p = this.pos;
+        if (p + 4 > this.limit) {
             throw new OmniBufException("omnibuf: truncated fixed32");
         }
-        int v = PrefixVarint.getIntLE(buf, pos);
-        pos += 4;
+        int v = PrefixVarint.getIntLE(buf, p);
+        this.pos = p + 4;
         return v;
     }
 
     public long readFixed64() {
-        if (pos + 8 > limit) {
+        int p = this.pos;
+        if (p + 8 > this.limit) {
             throw new OmniBufException("omnibuf: truncated fixed64");
         }
-        long v = PrefixVarint.getLongLE(buf, pos);
-        pos += 8;
+        long v = PrefixVarint.getLongLE(buf, p);
+        this.pos = p + 8;
         return v;
     }
 
@@ -169,29 +266,215 @@ public final class OmniBufDecoder {
         return b == 1;
     }
 
-    public Slice readLengthPrefixedSlice(int minLen) {
-        long byteLen = readVarint();
-        if (Long.compareUnsigned(byteLen, minLen) < 0
-                || Long.compareUnsigned(byteLen, limit - pos) > 0) {
-            throw new OmniBufException("omnibuf: invalid length prefix " + byteLen + " at " + pos);
+    /**
+     * Reads a length-prefixed payload header ({@code byteLen >= minLen}), sets {@code this.limit}
+     * to the end of that payload, and returns the previous {@code limit} for {@link #endContainer(int)}.
+     */
+    public int readLengthPrefixedLimit(int minLen) {
+        int p = this.pos;
+        int lim = this.limit;
+        if (p < lim) {
+            int b0 = buf[p] & 0xFF;
+            if ((b0 & 1) != 0) {
+                int len = b0 >>> 1;
+                int start = p + 1;
+                int newLimit = start + len;
+                if (len >= minLen && newLimit <= lim) {
+                    this.pos = start;
+                    this.limit = newLimit;
+                    return lim;
+                }
+            } else if ((b0 & 2) != 0 && p + 2 <= lim) {
+                int len = Short.toUnsignedInt(PrefixVarint.getShortLE(buf, p)) >>> 2;
+                int start = p + 2;
+                int newLimit = start + len;
+                if (len >= minLen && newLimit <= lim) {
+                    this.pos = start;
+                    this.limit = newLimit;
+                    return lim;
+                }
+            }
         }
-        int len = (int) byteLen;
-        int start = pos;
-        pos += len;
+        return readLengthPrefixedLimitSlow(minLen);
+    }
+
+    private int readLengthPrefixedLimitSlow(int minLen) {
+        long byteLen = readVarint();
+        int start = this.pos;
+        int lim = this.limit;
+        if (Long.compareUnsigned(byteLen, minLen) < 0
+                || Long.compareUnsigned(byteLen, lim - start) > 0) {
+            throw new OmniBufException("omnibuf: invalid length prefix " + byteLen + " at " + start);
+        }
+        this.limit = start + (int) byteLen;
+        return lim;
+    }
+
+    public void endContainer(int savedLimit) {
+        if (this.pos != this.limit) {
+            throw new OmniBufException("omnibuf: container has trailing payload bytes");
+        }
+        this.limit = savedLimit;
+    }
+
+    /**
+     * Zero-allocation {@code WireArray} opener on the current cursor.
+     *
+     * <p>If the wire element type matches {@code expectedElemWT}, advances {@code pos} to the first
+     * element, sets {@code limit} to {@code bodyEnd}, and returns packed
+     * {@code (((long) savedLimit) << 32) | (count & 0xFFFF_FFFFL)}.
+     * If the wire element type does not match {@code expectedElemWT}, deeply validates the array,
+     * advances {@code pos} past {@code bodyEnd}, and returns {@code -1L}.
+     */
+    public long beginArray(int expectedElemWT, int depth) {
+        if (depth + 1 > this.maxNestingDepth) {
+            throw new OmniBufException("omnibuf: WireArray exceeds MaxNestingDepth");
+        }
+        int savedLimit = readLengthPrefixedLimit(2);
+        int bodyStart = this.pos;
+        int bodyEnd = this.limit;
+        int elemType = buf[bodyStart] & 0xFF;
+        if (!WireType.isValidArrayElemWireType(elemType)) {
+            this.limit = savedLimit;
+            throw new OmniBufException("omnibuf: invalid WireArray element type: " + elemType);
+        }
+        this.pos = bodyStart + 1;
+        long countLong = readVarint();
+        int payloadStart = this.pos;
+        int remaining = bodyEnd - payloadStart;
+        if (Long.compareUnsigned(countLong, remaining) > 0) {
+            this.limit = savedLimit;
+            throw new OmniBufException("omnibuf: WireArray count exceeds remaining payload bytes");
+        }
+        if (Long.compareUnsigned(countLong, this.maxCollectionElements) > 0) {
+            this.limit = savedLimit;
+            throw new OmniBufException(
+                "omnibuf: WireArray count " + countLong + " exceeds maxCollectionElements (" + maxCollectionElements + ")"
+            );
+        }
+        int count = (int) countLong;
+        int fixedWidth = WireType.fixedElementWidth(elemType);
+        if (fixedWidth > 0) {
+            if (remaining % fixedWidth != 0 || count != remaining / fixedWidth) {
+                this.limit = savedLimit;
+                throw new OmniBufException("omnibuf: WireArray fixed-width count/byte-length mismatch");
+            }
+        } else if (count == 0 && remaining != 0) {
+            this.limit = savedLimit;
+            throw new OmniBufException("omnibuf: empty WireArray has trailing payload bytes");
+        }
+        if (elemType != expectedElemWT) {
+            this.limit = savedLimit;
+            validateArrayPayloadRaw(
+                buf, elemType, count, payloadStart, bodyEnd, depth + 1, maxNestingDepth, maxCollectionElements
+            );
+            this.pos = bodyEnd;
+            return -1L;
+        }
+        return (((long) savedLimit) << 32) | (count & 0xFFFF_FFFFL);
+    }
+
+    /**
+     * Zero-allocation {@code WireMap} opener on the current cursor.
+     */
+    public long beginMap(int expectedKeyWT, int expectedValWT, int depth) {
+        if (depth + 1 > this.maxNestingDepth) {
+            throw new OmniBufException("omnibuf: WireMap exceeds MaxNestingDepth");
+        }
+        int savedLimit = readLengthPrefixedLimit(3);
+        int bodyStart = this.pos;
+        int bodyEnd = this.limit;
+        int keyWT = buf[bodyStart] & 0xFF;
+        int valWT = buf[bodyStart + 1] & 0xFF;
+        if (!WireType.isValidMapKeyWireType(keyWT) || !WireType.isValidMapValWireType(valWT)) {
+            this.limit = savedLimit;
+            throw new OmniBufException(
+                "omnibuf: invalid WireMap key/value wire types: " + keyWT + "/" + valWT
+            );
+        }
+        this.pos = bodyStart + 2;
+        long countLong = readVarint();
+        int payloadStart = this.pos;
+        int remaining = bodyEnd - payloadStart;
+        if (countLong == 0L) {
+            if (remaining != 0) {
+                this.limit = savedLimit;
+                throw new OmniBufException("omnibuf: empty WireMap has trailing payload bytes");
+            }
+        } else if (Long.compareUnsigned(countLong, remaining / 2) > 0) {
+            this.limit = savedLimit;
+            throw new OmniBufException("omnibuf: WireMap count exceeds remaining key/value capacity");
+        }
+        if (Long.compareUnsigned(countLong, this.maxCollectionElements) > 0) {
+            this.limit = savedLimit;
+            throw new OmniBufException(
+                "omnibuf: WireMap count " + countLong + " exceeds maxCollectionElements (" + maxCollectionElements + ")"
+            );
+        }
+        int count = (int) countLong;
+        if (keyWT != expectedKeyWT || valWT != expectedValWT) {
+            this.limit = savedLimit;
+            int p = payloadStart;
+            for (int i = 0; i < count; i++) {
+                p = validateContainerEntry(
+                    buf, p, bodyEnd, keyWT, depth + 1, maxNestingDepth, maxCollectionElements
+                );
+                p = validateContainerEntry(
+                    buf, p, bodyEnd, valWT, depth + 1, maxNestingDepth, maxCollectionElements
+                );
+            }
+            if (p != bodyEnd) {
+                throw new OmniBufException("omnibuf: WireMap has trailing payload bytes");
+            }
+            this.pos = bodyEnd;
+            return -1L;
+        }
+        return (((long) savedLimit) << 32) | (count & 0xFFFF_FFFFL);
+    }
+
+    public Slice readLengthPrefixedSlice(int minLen) {
+        int savedLimit = readLengthPrefixedLimit(minLen);
+        int start = this.pos;
+        int len = this.limit - start;
+        this.pos = this.limit;
+        this.limit = savedLimit;
         return new Slice(start, len);
     }
 
     public String readString() {
-        Slice s = readLengthPrefixedSlice(0);
-        return Utf8Validator.decodeStrict(buf, s.offset(), s.length());
+        int p = this.pos;
+        int lim = this.limit;
+        if (p < lim) {
+            int b0 = buf[p] & 0xFF;
+            if ((b0 & 1) != 0) {
+                int len = b0 >>> 1;
+                int start = p + 1;
+                int end = start + len;
+                if (end <= lim) {
+                    this.pos = end;
+                    return len == 0 ? "" : Utf8Validator.decodeStrict(buf, start, len);
+                }
+            }
+        }
+        return readStringSlow();
+    }
+
+    private String readStringSlow() {
+        int savedLimit = readLengthPrefixedLimit(0);
+        int start = this.pos;
+        int len = this.limit - start;
+        this.pos = this.limit;
+        this.limit = savedLimit;
+        return len == 0 ? "" : Utf8Validator.decodeStrict(buf, start, len);
     }
 
     public byte[] readBytes() {
-        Slice s = readLengthPrefixedSlice(0);
-        if (s.length() == 0) {
-            return EMPTY_BYTES;
-        }
-        return Arrays.copyOfRange(buf, s.offset(), s.end());
+        int savedLimit = readLengthPrefixedLimit(0);
+        int start = this.pos;
+        int end = this.limit;
+        this.pos = end;
+        this.limit = savedLimit;
+        return start == end ? EMPTY_BYTES : Arrays.copyOfRange(buf, start, end);
     }
 
     public void skipOrValidateUnknown(int fieldNumber, int wireType, int depth) {
@@ -199,11 +482,15 @@ public final class OmniBufDecoder {
             if (wireType != WireType.WIRE_SUB_MSG) {
                 throw new OmniBufException("omnibuf: Field #0 requires WireSubMsg");
             }
-            Slice s = readLengthPrefixedSlice(0);
-            SchemaMeta.decode(buf, s.offset(), s.length(), depth + 1);
+            int savedLimit = readLengthPrefixedLimit(0);
+            int start = this.pos;
+            int len = this.limit - start;
+            this.pos = this.limit;
+            this.limit = savedLimit;
+            SchemaMeta.decode(buf, start, len, depth + 1, maxNestingDepth, maxCollectionElements);
             return;
         }
-        pos = validateValue(buf, pos, limit, wireType, depth);
+        pos = validateValue(buf, pos, limit, wireType, depth, maxNestingDepth, maxCollectionElements);
     }
 
     // ========================================================================
@@ -211,16 +498,110 @@ public final class OmniBufDecoder {
     // ========================================================================
 
     public static Slice readLengthSlice(byte[] buf, int pos, int limit, int minLen) {
-        PrefixVarint.Decoded d = PrefixVarint.decode(buf, pos, limit);
-        int next = pos + d.bytesRead();
-        if (Long.compareUnsigned(d.value(), minLen) < 0
-                || Long.compareUnsigned(d.value(), limit - next) > 0) {
-            throw new OmniBufException("omnibuf: length-prefixed payload out of bounds at " + pos);
+        long packed = PrefixVarint.readLengthSlicePacked(buf, pos, limit, minLen);
+        int start = (int) (packed >>> 32);
+        int end = (int) packed;
+        return new Slice(start, end - start);
+    }
+
+    public static boolean isValidArrayHeader(byte[] buf, int bodyStart, int bodyEnd) {
+        if (bodyEnd - bodyStart < 2) {
+            return false;
         }
-        return new Slice(next, (int) d.value());
+        int elemType = buf[bodyStart] & 0xFF;
+        if (!WireType.isValidArrayElemWireType(elemType)) {
+            return false;
+        }
+        int cPos = bodyStart + 1;
+        int b0 = buf[cPos] & 0xFF;
+        long countLong;
+        int payloadStart;
+        if ((b0 & 1) != 0) {
+            countLong = b0 >>> 1;
+            payloadStart = cPos + 1;
+        } else if ((b0 & 2) != 0) {
+            if (cPos + 2 > bodyEnd) {
+                return false;
+            }
+            countLong = Short.toUnsignedLong(PrefixVarint.getShortLE(buf, cPos)) >>> 2;
+            payloadStart = cPos + 2;
+        } else if ((b0 & 4) != 0) {
+            if (cPos + 4 > bodyEnd) {
+                return false;
+            }
+            countLong = Integer.toUnsignedLong(PrefixVarint.getIntLE(buf, cPos)) >>> 3;
+            payloadStart = cPos + 4;
+        } else if (b0 == 0) {
+            if (cPos + 9 > bodyEnd) {
+                return false;
+            }
+            countLong = PrefixVarint.getLongLE(buf, cPos + 1);
+            payloadStart = cPos + 9;
+        } else {
+            return false;
+        }
+        int remaining = bodyEnd - payloadStart;
+        if (Long.compareUnsigned(countLong, remaining) > 0) {
+            return false;
+        }
+        int count = (int) countLong;
+        int fixedWidth = WireType.fixedElementWidth(elemType);
+        if (fixedWidth > 0) {
+            return remaining % fixedWidth == 0 && count == remaining / fixedWidth;
+        }
+        return count != 0 || remaining == 0;
+    }
+
+    public static boolean isValidMapHeader(byte[] buf, int bodyStart, int bodyEnd) {
+        if (bodyEnd - bodyStart < 3) {
+            return false;
+        }
+        int keyWT = buf[bodyStart] & 0xFF;
+        int valWT = buf[bodyStart + 1] & 0xFF;
+        if (!WireType.isValidMapKeyWireType(keyWT) || !WireType.isValidMapValWireType(valWT)) {
+            return false;
+        }
+        int cPos = bodyStart + 2;
+        int b0 = buf[cPos] & 0xFF;
+        long countLong;
+        int payloadStart;
+        if ((b0 & 1) != 0) {
+            countLong = b0 >>> 1;
+            payloadStart = cPos + 1;
+        } else if ((b0 & 2) != 0) {
+            if (cPos + 2 > bodyEnd) {
+                return false;
+            }
+            countLong = Short.toUnsignedLong(PrefixVarint.getShortLE(buf, cPos)) >>> 2;
+            payloadStart = cPos + 2;
+        } else if ((b0 & 4) != 0) {
+            if (cPos + 4 > bodyEnd) {
+                return false;
+            }
+            countLong = Integer.toUnsignedLong(PrefixVarint.getIntLE(buf, cPos)) >>> 3;
+            payloadStart = cPos + 4;
+        } else if (b0 == 0) {
+            if (cPos + 9 > bodyEnd) {
+                return false;
+            }
+            countLong = PrefixVarint.getLongLE(buf, cPos + 1);
+            payloadStart = cPos + 9;
+        } else {
+            return false;
+        }
+        int remaining = bodyEnd - payloadStart;
+        if (countLong == 0L) {
+            return remaining == 0;
+        }
+        return Long.compareUnsigned(countLong, remaining / 2) <= 0;
     }
 
     public static ArrayHeader parseArrayHeader(byte[] buf, int bodyStart, int bodyEnd) {
+        return parseArrayHeader(buf, bodyStart, bodyEnd, UnmarshalOptions.DEFAULT_MAX_COLLECTION_ELEMENTS);
+    }
+
+    public static ArrayHeader parseArrayHeader(
+            byte[] buf, int bodyStart, int bodyEnd, int maxCollectionElements) {
         if (bodyEnd - bodyStart < 2) {
             throw new OmniBufException("omnibuf: WireArray body shorter than 2 bytes");
         }
@@ -233,6 +614,12 @@ public final class OmniBufDecoder {
         int remaining = bodyEnd - payloadStart;
         if (Long.compareUnsigned(countVar.value(), remaining) > 0) {
             throw new OmniBufException("omnibuf: WireArray count exceeds remaining payload bytes");
+        }
+        if (Long.compareUnsigned(countVar.value(), maxCollectionElements) > 0) {
+            throw new OmniBufException(
+                "omnibuf: WireArray count " + countVar.value()
+                    + " exceeds maxCollectionElements (" + maxCollectionElements + ")"
+            );
         }
         int count = (int) countVar.value();
         int fixedWidth = WireType.fixedElementWidth(elemType);
@@ -247,6 +634,11 @@ public final class OmniBufDecoder {
     }
 
     public static MapHeader parseMapHeader(byte[] buf, int bodyStart, int bodyEnd) {
+        return parseMapHeader(buf, bodyStart, bodyEnd, UnmarshalOptions.DEFAULT_MAX_COLLECTION_ELEMENTS);
+    }
+
+    public static MapHeader parseMapHeader(
+            byte[] buf, int bodyStart, int bodyEnd, int maxCollectionElements) {
         if (bodyEnd - bodyStart < 3) {
             throw new OmniBufException("omnibuf: WireMap body shorter than 3 bytes");
         }
@@ -267,63 +659,52 @@ public final class OmniBufDecoder {
         } else if (Long.compareUnsigned(countVar.value(), remaining / 2) > 0) {
             throw new OmniBufException("omnibuf: WireMap count exceeds remaining key/value capacity");
         }
+        if (Long.compareUnsigned(countVar.value(), maxCollectionElements) > 0) {
+            throw new OmniBufException(
+                "omnibuf: WireMap count " + countVar.value()
+                    + " exceeds maxCollectionElements (" + maxCollectionElements + ")"
+            );
+        }
         return new MapHeader(keyWT, valWT, (int) countVar.value(), payloadStart, bodyEnd);
     }
 
     /**
-     * Fast O(1) value skipper returning the next offset, or {@code -1} on structural/bounds error.
+     * Zero-allocation O(1) value skipper returning the next offset, or {@code -1} on structural/bounds error.
      */
     public static int tryFastSkipValue(byte[] buf, int pos, int limit, int wireType) {
-        if (pos < 0 || pos > limit) {
+        if (buf == null || pos < 0 || limit < 0 || pos > limit || limit > buf.length) {
             return -1;
         }
         return switch (wireType) {
-            case WireType.WIRE_UINT, WireType.WIRE_SINT -> {
-                if (pos >= limit) {
-                    yield -1;
-                }
-                int b0 = buf[pos] & 0xFF;
-                int w = switch (Integer.numberOfTrailingZeros(b0)) {
-                    case 0 -> 1;
-                    case 1 -> 2;
-                    case 2 -> 4;
-                    case 32 -> 9;
-                    default -> -1;
-                };
-                if (w < 0 || pos + w > limit) {
-                    yield -1;
-                }
-                yield pos + w;
-            }
+            case WireType.WIRE_UINT, WireType.WIRE_SINT -> PrefixVarint.skipVarint(buf, pos, limit);
             case WireType.WIRE_BOOL_FALSE, WireType.WIRE_BOOL_TRUE -> pos;
             case WireType.WIRE_FIXED32, WireType.WIRE_SFIXED32, WireType.WIRE_FLOAT32 ->
                 pos + 4 <= limit ? pos + 4 : -1;
             case WireType.WIRE_FIXED64, WireType.WIRE_SFIXED64, WireType.WIRE_FLOAT64 ->
                 pos + 8 <= limit ? pos + 8 : -1;
-            case WireType.WIRE_STRING,
-                 WireType.WIRE_BYTES,
-                 WireType.WIRE_SUB_MSG,
-                 WireType.WIRE_ARRAY,
-                 WireType.WIRE_MAP,
-                 WireType.WIRE_EXTENDED -> {
-                int minLen = switch (wireType) {
-                    case WireType.WIRE_MAP -> 3;
-                    case WireType.WIRE_ARRAY -> 2;
-                    case WireType.WIRE_EXTENDED -> 1;
-                    default -> 0;
-                };
-                long[] lenOut = new long[1];
-                int ln = PrefixVarint.tryDecode(buf, pos, limit, lenOut);
-                if (ln == 0) {
+            case WireType.WIRE_STRING, WireType.WIRE_BYTES, WireType.WIRE_SUB_MSG -> {
+                if (pos >= limit) {
                     yield -1;
                 }
-                int next = pos + ln;
-                long bLen = lenOut[0];
-                if (Long.compareUnsigned(bLen, minLen) < 0
-                        || Long.compareUnsigned(bLen, limit - next) > 0) {
-                    yield -1;
+                int b0 = buf[pos] & 0xFF;
+                if ((b0 & 1) != 0) {
+                    int next = pos + 1 + (b0 >>> 1);
+                    yield next <= limit ? next : -1;
                 }
-                yield next + (int) bLen;
+                long packed = PrefixVarint.tryReadLengthSlicePacked(buf, pos, limit, 0);
+                yield packed < 0L ? -1 : (int) packed;
+            }
+            case WireType.WIRE_ARRAY -> {
+                long packed = PrefixVarint.tryReadLengthSlicePacked(buf, pos, limit, 2);
+                yield packed < 0L ? -1 : (int) packed;
+            }
+            case WireType.WIRE_MAP -> {
+                long packed = PrefixVarint.tryReadLengthSlicePacked(buf, pos, limit, 3);
+                yield packed < 0L ? -1 : (int) packed;
+            }
+            case WireType.WIRE_EXTENDED -> {
+                long packed = PrefixVarint.tryReadLengthSlicePacked(buf, pos, limit, 1);
+                yield packed < 0L ? -1 : (int) packed;
             }
             default -> -1;
         };
@@ -335,18 +716,40 @@ public final class OmniBufDecoder {
      * on {@code WireString}, boolean padding bits, container headers, and trailing-byte checks.
      */
     public static int validateValue(byte[] buf, int pos, int limit, int wireType, int depth) {
-        if (depth > MAX_CONTAINER_DEPTH) {
+        return validateValue(
+            buf,
+            pos,
+            limit,
+            wireType,
+            depth,
+            MAX_CONTAINER_DEPTH,
+            UnmarshalOptions.DEFAULT_MAX_COLLECTION_ELEMENTS
+        );
+    }
+
+    public static int validateValue(
+            byte[] buf,
+            int pos,
+            int limit,
+            int wireType,
+            int depth,
+            int maxNestingDepth,
+            int maxCollectionElements) {
+        if (depth > maxNestingDepth) {
             throw new OmniBufException(
-                "omnibuf: nesting depth " + depth + " exceeds MaxNestingDepth (" + MAX_CONTAINER_DEPTH + ")"
+                "omnibuf: nesting depth " + depth + " exceeds MaxNestingDepth (" + maxNestingDepth + ")"
             );
         }
-        if (pos < 0 || pos > limit) {
+        if (buf == null || pos < 0 || limit < 0 || pos > limit || limit > buf.length) {
             throw new OmniBufException("omnibuf: offset out of bounds: " + pos);
         }
         return switch (wireType) {
             case WireType.WIRE_UINT, WireType.WIRE_SINT -> {
-                PrefixVarint.Decoded d = PrefixVarint.decode(buf, pos, limit);
-                yield pos + d.bytesRead();
+                int next = PrefixVarint.skipVarint(buf, pos, limit);
+                if (next < 0) {
+                    PrefixVarint.decode(buf, pos, limit);
+                }
+                yield next;
             }
             case WireType.WIRE_BOOL_FALSE, WireType.WIRE_BOOL_TRUE -> pos;
             case WireType.WIRE_FIXED32, WireType.WIRE_SFIXED32, WireType.WIRE_FLOAT32 -> {
@@ -362,57 +765,105 @@ public final class OmniBufDecoder {
                 yield pos + 8;
             }
             case WireType.WIRE_STRING -> {
-                Slice s = readLengthSlice(buf, pos, limit, 0);
-                if (!Utf8Validator.isValidUtf8(buf, s.offset(), s.length())) {
+                long packed = PrefixVarint.readLengthSlicePacked(buf, pos, limit, 0);
+                int start = (int) (packed >>> 32);
+                int end = (int) packed;
+                if (!Utf8Validator.isValidUtf8(buf, start, end - start)) {
                     throw new OmniBufException("omnibuf: invalid UTF-8 in WireString at " + pos);
                 }
-                yield s.end();
+                yield end;
             }
-            case WireType.WIRE_BYTES -> readLengthSlice(buf, pos, limit, 0).end();
+            case WireType.WIRE_BYTES -> (int) PrefixVarint.readLengthSlicePacked(buf, pos, limit, 0);
             case WireType.WIRE_SUB_MSG -> {
-                Slice s = readLengthSlice(buf, pos, limit, 0);
-                validateMessage(buf, s.offset(), s.length(), depth + 1);
-                yield s.end();
+                long packed = PrefixVarint.readLengthSlicePacked(buf, pos, limit, 0);
+                int start = (int) (packed >>> 32);
+                int end = (int) packed;
+                validateMessageSlice(buf, start, end - start, depth + 1, maxNestingDepth, maxCollectionElements);
+                yield end;
             }
             case WireType.WIRE_ARRAY -> {
-                if (depth + 1 > MAX_CONTAINER_DEPTH) {
+                if (depth + 1 > maxNestingDepth) {
                     throw new OmniBufException("omnibuf: WireArray exceeds MaxNestingDepth");
                 }
-                Slice s = readLengthSlice(buf, pos, limit, 2);
-                ArrayHeader hdr = parseArrayHeader(buf, s.offset(), s.end());
-                validateArrayPayload(buf, hdr, depth + 1);
-                yield s.end();
+                long packed = PrefixVarint.readLengthSlicePacked(buf, pos, limit, 2);
+                int start = (int) (packed >>> 32);
+                int end = (int) packed;
+                ArrayHeader hdr = parseArrayHeader(buf, start, end, maxCollectionElements);
+                validateArrayPayloadRaw(
+                    buf, hdr.elemWireType(), hdr.count(), hdr.payloadStart(), end,
+                    depth + 1, maxNestingDepth, maxCollectionElements
+                );
+                yield end;
             }
             case WireType.WIRE_MAP -> {
-                if (depth + 1 > MAX_CONTAINER_DEPTH) {
+                if (depth + 1 > maxNestingDepth) {
                     throw new OmniBufException("omnibuf: WireMap exceeds MaxNestingDepth");
                 }
-                Slice s = readLengthSlice(buf, pos, limit, 3);
-                MapHeader hdr = parseMapHeader(buf, s.offset(), s.end());
+                long packed = PrefixVarint.readLengthSlicePacked(buf, pos, limit, 3);
+                int start = (int) (packed >>> 32);
+                int end = (int) packed;
+                MapHeader hdr = parseMapHeader(buf, start, end, maxCollectionElements);
                 int p = hdr.payloadStart();
                 for (int i = 0; i < hdr.count(); i++) {
-                    p = validateContainerEntry(buf, p, hdr.payloadEnd(), hdr.keyWireType(), depth + 1);
-                    p = validateContainerEntry(buf, p, hdr.payloadEnd(), hdr.valWireType(), depth + 1);
+                    p = validateContainerEntry(
+                        buf, p, hdr.payloadEnd(), hdr.keyWireType(),
+                        depth + 1, maxNestingDepth, maxCollectionElements
+                    );
+                    p = validateContainerEntry(
+                        buf, p, hdr.payloadEnd(), hdr.valWireType(),
+                        depth + 1, maxNestingDepth, maxCollectionElements
+                    );
                 }
                 if (p != hdr.payloadEnd()) {
                     throw new OmniBufException("omnibuf: WireMap has trailing payload bytes");
                 }
-                yield s.end();
+                yield end;
             }
-            case WireType.WIRE_EXTENDED -> {
-                // Requires ByteLen >= 1 so the 1-byte extension subtype header is present.
-                Slice s = readLengthSlice(buf, pos, limit, 1);
-                yield s.end();
-            }
+            case WireType.WIRE_EXTENDED -> (int) PrefixVarint.readLengthSlicePacked(buf, pos, limit, 1);
             default -> throw new OmniBufException("omnibuf: invalid wire type: " + wireType);
         };
     }
 
-    private static void validateArrayPayload(byte[] buf, ArrayHeader hdr, int arrayDepth) {
-        int elemWT = hdr.elemWireType();
+    public static void validateArrayBody(byte[] buf, ArrayHeader hdr, int arrayDepth) {
+        validateArrayPayloadRaw(
+            buf,
+            hdr.elemWireType(),
+            hdr.count(),
+            hdr.payloadStart(),
+            hdr.payloadEnd(),
+            arrayDepth,
+            MAX_CONTAINER_DEPTH,
+            UnmarshalOptions.DEFAULT_MAX_COLLECTION_ELEMENTS
+        );
+    }
+
+    public static void validateMapBody(byte[] buf, MapHeader hdr, int mapDepth) {
         int p = hdr.payloadStart();
         int end = hdr.payloadEnd();
-        int count = hdr.count();
+        for (int i = 0; i < hdr.count(); i++) {
+            p = validateContainerEntry(
+                buf, p, end, hdr.keyWireType(),
+                mapDepth, MAX_CONTAINER_DEPTH, UnmarshalOptions.DEFAULT_MAX_COLLECTION_ELEMENTS
+            );
+            p = validateContainerEntry(
+                buf, p, end, hdr.valWireType(),
+                mapDepth, MAX_CONTAINER_DEPTH, UnmarshalOptions.DEFAULT_MAX_COLLECTION_ELEMENTS
+            );
+        }
+        if (p != end) {
+            throw new OmniBufException("omnibuf: WireMap has trailing payload bytes");
+        }
+    }
+
+    private static void validateArrayPayloadRaw(
+            byte[] buf,
+            int elemWT,
+            int count,
+            int p,
+            int end,
+            int arrayDepth,
+            int maxNestingDepth,
+            int maxCollectionElements) {
         if (elemWT == WireType.WIRE_BOOL_FALSE) {
             for (int i = 0; i < count; i++) {
                 int b = buf[p + i] & 0xFF;
@@ -426,14 +877,23 @@ public final class OmniBufDecoder {
             return;
         }
         for (int i = 0; i < count; i++) {
-            p = validateContainerEntry(buf, p, end, elemWT, arrayDepth);
+            p = validateContainerEntry(
+                buf, p, end, elemWT, arrayDepth, maxNestingDepth, maxCollectionElements
+            );
         }
         if (p != end) {
             throw new OmniBufException("omnibuf: WireArray has trailing payload bytes");
         }
     }
 
-    private static int validateContainerEntry(byte[] buf, int pos, int limit, int wt, int depth) {
+    private static int validateContainerEntry(
+            byte[] buf,
+            int pos,
+            int limit,
+            int wt,
+            int depth,
+            int maxNestingDepth,
+            int maxCollectionElements) {
         if (wt == WireType.WIRE_BOOL_FALSE) {
             if (pos >= limit) {
                 throw new OmniBufException("omnibuf: truncated boolean in container");
@@ -444,13 +904,90 @@ public final class OmniBufDecoder {
             }
             return pos + 1;
         }
-        return validateValue(buf, pos, limit, wt, depth);
+        return validateValue(buf, pos, limit, wt, depth, maxNestingDepth, maxCollectionElements);
     }
 
     public static void validateMessage(byte[] buf, int offset, int length, int depth) {
-        if (depth > MAX_CONTAINER_DEPTH) {
+        validateMessage(buf, offset, length, depth, UnmarshalOptions.DEFAULT);
+    }
+
+    public static void validateMessage(
+            byte[] buf, int offset, int length, int depth, UnmarshalOptions options) {
+        if (buf == null || offset < 0 || length < 0 || length > buf.length - offset) {
+            throw new OmniBufException("omnibuf: packet slice out of bounds");
+        }
+        UnmarshalOptions opts = options == null ? UnmarshalOptions.DEFAULT : options;
+        if (length > opts.maxMessageBytes()) {
             throw new OmniBufException(
-                "omnibuf: nesting depth " + depth + " exceeds MaxNestingDepth (" + MAX_CONTAINER_DEPTH + ")"
+                "omnibuf: packet length " + length + " exceeds maxMessageBytes (" + opts.maxMessageBytes() + ")"
+            );
+        }
+        validateMessageSlice(
+            buf, offset, length, depth, opts.maxNestingDepth(), opts.maxCollectionElements(), true
+        );
+    }
+
+    public static void validateMessage(
+            byte[] buf,
+            int offset,
+            int length,
+            int depth,
+            int maxNestingDepth,
+            int maxCollectionElements) {
+        if (buf == null || offset < 0 || length < 0 || length > buf.length - offset) {
+            throw new OmniBufException("omnibuf: packet slice out of bounds");
+        }
+        validateMessageSlice(buf, offset, length, depth, maxNestingDepth, maxCollectionElements, true);
+    }
+
+    /**
+     * Deeply validates structural wire framing of {@code buf[offset..offset+length]} (including
+     * {@code Field #0} {@code SchemaMeta} with strict UTF-8, recursive {@code WireSubMsg},
+     * {@code WireArray}, and {@code WireMap} framing, container boolean bytes {@code <= 1},
+     * trailing-byte checks, and {@link #MAX_CONTAINER_DEPTH}) without UTF-8-decoding untouched
+     * non-Field-#0 {@code WireString} payloads.
+     */
+    public static void validateStructuralMessage(byte[] buf, int offset, int length, int depth) {
+        validateStructuralMessage(buf, offset, length, depth, UnmarshalOptions.DEFAULT);
+    }
+
+    public static void validateStructuralMessage(
+            byte[] buf, int offset, int length, int depth, UnmarshalOptions options) {
+        if (buf == null || offset < 0 || length < 0 || length > buf.length - offset) {
+            throw new OmniBufException("omnibuf: packet slice out of bounds");
+        }
+        UnmarshalOptions opts = options == null ? UnmarshalOptions.DEFAULT : options;
+        if (length > opts.maxMessageBytes()) {
+            throw new OmniBufException(
+                "omnibuf: packet length " + length + " exceeds maxMessageBytes (" + opts.maxMessageBytes() + ")"
+            );
+        }
+        validateMessageSlice(
+            buf, offset, length, depth, opts.maxNestingDepth(), opts.maxCollectionElements(), false
+        );
+    }
+
+    private static void validateMessageSlice(
+            byte[] buf,
+            int offset,
+            int length,
+            int depth,
+            int maxNestingDepth,
+            int maxCollectionElements) {
+        validateMessageSlice(buf, offset, length, depth, maxNestingDepth, maxCollectionElements, true);
+    }
+
+    private static void validateMessageSlice(
+            byte[] buf,
+            int offset,
+            int length,
+            int depth,
+            int maxNestingDepth,
+            int maxCollectionElements,
+            boolean checkStringUtf8) {
+        if (depth > maxNestingDepth) {
+            throw new OmniBufException(
+                "omnibuf: nesting depth " + depth + " exceeds MaxNestingDepth (" + maxNestingDepth + ")"
             );
         }
         int pos = offset;
@@ -468,13 +1005,145 @@ public final class OmniBufDecoder {
                 if (wt != WireType.WIRE_SUB_MSG) {
                     throw new OmniBufException("omnibuf: Field #0 requires WireSubMsg");
                 }
-                Slice s = readLengthSlice(buf, pos, end, 0);
-                SchemaMeta.decode(buf, s.offset(), s.length(), depth + 1);
-                pos = s.end();
+                long packed = PrefixVarint.readLengthSlicePacked(buf, pos, end, 0);
+                int start = (int) (packed >>> 32);
+                int subEnd = (int) packed;
+                SchemaMeta.decode(
+                    buf, start, subEnd - start, depth + 1, maxNestingDepth, maxCollectionElements
+                );
+                pos = subEnd;
+            } else if (checkStringUtf8) {
+                pos = validateValue(
+                    buf, pos, end, wt, depth, maxNestingDepth, maxCollectionElements
+                );
             } else {
-                pos = validateValue(buf, pos, end, wt, depth);
+                pos = validateStructuralValue(
+                    buf, pos, end, wt, depth, maxNestingDepth, maxCollectionElements
+                );
             }
         }
+    }
+
+    private static int validateStructuralValue(
+            byte[] buf,
+            int pos,
+            int limit,
+            int wireType,
+            int depth,
+            int maxNestingDepth,
+            int maxCollectionElements) {
+        if (depth > maxNestingDepth) {
+            throw new OmniBufException(
+                "omnibuf: nesting depth " + depth + " exceeds MaxNestingDepth (" + maxNestingDepth + ")"
+            );
+        }
+        return switch (wireType) {
+            case WireType.WIRE_UINT, WireType.WIRE_SINT -> {
+                int next = PrefixVarint.skipVarint(buf, pos, limit);
+                if (next < 0) {
+                    PrefixVarint.decode(buf, pos, limit);
+                }
+                yield next;
+            }
+            case WireType.WIRE_BOOL_FALSE, WireType.WIRE_BOOL_TRUE -> pos;
+            case WireType.WIRE_FIXED32, WireType.WIRE_SFIXED32, WireType.WIRE_FLOAT32 -> {
+                if (pos + 4 > limit) {
+                    throw new OmniBufException("omnibuf: truncated 32-bit scalar at " + pos);
+                }
+                yield pos + 4;
+            }
+            case WireType.WIRE_FIXED64, WireType.WIRE_SFIXED64, WireType.WIRE_FLOAT64 -> {
+                if (pos + 8 > limit) {
+                    throw new OmniBufException("omnibuf: truncated 64-bit scalar at " + pos);
+                }
+                yield pos + 8;
+            }
+            case WireType.WIRE_STRING, WireType.WIRE_BYTES ->
+                (int) PrefixVarint.readLengthSlicePacked(buf, pos, limit, 0);
+            case WireType.WIRE_SUB_MSG -> {
+                long packed = PrefixVarint.readLengthSlicePacked(buf, pos, limit, 0);
+                int start = (int) (packed >>> 32);
+                int end = (int) packed;
+                validateMessageSlice(
+                    buf, start, end - start, depth + 1, maxNestingDepth, maxCollectionElements, false
+                );
+                yield end;
+            }
+            case WireType.WIRE_ARRAY -> {
+                if (depth + 1 > maxNestingDepth) {
+                    throw new OmniBufException("omnibuf: WireArray exceeds MaxNestingDepth");
+                }
+                long packed = PrefixVarint.readLengthSlicePacked(buf, pos, limit, 2);
+                int start = (int) (packed >>> 32);
+                int end = (int) packed;
+                ArrayHeader hdr = parseArrayHeader(buf, start, end, maxCollectionElements);
+                if (hdr.elemWireType() == WireType.WIRE_BOOL_FALSE) {
+                    int p = hdr.payloadStart();
+                    for (int i = 0; i < hdr.count(); i++) {
+                        int b = buf[p + i] & 0xFF;
+                        if (b > 1) {
+                            throw new OmniBufException("omnibuf: invalid boolean byte in WireArray: " + b);
+                        }
+                    }
+                } else if (WireType.fixedElementWidth(hdr.elemWireType()) <= 0) {
+                    int p = hdr.payloadStart();
+                    for (int i = 0; i < hdr.count(); i++) {
+                        p = validateStructuralValue(
+                            buf, p, end, hdr.elemWireType(), depth + 1, maxNestingDepth, maxCollectionElements
+                        );
+                    }
+                    if (p != end) {
+                        throw new OmniBufException("omnibuf: WireArray has trailing payload bytes");
+                    }
+                }
+                yield end;
+            }
+            case WireType.WIRE_MAP -> {
+                if (depth + 1 > maxNestingDepth) {
+                    throw new OmniBufException("omnibuf: WireMap exceeds MaxNestingDepth");
+                }
+                long packed = PrefixVarint.readLengthSlicePacked(buf, pos, limit, 3);
+                int start = (int) (packed >>> 32);
+                int end = (int) packed;
+                MapHeader hdr = parseMapHeader(buf, start, end, maxCollectionElements);
+                int p = hdr.payloadStart();
+                for (int i = 0; i < hdr.count(); i++) {
+                    p = validateStructuralContainerEntry(
+                        buf, p, end, hdr.keyWireType(), depth + 1, maxNestingDepth, maxCollectionElements
+                    );
+                    p = validateStructuralContainerEntry(
+                        buf, p, end, hdr.valWireType(), depth + 1, maxNestingDepth, maxCollectionElements
+                    );
+                }
+                if (p != end) {
+                    throw new OmniBufException("omnibuf: WireMap has trailing payload bytes");
+                }
+                yield end;
+            }
+            case WireType.WIRE_EXTENDED -> (int) PrefixVarint.readLengthSlicePacked(buf, pos, limit, 1);
+            default -> throw new OmniBufException("omnibuf: invalid wire type: " + wireType);
+        };
+    }
+
+    private static int validateStructuralContainerEntry(
+            byte[] buf,
+            int pos,
+            int limit,
+            int wt,
+            int depth,
+            int maxNestingDepth,
+            int maxCollectionElements) {
+        if (wt == WireType.WIRE_BOOL_FALSE) {
+            if (pos >= limit) {
+                throw new OmniBufException("omnibuf: truncated boolean in container");
+            }
+            int b = buf[pos] & 0xFF;
+            if (b > 1) {
+                throw new OmniBufException("omnibuf: invalid boolean byte in container: " + b);
+            }
+            return pos + 1;
+        }
+        return validateStructuralValue(buf, pos, limit, wt, depth, maxNestingDepth, maxCollectionElements);
     }
 
     private static final byte[] EMPTY_BYTES = new byte[0];

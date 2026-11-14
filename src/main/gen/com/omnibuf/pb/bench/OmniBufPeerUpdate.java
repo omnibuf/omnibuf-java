@@ -10,19 +10,19 @@ import java.util.List;
 import java.util.Map;
 
 public final class OmniBufPeerUpdate {
-    private static final byte[] EMPTY_BYTES = new byte[0];
+    static final byte[] EMPTY_BYTES = new byte[0];
 
-    private int asn = 0;
-    private String routerId = "";
-    private boolean active = false;
-    private long uptimeSec = 0L;
-    private int rssiDbm = 0;
-    private double cpuLoad = 0.0d;
-    private List<String> tags = new ArrayList<>();
-    private List<Integer> prefixes = new ArrayList<>();
-    private com.omnibuf.pb.bench.OmniBufLocation location = null;
-    private List<com.omnibuf.pb.bench.OmniBufNeighbor> neighbors = new ArrayList<>();
-    private long sequence = 0L;
+    int asn;
+    String routerId = "";
+    boolean active;
+    long uptimeSec;
+    int rssiDbm;
+    double cpuLoad;
+    List<String> tags;
+    List<Integer> prefixes;
+    com.omnibuf.pb.bench.OmniBufLocation location;
+    List<com.omnibuf.pb.bench.OmniBufNeighbor> neighbors;
+    long sequence;
 
     public OmniBufPeerUpdate() {}
 
@@ -33,10 +33,10 @@ public final class OmniBufPeerUpdate {
         this.uptimeSec = 0L;
         this.rssiDbm = 0;
         this.cpuLoad = 0.0d;
-        this.tags = new ArrayList<>();
-        this.prefixes = new ArrayList<>();
+        this.tags = null;
+        this.prefixes = null;
         this.location = null;
-        this.neighbors = new ArrayList<>();
+        this.neighbors = null;
         this.sequence = 0L;
     }
 
@@ -95,25 +95,66 @@ public final class OmniBufPeerUpdate {
     }
 
     public List<String> getTags() {
+        if (this.tags == null) {
+            this.tags = new ArrayList<>();
+        }
         return this.tags;
     }
 
+    List<String> ensureTags(int minCap) {
+        List<String> cur = this.tags;
+        int cap = Math.min(minCap, 4096);
+        if (cur == null) {
+            cur = new ArrayList<>(cap);
+            this.tags = cur;
+        } else if (!(cur instanceof ArrayList<?>)) {
+            cur = new ArrayList<>(cur);
+            this.tags = cur;
+        }
+        return cur;
+    }
+
     public OmniBufPeerUpdate setTags(List<String> value) {
-        this.tags = value == null ? new ArrayList<>() : value;
+        this.tags = value;
         return this;
     }
 
     public List<Integer> getPrefixes() {
+        if (this.prefixes == null) {
+            this.prefixes = new ArrayList<>();
+        }
         return this.prefixes;
     }
 
+    List<Integer> ensurePrefixes(int minCap) {
+        List<Integer> cur = this.prefixes;
+        int cap = Math.min(minCap, 4096);
+        if (cur == null) {
+            cur = new ArrayList<>(cap);
+            this.prefixes = cur;
+        } else if (!(cur instanceof ArrayList<?>)) {
+            cur = new ArrayList<>(cur);
+            this.prefixes = cur;
+        }
+        return cur;
+    }
+
     public OmniBufPeerUpdate setPrefixes(List<Integer> value) {
-        this.prefixes = value == null ? new ArrayList<>() : value;
+        this.prefixes = value;
         return this;
     }
 
     public com.omnibuf.pb.bench.OmniBufLocation getLocation() {
         return this.location;
+    }
+
+    public boolean hasLocation() {
+        return this.location != null;
+    }
+
+    public OmniBufPeerUpdate clearLocation() {
+        this.location = null;
+        return this;
     }
 
     public OmniBufPeerUpdate setLocation(com.omnibuf.pb.bench.OmniBufLocation value) {
@@ -122,11 +163,27 @@ public final class OmniBufPeerUpdate {
     }
 
     public List<com.omnibuf.pb.bench.OmniBufNeighbor> getNeighbors() {
+        if (this.neighbors == null) {
+            this.neighbors = new ArrayList<>();
+        }
         return this.neighbors;
     }
 
+    List<com.omnibuf.pb.bench.OmniBufNeighbor> ensureNeighbors(int minCap) {
+        List<com.omnibuf.pb.bench.OmniBufNeighbor> cur = this.neighbors;
+        int cap = Math.min(minCap, 4096);
+        if (cur == null) {
+            cur = new ArrayList<>(cap);
+            this.neighbors = cur;
+        } else if (!(cur instanceof ArrayList<?>)) {
+            cur = new ArrayList<>(cur);
+            this.neighbors = cur;
+        }
+        return cur;
+    }
+
     public OmniBufPeerUpdate setNeighbors(List<com.omnibuf.pb.bench.OmniBufNeighbor> value) {
-        this.neighbors = value == null ? new ArrayList<>() : value;
+        this.neighbors = value;
         return this;
     }
 

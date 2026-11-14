@@ -130,33 +130,33 @@ public final class PrefixVarint {
             throw new OmniBufException("omnibuf: unexpected EOF reading prefix-varint");
         }
         int b0 = src[pos] & 0xFF;
-        return switch (Integer.numberOfTrailingZeros(b0)) {
-            case 0 -> new Decoded(b0 >>> 1, 1);
-            case 1 -> {
-                if (pos + 2 > limit) {
-                    throw new OmniBufException("omnibuf: truncated 2-byte prefix-varint");
-                }
-                long v = Short.toUnsignedLong((short) SHORT_LE.get(src, pos)) >>> 2;
-                yield new Decoded(v, 2);
+        if ((b0 & 1) != 0) {
+            return new Decoded(b0 >>> 1, 1);
+        }
+        if ((b0 & 2) != 0) {
+            if (pos + 2 > limit) {
+                throw new OmniBufException("omnibuf: truncated 2-byte prefix-varint");
             }
-            case 2 -> {
-                if (pos + 4 > limit) {
-                    throw new OmniBufException("omnibuf: truncated 4-byte prefix-varint");
-                }
-                long v = Integer.toUnsignedLong((int) INT_LE.get(src, pos)) >>> 3;
-                yield new Decoded(v, 4);
+            long v = Short.toUnsignedLong((short) SHORT_LE.get(src, pos)) >>> 2;
+            return new Decoded(v, 2);
+        }
+        if ((b0 & 4) != 0) {
+            if (pos + 4 > limit) {
+                throw new OmniBufException("omnibuf: truncated 4-byte prefix-varint");
             }
-            case 32 -> {
-                if (pos + 9 > limit) {
-                    throw new OmniBufException("omnibuf: truncated 9-byte prefix-varint");
-                }
-                long v = (long) LONG_LE.get(src, pos + 1);
-                yield new Decoded(v, 9);
+            long v = Integer.toUnsignedLong((int) INT_LE.get(src, pos)) >>> 3;
+            return new Decoded(v, 4);
+        }
+        if (b0 == 0) {
+            if (pos + 9 > limit) {
+                throw new OmniBufException("omnibuf: truncated 9-byte prefix-varint");
             }
-            default -> throw new OmniBufException(
-                String.format("omnibuf: reserved prefix-varint marker 0x%02x", b0)
-            );
-        };
+            long v = (long) LONG_LE.get(src, pos + 1);
+            return new Decoded(v, 9);
+        }
+        throw new OmniBufException(
+            String.format("omnibuf: reserved prefix-varint marker 0x%02x", b0)
+        );
     }
 
     /**
@@ -168,34 +168,143 @@ public final class PrefixVarint {
             return 0;
         }
         int b0 = src[pos] & 0xFF;
-        return switch (Integer.numberOfTrailingZeros(b0)) {
-            case 0 -> {
-                out[0] = b0 >>> 1;
-                yield 1;
+        if ((b0 & 1) != 0) {
+            out[0] = b0 >>> 1;
+            return 1;
+        }
+        if ((b0 & 2) != 0) {
+            if (pos + 2 > limit) {
+                return 0;
             }
-            case 1 -> {
-                if (pos + 2 > limit) {
-                    yield 0;
-                }
-                out[0] = Short.toUnsignedLong((short) SHORT_LE.get(src, pos)) >>> 2;
-                yield 2;
+            out[0] = Short.toUnsignedLong((short) SHORT_LE.get(src, pos)) >>> 2;
+            return 2;
+        }
+        if ((b0 & 4) != 0) {
+            if (pos + 4 > limit) {
+                return 0;
             }
-            case 2 -> {
-                if (pos + 4 > limit) {
-                    yield 0;
-                }
-                out[0] = Integer.toUnsignedLong((int) INT_LE.get(src, pos)) >>> 3;
-                yield 4;
+            out[0] = Integer.toUnsignedLong((int) INT_LE.get(src, pos)) >>> 3;
+            return 4;
+        }
+        if (b0 == 0) {
+            if (pos + 9 > limit) {
+                return 0;
             }
-            case 32 -> {
-                if (pos + 9 > limit) {
-                    yield 0;
-                }
-                out[0] = (long) LONG_LE.get(src, pos + 1);
-                yield 9;
+            out[0] = (long) LONG_LE.get(src, pos + 1);
+            return 9;
+        }
+        return 0;
+    }
+
+    /**
+     * Zero-allocation varint skipper returning {@code pos + width}, or {@code -1} on EOF,
+     * truncation, or reserved marker byte.
+     */
+    public static int skipVarint(byte[] src, int pos, int limit) {
+        if (pos >= limit) {
+            return -1;
+        }
+        int b0 = src[pos] & 0xFF;
+        if ((b0 & 1) != 0) {
+            return pos + 1;
+        }
+        if ((b0 & 2) != 0) {
+            int next = pos + 2;
+            return next <= limit ? next : -1;
+        }
+        if ((b0 & 4) != 0) {
+            int next = pos + 4;
+            return next <= limit ? next : -1;
+        }
+        if (b0 == 0) {
+            int next = pos + 9;
+            return next <= limit ? next : -1;
+        }
+        return -1;
+    }
+
+    /**
+     * Zero-allocation varint value reader for opaque scalar accessors; returns {@code 0L} on
+     * malformed/truncated input.
+     */
+    public static long decodeValueOrZero(byte[] src, int pos, int limit) {
+        if (pos >= limit) {
+            return 0L;
+        }
+        int b0 = src[pos] & 0xFF;
+        if ((b0 & 1) != 0) {
+            return b0 >>> 1;
+        }
+        if ((b0 & 2) != 0) {
+            return pos + 2 <= limit ? (Short.toUnsignedLong((short) SHORT_LE.get(src, pos)) >>> 2) : 0L;
+        }
+        if ((b0 & 4) != 0) {
+            return pos + 4 <= limit ? (Integer.toUnsignedLong((int) INT_LE.get(src, pos)) >>> 3) : 0L;
+        }
+        if (b0 == 0) {
+            return pos + 9 <= limit ? (long) LONG_LE.get(src, pos + 1) : 0L;
+        }
+        return 0L;
+    }
+
+    /**
+     * Zero-allocation length-prefixed slice probe. Decodes the Prefix-Varint byte length at
+     * {@code src[pos..limit]}, verifies {@code byteLen >= minLen} and {@code bodyStart + byteLen <= limit},
+     * and returns packed {@code (((long) bodyStart) << 32) | (bodyEnd & 0xFFFF_FFFFL)}, or {@code -1L}
+     * on any framing/bounds error.
+     */
+    public static long tryReadLengthSlicePacked(byte[] src, int pos, int limit, int minLen) {
+        if (pos >= limit) {
+            return -1L;
+        }
+        int b0 = src[pos] & 0xFF;
+        long byteLen;
+        int bodyStart;
+        if ((b0 & 1) != 0) {
+            byteLen = b0 >>> 1;
+            bodyStart = pos + 1;
+        } else if ((b0 & 2) != 0) {
+            if (pos + 2 > limit) {
+                return -1L;
             }
-            default -> 0;
-        };
+            byteLen = Short.toUnsignedLong((short) SHORT_LE.get(src, pos)) >>> 2;
+            bodyStart = pos + 2;
+        } else if ((b0 & 4) != 0) {
+            if (pos + 4 > limit) {
+                return -1L;
+            }
+            byteLen = Integer.toUnsignedLong((int) INT_LE.get(src, pos)) >>> 3;
+            bodyStart = pos + 4;
+        } else if (b0 == 0) {
+            if (pos + 9 > limit) {
+                return -1L;
+            }
+            byteLen = (long) LONG_LE.get(src, pos + 1);
+            bodyStart = pos + 9;
+        } else {
+            return -1L;
+        }
+        if (Long.compareUnsigned(byteLen, minLen) < 0
+                || Long.compareUnsigned(byteLen, limit - bodyStart) > 0) {
+            return -1L;
+        }
+        int bodyEnd = bodyStart + (int) byteLen;
+        return (((long) bodyStart) << 32) | (bodyEnd & 0xFFFF_FFFFL);
+    }
+
+    /**
+     * Throwing counterpart to {@link #tryReadLengthSlicePacked(byte[], int, int, int)}.
+     */
+    public static long readLengthSlicePacked(byte[] src, int pos, int limit, int minLen) {
+        long packed = tryReadLengthSlicePacked(src, pos, limit, minLen);
+        if (packed < 0L) {
+            // Preserve exact PrefixVarint error semantics on reserved/truncated varints
+            Decoded d = decode(src, pos, limit);
+            throw new OmniBufException(
+                "omnibuf: length-prefixed payload (" + d.value() + ") out of bounds at " + pos
+            );
+        }
+        return packed;
     }
 
     public static long encodeZigZag64(long n) {

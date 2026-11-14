@@ -20,20 +20,20 @@ Run `mise trust` once inside this directory. All schema linting and code generat
 just proto        # Lint .proto files and regenerate src/main/gen via buf generate
 just lint         # Run buf lint, buf format check, and javac -Xlint:all failOnWarning
 just test         # Run JUnit 5 test suite
-just conformance  # Run all 584 cross-language conformance cases via ./bin/conformance-java
-just bench        # Run Java 21 PeerUpdate benchmarks and write testdata/benchmarks.json
+just conformance  # Run all 758 cross-language conformance cases via ./bin/conformance-java
+just bench        # Run Java 21 PeerUpdate benchmarks and write testdata/benchmarks.json (pass --smoke for quick check)
 just ci           # Full pipeline: lint, build, test, and conformance
 ```
 
 ## Package Layout
 
-- `com.omnibuf`: Public runtime entry points (`OmniBufMapper`, `OmniBufProtobuf`, `OmniBufBlind`, `SchemaMeta`, `MarshalOptions`, `UnsignedLong`, `OmniBufException`).
+- `com.omnibuf`: Public runtime entry points (`OmniBufMapper`, `OmniBufProtobuf`, `OmniBufBlind`, `SchemaMeta`, `MarshalOptions`, `UnmarshalOptions`, `UnsignedLong`, `OmniBufException`).
 - `com.omnibuf.annotation`: `@OmniBufMessage`, `@OmniBufField`, and `WireKind` for `TIER_ANNOTATED_STRUCT` classes and Java 21 `record` types.
-- `com.omnibuf.wire`: Low-level wire primitives (`WireType`, `PrefixVarint`, `Utf8Validator`, `OmniBufEncoder`, `OmniBufDecoder`, `OmniBufOpaque`).
-- `com.omnibuf.plugin`: `ProtocGenOmniBufJava` (`CodeGeneratorRequest` to `CodeGeneratorResponse` generator invoked by `./bin/protoc-gen-omnibuf-java` from `buf.gen.yaml`).
-- `com.omnibuf.conformance`: Stdin/stdout 4-byte LE framed conformance harness (`ConformanceMain`, invoked by `./bin/conformance-java`).
-- `com.omnibuf.bench`: Reproducible `PeerUpdate` benchmark runner (`BenchmarkMain`).
-- `src/main/gen`: Checked-in generated Java sources produced by `buf generate`.
+- `com.omnibuf.wire`: Low-level wire primitives (`WireType`, `PrefixVarint`, `Utf8Validator`, `OmniBufEncoder`, `OmniBufDecoder`, `OmniBufOpaque`, `CodecPool`).
+- `com.omnibuf.plugin`: `ProtocGenOmniBufJava` (`CodeGeneratorRequest` to `CodeGeneratorResponse` generator packaged into standalone `target/omnibuf-java-0.1.0-protoc-gen.jar` and invoked by `./bin/protoc-gen-omnibuf-java` from `buf.gen.yaml`).
+- `src/test/java/com/omnibuf/conformance`: Stdin/stdout 4-byte LE framed conformance harness (`ConformanceMain`, invoked by `./bin/conformance-java`).
+- `src/test/java/com/omnibuf/bench`: Reproducible `PeerUpdate` benchmark runner (`BenchmarkMain`).
+- `src/main/gen`: Checked-in generated Java test/benchmark schema sources produced by `buf generate` and compiled in test scope.
 
 ## Critical Wire Invariants
 
@@ -41,4 +41,4 @@ just ci           # Full pipeline: lint, build, test, and conformance
 2. **Nesting depth**: Enforce `WireType.MAX_CONTAINER_DEPTH = 32` across `WireSubMsg`, `WireArray`, `WireMap`, and recursive `Field #0` `SchemaMeta` children.
 3. **Strict UTF-8**: `Utf8Validator` uses `CodingErrorAction.REPORT` and RFC 3629 byte checks. Malformed UTF-8 bytes and unpaired UTF-16 surrogates throw `OmniBufException`. Map sorting for `WireString` keys uses `Utf8Validator.UTF8_ORDER` (Unicode codepoint / UTF-8 byte order, not UTF-16 `String.compareTo`).
 4. **Container framing**: Reject trailing bytes inside `WireArray` and `WireMap` payloads, including `count == 0` containers. Reject container boolean bytes outside `{0, 1}`.
-5. **Blind JSON**: `OmniBufBlind.decodeBlindJson` formats `WireUint` and `WireFixed64` with unsigned 64-bit decimal strings (`UnsignedLong`), formats 32-bit floats using shortest IEEE-754 decimal strings, encodes `WireBytes` as Base64, and returns `"{}"` when `NaN` or `Infinity` values appear with `fallbackOnNonFinite = true`.
+5. **Blind JSON**: `OmniBufBlind.decodeBlindJson` formats `WireUint` and `WireFixed64` with unsigned 64-bit decimal strings (`UnsignedLong`), formats 32-bit floats using shortest IEEE-754 decimal strings, formats `-0.0` as `"-0.0"`, encodes `WireBytes` as Base64, throws `OmniBufException` on `NaN` or `Infinity` by default, and returns `"{}"` when `fallbackOnNonFinite = true`.

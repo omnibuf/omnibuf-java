@@ -11,6 +11,30 @@
 
   <name>OmniBuf Java</name>
   <description>Java 21 implementation of the OmniBuf binary wire format, runtime codecs, and protoc plugin.</description>
+  <url>https://omnibuf.com/java</url>
+
+  <licenses>
+    <license>
+      <name>MIT License</name>
+      <url>https://opensource.org/licenses/MIT</url>
+      <distribution>repo</distribution>
+    </license>
+  </licenses>
+
+  <developers>
+    <developer>
+      <id>omnibuf</id>
+      <name>OmniBuf Contributors</name>
+      <url>https://github.com/omnibuf</url>
+    </developer>
+  </developers>
+
+  <scm>
+    <url>https://github.com/omnibuf/omnibuf</url>
+    <connection>scm:git:https://github.com/omnibuf/omnibuf.git</connection>
+    <developerConnection>scm:git:git@github.com:omnibuf/omnibuf.git</developerConnection>
+    <tag>HEAD</tag>
+  </scm>
 
   <properties>
     <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
@@ -18,6 +42,7 @@
     <protobuf.version>4.35.1</protobuf.version>
     <jackson.version>2.18.2</jackson.version>
     <msgpack.jackson.version>0.9.8</msgpack.jackson.version>
+    <flatbuffers.version>25.2.10</flatbuffers.version>
     <junit.version>5.11.4</junit.version>
   </properties>
 
@@ -32,14 +57,21 @@
       <groupId>com.fasterxml.jackson.core</groupId>
       <artifactId>jackson-databind</artifactId>
       <version>${jackson.version}</version>
-      <optional>true</optional>
+      <scope>test</scope>
     </dependency>
 
     <dependency>
       <groupId>org.msgpack</groupId>
       <artifactId>jackson-dataformat-msgpack</artifactId>
       <version>${msgpack.jackson.version}</version>
-      <optional>true</optional>
+      <scope>test</scope>
+    </dependency>
+
+    <dependency>
+      <groupId>com.google.flatbuffers</groupId>
+      <artifactId>flatbuffers-java</artifactId>
+      <version>${flatbuffers.version}</version>
+      <scope>test</scope>
     </dependency>
 
     <dependency>
@@ -58,10 +90,10 @@
         <version>3.6.0</version>
         <executions>
           <execution>
-            <id>add-generated-sources</id>
-            <phase>generate-sources</phase>
+            <id>add-generated-test-sources</id>
+            <phase>generate-test-sources</phase>
             <goals>
-              <goal>add-source</goal>
+              <goal>add-test-source</goal>
             </goals>
             <configuration>
               <sources>
@@ -86,18 +118,53 @@
 
       <plugin>
         <groupId>org.apache.maven.plugins</groupId>
+        <artifactId>maven-shade-plugin</artifactId>
+        <version>3.6.0</version>
+        <executions>
+          <execution>
+            <id>protoc-gen-omnibuf-java</id>
+            <phase>package</phase>
+            <goals>
+              <goal>shade</goal>
+            </goals>
+            <configuration>
+              <shadedArtifactAttached>true</shadedArtifactAttached>
+              <shadedClassifierName>protoc-gen</shadedClassifierName>
+              <createDependencyReducedPom>false</createDependencyReducedPom>
+              <filters>
+                <filter>
+                  <artifact>*:*</artifact>
+                  <excludes>
+                    <exclude>META-INF/*.SF</exclude>
+                    <exclude>META-INF/*.DSA</exclude>
+                    <exclude>META-INF/*.RSA</exclude>
+                  </excludes>
+                </filter>
+              </filters>
+              <transformers>
+                <transformer implementation="org.apache.maven.plugins.shade.resource.ManifestResourceTransformer">
+                  <mainClass>com.omnibuf.plugin.ProtocGenOmniBufJava</mainClass>
+                </transformer>
+              </transformers>
+            </configuration>
+          </execution>
+        </executions>
+      </plugin>
+
+      <plugin>
+        <groupId>org.apache.maven.plugins</groupId>
         <artifactId>maven-dependency-plugin</artifactId>
         <version>3.8.1</version>
         <executions>
           <execution>
-            <id>copy-runtime-dependencies</id>
-            <phase>process-classes</phase>
+            <id>copy-test-dependencies</id>
+            <phase>process-test-classes</phase>
             <goals>
               <goal>copy-dependencies</goal>
             </goals>
             <configuration>
               <outputDirectory>${project.build.directory}/dependency</outputDirectory>
-              <includeScope>runtime</includeScope>
+              <includeScope>test</includeScope>
               <silent>true</silent>
             </configuration>
           </execution>

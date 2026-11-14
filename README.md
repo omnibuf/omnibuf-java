@@ -2,7 +2,7 @@
 
 Java 21 implementation of the OmniBuf binary wire format, runtime codecs, and `buf` code generator plugin (`protoc-gen-omnibuf-java`).
 
-Passes all **584 / 584** cross-language conformance cases (`0 skipped, 0 failed`) across every integration tier.
+Passes all **758 / 758** cross-language conformance cases (`0 skipped, 0 failed`) across every integration tier.
 
 ## Features
 
@@ -64,8 +64,8 @@ byte[] wire = PeerUpdateOmniBuf.marshal(msg);
 OpaquePeerUpdate view = new OpaquePeerUpdate(wire);
 String city = view.getLocation().getCity(); // "Frankfurt"
 
-// Splice a single field update into a new packet
-byte[] updated = view.setSequence(9_876_543_211L).marshal();
+// Splice a single field update into a validated packet
+byte[] updated = view.setSequence(9_876_543_211L).marshalValidated();
 ```
 
 ### Annotated Java 21 Records & Classes
@@ -108,21 +108,25 @@ PeerUpdate restored = OmniBufProtobuf.unmarshal(packet, PeerUpdate.getDefaultIns
 
 Measured on Apple M1 Pro (`darwin-arm64`, OpenJDK 21.0.13) using the canonical 11-field `PeerUpdate` workload (`just bench`, structured output in `testdata/benchmarks.json`):
 
-| Category | OmniBuf (Generated) | OmniBuf (@OmniBufField) | Protobuf (protobuf-java) | JSON (Jackson) | MessagePack (Jackson) |
-| :--- | ---: | ---: | ---: | ---: | ---: |
-| **Wire Size** | **366 B** | **366 B** | 341 B | 803 B | 626 B |
-| **Full Encode** | **342 ns/op** | 688 ns/op | 392 ns/op | 1,508 ns/op | 2,463 ns/op |
-| **Full Decode** | **733 ns/op** | 1,825 ns/op | 951 ns/op | 2,528 ns/op | 4,093 ns/op |
-| **Nested Lookup (`location.city`)** | **188 ns/op** | n/a | 965 ns/op | 2,578 ns/op | 4,274 ns/op |
-| **Single-Field Splice (`sequence`)** | **158 ns/op** | n/a | 1,473 ns/op | 4,295 ns/op | 6,747 ns/op |
+| Category | OmniBuf (Generated) | OmniBuf (@OmniBufField) | Protobuf (protobuf-java) | FlatBuffers | JSON (Jackson) | MessagePack (Jackson) |
+| :--- | ---: | ---: | ---: | ---: | ---: | ---: |
+| **Wire Size** | **366 B** | **366 B** | 341 B | 600 B | 803 B | 626 B |
+| **Full Message Encode Speed** | **343 ns/op** | 627 ns/op | 347 ns/op | 1,030 ns/op | 1,784 ns/op | 2,508 ns/op |
+| **Full Message Decode Speed** | 1,110 ns/op | 1,114 ns/op | 1,578 ns/op | **1,034 ns/op** | 3,087 ns/op | 4,614 ns/op |
+| **Read a Single Nested Field** | 106 ns/op | n/a | 1,085 ns/op | **23 ns/op** | 2,569 ns/op | 4,151 ns/op |
+| **Selective Single-Field Mutation** | **314 ns/op** | n/a | 1,499 ns/op | 1,479 ns/op | 4,443 ns/op | 6,832 ns/op |
+| **Large Embedded Message Encode** | 8,634 ns/op | 8,990 ns/op | **4,569 ns/op** | 77,469 ns/op | 64,010 ns/op | 118,690 ns/op |
+| **Embedded Message Growth** | **4,774 ns/op** | n/a | 25,025 ns/op | 46,960 ns/op | 51,229 ns/op | 90,798 ns/op |
+
+`BenchmarkMain` evaluates six categories across `OmniBuf (Generated)`, `OmniBuf (@OmniBufField)`, `OmniBuf (Protobuf)`, `Protobuf (protobuf-java)`, `FlatBuffers`, `MessagePack (Jackson)`, and `JSON (Jackson)`, adding `Large Embedded Message Encode` and `Embedded Message Growth` stress workloads. Run `just bench --smoke` for a fast parity check across all six categories.
 
 ## Development Recipes
 
 ```bash
 just proto        # Lint schemas and regenerate src/main/gen via buf
-just build        # Compile and package target/omnibuf-java-0.1.0.jar
+just build        # Compile and package target/omnibuf-java-0.1.0.jar and shaded protoc-gen JAR
 just test         # Run JUnit 5 test suite
-just conformance  # Run 584-case cross-language conformance runner
+just conformance  # Run 758-case cross-language conformance runner
 just bench        # Run PeerUpdate benchmarks and write testdata/benchmarks.json
 just lint         # Run buf lint, buf format check, and javac -Xlint:all failOnWarning
 just ci           # Run lint, build, test, and conformance

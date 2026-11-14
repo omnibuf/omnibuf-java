@@ -6,23 +6,72 @@ package com.omnibuf.pb.bench;
 import com.omnibuf.MarshalOptions;
 import com.omnibuf.OmniBufException;
 import com.omnibuf.SchemaMeta;
+import com.omnibuf.UnmarshalOptions;
+import com.omnibuf.wire.CodecPool;
 import com.omnibuf.wire.OmniBufDecoder;
 import com.omnibuf.wire.OmniBufEncoder;
 import com.omnibuf.wire.WireType;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 public final class LocationOmniBuf {
-    private static final ThreadLocal<OmniBufEncoder> ENCODER_POOL =
-        ThreadLocal.withInitial(() -> new OmniBufEncoder(512));
-
-    private static final SchemaMeta SCHEMA_META = buildSchemaMeta();
-    private static final byte[] FIELD0_BYTES = SCHEMA_META.encodeField0(true);
+    private static volatile SchemaMeta SCHEMA_META;
+    private static volatile byte[] FIELD0_BYTES;
+    private static volatile Boolean CYCLIC_SCHEMA;
 
     private LocationOmniBuf() {}
 
-    private static SchemaMeta buildSchemaMeta() {
+    public static SchemaMeta schemaMeta() {
+        SchemaMeta m = SCHEMA_META;
+        if (m == null) {
+            boolean[] cyclic = new boolean[1];
+            m = schemaMeta(1, new HashSet<>(), cyclic);
+            CYCLIC_SCHEMA = cyclic[0];
+            SCHEMA_META = m;
+        }
+        return m;
+    }
+
+    private static boolean isCyclicSchema() {
+        Boolean c = CYCLIC_SCHEMA;
+        if (c == null) {
+            schemaMeta();
+            c = CYCLIC_SCHEMA;
+        }
+        return Boolean.TRUE.equals(c);
+    }
+
+    public static SchemaMeta schemaMeta(int schemaDepth, Set<String> active, boolean[] cyclicOut) {
+        if (!active.add(".omnibuf.bench.Location")) {
+            cyclicOut[0] = true;
+            return null;
+        }
+        if (schemaDepth + 1 > WireType.MAX_CONTAINER_DEPTH) {
+            active.remove(".omnibuf.bench.Location");
+            return null;
+        }
+        try {
+            Map<Integer, String> fieldNames = new LinkedHashMap<>(6);
+            fieldNames.put(1, "region");
+            fieldNames.put(2, "datacenter");
+            fieldNames.put(3, "city");
+            fieldNames.put(4, "rack");
+            fieldNames.put(5, "latitude");
+            fieldNames.put(6, "longitude");
+            Map<Integer, SchemaMeta> children = new LinkedHashMap<>();
+            return new SchemaMeta("Location", fieldNames, children);
+        } finally {
+            active.remove(".omnibuf.bench.Location");
+        }
+    }
+
+    public static SchemaMeta instanceSchemaMeta(OmniBufLocation msg, int schemaDepth) {
+        if (msg == null || schemaDepth + 1 > WireType.MAX_CONTAINER_DEPTH) {
+            return null;
+        }
         Map<Integer, String> fieldNames = new LinkedHashMap<>(6);
         fieldNames.put(1, "region");
         fieldNames.put(2, "datacenter");
@@ -34,8 +83,13 @@ public final class LocationOmniBuf {
         return new SchemaMeta("Location", fieldNames, children);
     }
 
-    public static SchemaMeta schemaMeta() {
-        return SCHEMA_META;
+    private static byte[] field0Bytes() {
+        byte[] b = FIELD0_BYTES;
+        if (b == null) {
+            b = schemaMeta().encodeField0(true);
+            FIELD0_BYTES = b;
+        }
+        return b;
     }
 
     public static byte[] marshal(OmniBufLocation msg) {
@@ -47,54 +101,88 @@ public final class LocationOmniBuf {
             throw new OmniBufException("omnibuf: cannot marshal null Location");
         }
         MarshalOptions opts = options == null ? MarshalOptions.DEFAULT : options;
-        OmniBufEncoder enc = ENCODER_POOL.get();
-        enc.reset();
-        if (opts.selfDescribing()) {
-            if (opts.deterministic()) {
-                enc.writeRawBytes(FIELD0_BYTES);
-            } else {
-                SCHEMA_META.writeField0(enc, false);
+        OmniBufEncoder enc = CodecPool.acquireEncoder();
+        try {
+            if (opts.selfDescribing()) {
+                if (isCyclicSchema()) {
+                    SchemaMeta dyn = instanceSchemaMeta(msg, 1);
+                    if (dyn != null) {
+                        dyn.writeField0(enc, opts.deterministic());
+                    }
+                } else if (opts.deterministic()) {
+                    enc.writeRawBytes(field0Bytes());
+                } else {
+                    schemaMeta().writeField0(enc, false);
+                }
             }
+            encode(enc, msg, opts.deterministic());
+            return enc.toByteArray();
+        } finally {
+            CodecPool.releaseEncoder(enc);
         }
-        encode(enc, msg, opts.deterministic());
-        return enc.toByteArray();
     }
 
     public static void encode(OmniBufEncoder enc, OmniBufLocation msg, boolean deterministic) {
-        enc.writeString(1, msg.getRegion());
-        enc.writeString(2, msg.getDatacenter());
-        enc.writeString(3, msg.getCity());
-        enc.writeUint32(4, msg.getRack());
-        enc.writeFloat32(5, msg.getLatitude());
-        enc.writeFloat32(6, msg.getLongitude());
+        enc.writeString(1, msg.region);
+        enc.writeString(2, msg.datacenter);
+        enc.writeString(3, msg.city);
+        enc.writeUint32(4, msg.rack);
+        enc.writeFloat32(5, msg.latitude);
+        enc.writeFloat32(6, msg.longitude);
     }
 
     public static OmniBufLocation unmarshal(byte[] data) {
+        return unmarshal(data, UnmarshalOptions.DEFAULT);
+    }
+
+    public static OmniBufLocation unmarshal(byte[] data, UnmarshalOptions options) {
         if (data == null) {
             throw new OmniBufException("omnibuf: null packet buffer");
         }
-        OmniBufLocation out = new OmniBufLocation();
-        decodeInto(data, 0, data.length, out, 0);
-        return out;
+        OmniBufDecoder dec = CodecPool.acquireDecoder(data, 0, data.length, options);
+        try {
+            OmniBufLocation out = new OmniBufLocation();
+            decodeFrom(dec, out, 0);
+            return out;
+        } finally {
+            CodecPool.releaseDecoder(dec);
+        }
     }
 
     public static void unmarshal(byte[] data, OmniBufLocation target) {
+        unmarshal(data, target, UnmarshalOptions.DEFAULT);
+    }
+
+    public static void unmarshal(byte[] data, OmniBufLocation target, UnmarshalOptions options) {
         if (data == null) {
             throw new OmniBufException("omnibuf: null packet buffer");
         }
         if (target == null) {
             throw new OmniBufException("omnibuf: null target instance");
         }
-        target.reset();
-        decodeInto(data, 0, data.length, target, 0);
+        OmniBufDecoder dec = CodecPool.acquireDecoder(data, 0, data.length, options);
+        try {
+            target.reset();
+            decodeFrom(dec, target, 0);
+        } finally {
+            CodecPool.releaseDecoder(dec);
+        }
     }
 
     public static void decodeInto(
             byte[] data, int offset, int length, OmniBufLocation target, int depth) {
-        if (depth > OmniBufDecoder.MAX_CONTAINER_DEPTH) {
+        OmniBufDecoder dec = CodecPool.acquireDecoder(data, offset, length);
+        try {
+            decodeFrom(dec, target, depth);
+        } finally {
+            CodecPool.releaseDecoder(dec);
+        }
+    }
+
+    public static void decodeFrom(OmniBufDecoder dec, OmniBufLocation target, int depth) {
+        if (depth > dec.maxNestingDepth()) {
             throw new OmniBufException("omnibuf: nesting depth exceeds MaxNestingDepth");
         }
-        OmniBufDecoder dec = new OmniBufDecoder(data, offset, length);
         while (dec.hasRemaining()) {
             long tag = dec.readTag();
             int fnum = (int) (tag >>> 4);
@@ -103,42 +191,42 @@ public final class LocationOmniBuf {
                 case 0 -> dec.skipOrValidateUnknown(0, wt, depth);
                 case 1 -> {
                     if (wt == WireType.WIRE_STRING) {
-                        target.setRegion(dec.readString());
+                        target.region = dec.readString();
                     } else {
                         dec.skipOrValidateUnknown(fnum, wt, depth);
                     }
                 }
                 case 2 -> {
                     if (wt == WireType.WIRE_STRING) {
-                        target.setDatacenter(dec.readString());
+                        target.datacenter = dec.readString();
                     } else {
                         dec.skipOrValidateUnknown(fnum, wt, depth);
                     }
                 }
                 case 3 -> {
                     if (wt == WireType.WIRE_STRING) {
-                        target.setCity(dec.readString());
+                        target.city = dec.readString();
                     } else {
                         dec.skipOrValidateUnknown(fnum, wt, depth);
                     }
                 }
                 case 4 -> {
                     if (wt == WireType.WIRE_UINT) {
-                        target.setRack(dec.readUint32());
+                        target.rack = dec.readUint32();
                     } else {
                         dec.skipOrValidateUnknown(fnum, wt, depth);
                     }
                 }
                 case 5 -> {
                     if (wt == WireType.WIRE_FLOAT32) {
-                        target.setLatitude(dec.readFloat32());
+                        target.latitude = dec.readFloat32();
                     } else {
                         dec.skipOrValidateUnknown(fnum, wt, depth);
                     }
                 }
                 case 6 -> {
                     if (wt == WireType.WIRE_FLOAT32) {
-                        target.setLongitude(dec.readFloat32());
+                        target.longitude = dec.readFloat32();
                     } else {
                         dec.skipOrValidateUnknown(fnum, wt, depth);
                     }

@@ -6,23 +6,72 @@ package com.omnibuf.pb.conformance;
 import com.omnibuf.MarshalOptions;
 import com.omnibuf.OmniBufException;
 import com.omnibuf.SchemaMeta;
+import com.omnibuf.UnmarshalOptions;
+import com.omnibuf.wire.CodecPool;
 import com.omnibuf.wire.OmniBufDecoder;
 import com.omnibuf.wire.OmniBufEncoder;
 import com.omnibuf.wire.WireType;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 public final class ConformanceResponseOmniBuf {
-    private static final ThreadLocal<OmniBufEncoder> ENCODER_POOL =
-        ThreadLocal.withInitial(() -> new OmniBufEncoder(512));
-
-    private static final SchemaMeta SCHEMA_META = buildSchemaMeta();
-    private static final byte[] FIELD0_BYTES = SCHEMA_META.encodeField0(true);
+    private static volatile SchemaMeta SCHEMA_META;
+    private static volatile byte[] FIELD0_BYTES;
+    private static volatile Boolean CYCLIC_SCHEMA;
 
     private ConformanceResponseOmniBuf() {}
 
-    private static SchemaMeta buildSchemaMeta() {
+    public static SchemaMeta schemaMeta() {
+        SchemaMeta m = SCHEMA_META;
+        if (m == null) {
+            boolean[] cyclic = new boolean[1];
+            m = schemaMeta(1, new HashSet<>(), cyclic);
+            CYCLIC_SCHEMA = cyclic[0];
+            SCHEMA_META = m;
+        }
+        return m;
+    }
+
+    private static boolean isCyclicSchema() {
+        Boolean c = CYCLIC_SCHEMA;
+        if (c == null) {
+            schemaMeta();
+            c = CYCLIC_SCHEMA;
+        }
+        return Boolean.TRUE.equals(c);
+    }
+
+    public static SchemaMeta schemaMeta(int schemaDepth, Set<String> active, boolean[] cyclicOut) {
+        if (!active.add(".omnibuf.conformance.ConformanceResponse")) {
+            cyclicOut[0] = true;
+            return null;
+        }
+        if (schemaDepth + 1 > WireType.MAX_CONTAINER_DEPTH) {
+            active.remove(".omnibuf.conformance.ConformanceResponse");
+            return null;
+        }
+        try {
+            Map<Integer, String> fieldNames = new LinkedHashMap<>(6);
+            fieldNames.put(1, "parse_error");
+            fieldNames.put(2, "serialize_error");
+            fieldNames.put(3, "runtime_error");
+            fieldNames.put(4, "skipped");
+            fieldNames.put(5, "omnibuf_payload");
+            fieldNames.put(6, "json_payload");
+            Map<Integer, SchemaMeta> children = new LinkedHashMap<>();
+            return new SchemaMeta("ConformanceResponse", fieldNames, children);
+        } finally {
+            active.remove(".omnibuf.conformance.ConformanceResponse");
+        }
+    }
+
+    public static SchemaMeta instanceSchemaMeta(OmniBufConformanceResponse msg, int schemaDepth) {
+        if (msg == null || schemaDepth + 1 > WireType.MAX_CONTAINER_DEPTH) {
+            return null;
+        }
         Map<Integer, String> fieldNames = new LinkedHashMap<>(6);
         fieldNames.put(1, "parse_error");
         fieldNames.put(2, "serialize_error");
@@ -34,8 +83,13 @@ public final class ConformanceResponseOmniBuf {
         return new SchemaMeta("ConformanceResponse", fieldNames, children);
     }
 
-    public static SchemaMeta schemaMeta() {
-        return SCHEMA_META;
+    private static byte[] field0Bytes() {
+        byte[] b = FIELD0_BYTES;
+        if (b == null) {
+            b = schemaMeta().encodeField0(true);
+            FIELD0_BYTES = b;
+        }
+        return b;
     }
 
     public static byte[] marshal(OmniBufConformanceResponse msg) {
@@ -47,54 +101,88 @@ public final class ConformanceResponseOmniBuf {
             throw new OmniBufException("omnibuf: cannot marshal null ConformanceResponse");
         }
         MarshalOptions opts = options == null ? MarshalOptions.DEFAULT : options;
-        OmniBufEncoder enc = ENCODER_POOL.get();
-        enc.reset();
-        if (opts.selfDescribing()) {
-            if (opts.deterministic()) {
-                enc.writeRawBytes(FIELD0_BYTES);
-            } else {
-                SCHEMA_META.writeField0(enc, false);
+        OmniBufEncoder enc = CodecPool.acquireEncoder();
+        try {
+            if (opts.selfDescribing()) {
+                if (isCyclicSchema()) {
+                    SchemaMeta dyn = instanceSchemaMeta(msg, 1);
+                    if (dyn != null) {
+                        dyn.writeField0(enc, opts.deterministic());
+                    }
+                } else if (opts.deterministic()) {
+                    enc.writeRawBytes(field0Bytes());
+                } else {
+                    schemaMeta().writeField0(enc, false);
+                }
             }
+            encode(enc, msg, opts.deterministic());
+            return enc.toByteArray();
+        } finally {
+            CodecPool.releaseEncoder(enc);
         }
-        encode(enc, msg, opts.deterministic());
-        return enc.toByteArray();
     }
 
     public static void encode(OmniBufEncoder enc, OmniBufConformanceResponse msg, boolean deterministic) {
-        enc.writeString(1, msg.getParseError());
-        enc.writeString(2, msg.getSerializeError());
-        enc.writeString(3, msg.getRuntimeError());
-        enc.writeString(4, msg.getSkipped());
-        enc.writeBytes(5, msg.getOmnibufPayload());
-        enc.writeString(6, msg.getJsonPayload());
+        enc.writeString(1, msg.parseError);
+        enc.writeString(2, msg.serializeError);
+        enc.writeString(3, msg.runtimeError);
+        enc.writeString(4, msg.skipped);
+        enc.writeBytes(5, msg.omnibufPayload);
+        enc.writeString(6, msg.jsonPayload);
     }
 
     public static OmniBufConformanceResponse unmarshal(byte[] data) {
+        return unmarshal(data, UnmarshalOptions.DEFAULT);
+    }
+
+    public static OmniBufConformanceResponse unmarshal(byte[] data, UnmarshalOptions options) {
         if (data == null) {
             throw new OmniBufException("omnibuf: null packet buffer");
         }
-        OmniBufConformanceResponse out = new OmniBufConformanceResponse();
-        decodeInto(data, 0, data.length, out, 0);
-        return out;
+        OmniBufDecoder dec = CodecPool.acquireDecoder(data, 0, data.length, options);
+        try {
+            OmniBufConformanceResponse out = new OmniBufConformanceResponse();
+            decodeFrom(dec, out, 0);
+            return out;
+        } finally {
+            CodecPool.releaseDecoder(dec);
+        }
     }
 
     public static void unmarshal(byte[] data, OmniBufConformanceResponse target) {
+        unmarshal(data, target, UnmarshalOptions.DEFAULT);
+    }
+
+    public static void unmarshal(byte[] data, OmniBufConformanceResponse target, UnmarshalOptions options) {
         if (data == null) {
             throw new OmniBufException("omnibuf: null packet buffer");
         }
         if (target == null) {
             throw new OmniBufException("omnibuf: null target instance");
         }
-        target.reset();
-        decodeInto(data, 0, data.length, target, 0);
+        OmniBufDecoder dec = CodecPool.acquireDecoder(data, 0, data.length, options);
+        try {
+            target.reset();
+            decodeFrom(dec, target, 0);
+        } finally {
+            CodecPool.releaseDecoder(dec);
+        }
     }
 
     public static void decodeInto(
             byte[] data, int offset, int length, OmniBufConformanceResponse target, int depth) {
-        if (depth > OmniBufDecoder.MAX_CONTAINER_DEPTH) {
+        OmniBufDecoder dec = CodecPool.acquireDecoder(data, offset, length);
+        try {
+            decodeFrom(dec, target, depth);
+        } finally {
+            CodecPool.releaseDecoder(dec);
+        }
+    }
+
+    public static void decodeFrom(OmniBufDecoder dec, OmniBufConformanceResponse target, int depth) {
+        if (depth > dec.maxNestingDepth()) {
             throw new OmniBufException("omnibuf: nesting depth exceeds MaxNestingDepth");
         }
-        OmniBufDecoder dec = new OmniBufDecoder(data, offset, length);
         while (dec.hasRemaining()) {
             long tag = dec.readTag();
             int fnum = (int) (tag >>> 4);
@@ -103,42 +191,42 @@ public final class ConformanceResponseOmniBuf {
                 case 0 -> dec.skipOrValidateUnknown(0, wt, depth);
                 case 1 -> {
                     if (wt == WireType.WIRE_STRING) {
-                        target.setParseError(dec.readString());
+                        target.parseError = dec.readString();
                     } else {
                         dec.skipOrValidateUnknown(fnum, wt, depth);
                     }
                 }
                 case 2 -> {
                     if (wt == WireType.WIRE_STRING) {
-                        target.setSerializeError(dec.readString());
+                        target.serializeError = dec.readString();
                     } else {
                         dec.skipOrValidateUnknown(fnum, wt, depth);
                     }
                 }
                 case 3 -> {
                     if (wt == WireType.WIRE_STRING) {
-                        target.setRuntimeError(dec.readString());
+                        target.runtimeError = dec.readString();
                     } else {
                         dec.skipOrValidateUnknown(fnum, wt, depth);
                     }
                 }
                 case 4 -> {
                     if (wt == WireType.WIRE_STRING) {
-                        target.setSkipped(dec.readString());
+                        target.skipped = dec.readString();
                     } else {
                         dec.skipOrValidateUnknown(fnum, wt, depth);
                     }
                 }
                 case 5 -> {
                     if (wt == WireType.WIRE_BYTES) {
-                        target.setOmnibufPayload(dec.readBytes());
+                        target.omnibufPayload = dec.readBytes();
                     } else {
                         dec.skipOrValidateUnknown(fnum, wt, depth);
                     }
                 }
                 case 6 -> {
                     if (wt == WireType.WIRE_STRING) {
-                        target.setJsonPayload(dec.readString());
+                        target.jsonPayload = dec.readString();
                     } else {
                         dec.skipOrValidateUnknown(fnum, wt, depth);
                     }

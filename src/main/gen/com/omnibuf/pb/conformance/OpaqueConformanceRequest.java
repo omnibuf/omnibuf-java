@@ -178,8 +178,21 @@ public final class OpaqueConformanceRequest {
         );
     }
 
+    public byte[] marshalValidated() {
+        return marshalValidatedInto(null);
+    }
+
+    public byte[] tryMarshal() {
+        return marshalValidatedInto(null);
+    }
+
+    public byte[] marshalValidatedInto(OmniBufEncoder target) {
+        return OmniBufOpaque.spliceFieldsValidated(
+            buffer, offset, length, dirtyMask, MAX_FIELD_NUMBER, this::writeDirtyField, target
+        );
+    }
+
     private void writeDirtyField(OmniBufEncoder enc, int fieldNumber) {
-        boolean deterministic = true;
         switch (fieldNumber) {
             case 1 -> {
                 enc.writeString(1, this.dirty_testName);

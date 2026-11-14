@@ -1,5 +1,6 @@
 package com.omnibuf;
 
+import com.omnibuf.wire.CodecPool;
 import com.omnibuf.wire.OmniBufDecoder;
 import com.omnibuf.wire.OmniBufEncoder;
 import com.omnibuf.wire.PrefixVarint;
@@ -77,9 +78,13 @@ public final class SchemaMeta {
      * Encodes this {@link SchemaMeta} as a standalone Field #0 header ({@code 0x19 + len + body}).
      */
     public byte[] encodeField0(boolean deterministic) {
-        OmniBufEncoder enc = new OmniBufEncoder(128);
-        writeField0(enc, deterministic);
-        return enc.toByteArray();
+        OmniBufEncoder enc = CodecPool.acquireEncoder();
+        try {
+            writeField0(enc, deterministic);
+            return enc.toByteArray();
+        } finally {
+            CodecPool.releaseEncoder(enc);
+        }
     }
 
     /**
@@ -172,9 +177,29 @@ public final class SchemaMeta {
      * Decodes a {@link SchemaMeta} body slice at {@code data[offset..offset+length]}.
      */
     public static SchemaMeta decode(byte[] data, int offset, int length, int depth) {
-        if (depth > OmniBufDecoder.MAX_CONTAINER_DEPTH) {
+        return decode(
+            data,
+            offset,
+            length,
+            depth,
+            OmniBufDecoder.MAX_CONTAINER_DEPTH,
+            UnmarshalOptions.DEFAULT_MAX_COLLECTION_ELEMENTS
+        );
+    }
+
+    public static SchemaMeta decode(
+            byte[] data,
+            int offset,
+            int length,
+            int depth,
+            int maxNestingDepth,
+            int maxCollectionElements) {
+        if (data == null || offset < 0 || length < 0 || length > data.length - offset) {
+            throw new OmniBufException("omnibuf: SchemaMeta slice out of bounds");
+        }
+        if (depth > maxNestingDepth) {
             throw new OmniBufException(
-                "omnibuf: SchemaMeta nesting depth " + depth + " exceeds MaxNestingDepth"
+                "omnibuf: SchemaMeta nesting depth " + depth + " exceeds MaxNestingDepth (" + maxNestingDepth + ")"
             );
         }
         String typeName = "";
@@ -208,13 +233,14 @@ public final class SchemaMeta {
                     if (wt != WireType.WIRE_MAP) {
                         throw new OmniBufException("omnibuf: SchemaMeta field #2 must be WireMap");
                     }
-                    if (depth + 1 > OmniBufDecoder.MAX_CONTAINER_DEPTH) {
+                    if (depth + 1 > maxNestingDepth) {
                         throw new OmniBufException("omnibuf: SchemaMeta fields map exceeds MaxNestingDepth");
                     }
                     OmniBufDecoder.Slice mapSlice = OmniBufDecoder.readLengthSlice(data, pos, end, 3);
                     pos = mapSlice.end();
-                    OmniBufDecoder.MapHeader hdr =
-                        OmniBufDecoder.parseMapHeader(data, mapSlice.offset(), mapSlice.end());
+                    OmniBufDecoder.MapHeader hdr = OmniBufDecoder.parseMapHeader(
+                        data, mapSlice.offset(), mapSlice.end(), maxCollectionElements
+                    );
                     if (hdr.keyWireType() != WireType.WIRE_UINT
                             || hdr.valWireType() != WireType.WIRE_STRING) {
                         throw new OmniBufException("omnibuf: SchemaMeta fields map requires uint->string");
@@ -244,20 +270,23 @@ public final class SchemaMeta {
                     if (wt != WireType.WIRE_MAP) {
                         throw new OmniBufException("omnibuf: SchemaMeta field #3 must be WireMap");
                     }
-                    if (depth + 1 > OmniBufDecoder.MAX_CONTAINER_DEPTH) {
+                    if (depth + 1 > maxNestingDepth) {
                         throw new OmniBufException("omnibuf: SchemaMeta children map exceeds MaxNestingDepth");
                     }
                     OmniBufDecoder.Slice mapSlice = OmniBufDecoder.readLengthSlice(data, pos, end, 3);
                     pos = mapSlice.end();
-                    OmniBufDecoder.MapHeader hdr =
-                        OmniBufDecoder.parseMapHeader(data, mapSlice.offset(), mapSlice.end());
+                    OmniBufDecoder.MapHeader hdr = OmniBufDecoder.parseMapHeader(
+                        data, mapSlice.offset(), mapSlice.end(), maxCollectionElements
+                    );
                     if (hdr.keyWireType() != WireType.WIRE_UINT
                             || hdr.valWireType() != WireType.WIRE_SUB_MSG) {
                         throw new OmniBufException("omnibuf: SchemaMeta children map requires uint->submsg");
                     }
-                    if (children == null) {
-                        children = new LinkedHashMap<>(Math.min(hdr.count(), 4096));
-                    }
+                    // Within a single WireMap (Spec §6.6), duplicate keys replace the earlier entry;
+                    // across multiple Field #3 occurrences or multiple Field #0 blocks (Spec §8.2),
+                    // child SchemaMeta entries merge recursively.
+                    Map<Integer, SchemaMeta> mapChildren =
+                        hdr.count() == 0 ? null : new LinkedHashMap<>(Math.min(hdr.count(), 4096));
                     int p = hdr.payloadStart();
                     int mapEnd = hdr.payloadEnd();
                     for (int i = 0; i < hdr.count(); i++) {
@@ -268,16 +297,29 @@ public final class SchemaMeta {
                         }
                         p += kd.bytesRead();
                         OmniBufDecoder.Slice cs = OmniBufDecoder.readLengthSlice(data, p, mapEnd, 0);
-                        SchemaMeta childMeta = decode(data, cs.offset(), cs.length(), depth + 1);
-                        int key = (int) k64;
-                        children.put(key, merge(children.get(key), childMeta));
+                        SchemaMeta childMeta = decode(
+                            data, cs.offset(), cs.length(), depth + 2, maxNestingDepth, maxCollectionElements
+                        );
+                        mapChildren.put((int) k64, childMeta);
                         p = cs.end();
                     }
                     if (p != mapEnd) {
                         throw new OmniBufException("omnibuf: SchemaMeta children map has trailing bytes");
                     }
+                    if (mapChildren != null) {
+                        if (children == null) {
+                            children = mapChildren;
+                        } else {
+                            for (Map.Entry<Integer, SchemaMeta> entry : mapChildren.entrySet()) {
+                                int key = entry.getKey();
+                                children.put(key, merge(children.get(key), entry.getValue()));
+                            }
+                        }
+                    }
                 }
-                default -> pos = OmniBufDecoder.validateValue(data, pos, end, wt, depth);
+                default -> pos = OmniBufDecoder.validateValue(
+                    data, pos, end, wt, depth, maxNestingDepth, maxCollectionElements
+                );
             }
         }
         return new SchemaMeta(typeName, fields, children);

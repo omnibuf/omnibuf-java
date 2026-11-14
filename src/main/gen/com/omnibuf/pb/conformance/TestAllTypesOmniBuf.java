@@ -6,23 +6,91 @@ package com.omnibuf.pb.conformance;
 import com.omnibuf.MarshalOptions;
 import com.omnibuf.OmniBufException;
 import com.omnibuf.SchemaMeta;
+import com.omnibuf.UnmarshalOptions;
+import com.omnibuf.wire.CodecPool;
 import com.omnibuf.wire.OmniBufDecoder;
 import com.omnibuf.wire.OmniBufEncoder;
 import com.omnibuf.wire.WireType;
+import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Set;
 
 public final class TestAllTypesOmniBuf {
-    private static final ThreadLocal<OmniBufEncoder> ENCODER_POOL =
-        ThreadLocal.withInitial(() -> new OmniBufEncoder(512));
-
-    private static final SchemaMeta SCHEMA_META = buildSchemaMeta();
-    private static final byte[] FIELD0_BYTES = SCHEMA_META.encodeField0(true);
+    private static volatile SchemaMeta SCHEMA_META;
+    private static volatile byte[] FIELD0_BYTES;
+    private static volatile Boolean CYCLIC_SCHEMA;
 
     private TestAllTypesOmniBuf() {}
 
-    private static SchemaMeta buildSchemaMeta() {
+    public static SchemaMeta schemaMeta() {
+        SchemaMeta m = SCHEMA_META;
+        if (m == null) {
+            boolean[] cyclic = new boolean[1];
+            m = schemaMeta(1, new HashSet<>(), cyclic);
+            CYCLIC_SCHEMA = cyclic[0];
+            SCHEMA_META = m;
+        }
+        return m;
+    }
+
+    private static boolean isCyclicSchema() {
+        Boolean c = CYCLIC_SCHEMA;
+        if (c == null) {
+            schemaMeta();
+            c = CYCLIC_SCHEMA;
+        }
+        return Boolean.TRUE.equals(c);
+    }
+
+    public static SchemaMeta schemaMeta(int schemaDepth, Set<String> active, boolean[] cyclicOut) {
+        if (!active.add(".omnibuf.conformance.TestAllTypes")) {
+            cyclicOut[0] = true;
+            return null;
+        }
+        if (schemaDepth + 1 > WireType.MAX_CONTAINER_DEPTH) {
+            active.remove(".omnibuf.conformance.TestAllTypes");
+            return null;
+        }
+        try {
+            Map<Integer, String> fieldNames = new LinkedHashMap<>(17);
+            fieldNames.put(1, "f1_uint32");
+            fieldNames.put(2, "f2_uint64");
+            fieldNames.put(3, "f3_sint32");
+            fieldNames.put(4, "f4_sint64");
+            fieldNames.put(5, "f5_bool");
+            fieldNames.put(6, "f6_string");
+            fieldNames.put(7, "f7_bytes");
+            fieldNames.put(8, "f8_sub_msg");
+            fieldNames.put(9, "f9_string_arr");
+            fieldNames.put(10, "f10_uint32_arr");
+            fieldNames.put(11, "f11_sub_msg_arr");
+            fieldNames.put(12, "f12_map_str_uint");
+            fieldNames.put(13, "f13_float32");
+            fieldNames.put(14, "f14_float64");
+            fieldNames.put(15, "f15_fixed32");
+            fieldNames.put(16, "f16_fixed64");
+            fieldNames.put(20, "f20_overflow_str");
+            Map<Integer, SchemaMeta> children = new LinkedHashMap<>();
+            SchemaMeta child_8 = com.omnibuf.pb.conformance.AllTypesSubMsgOmniBuf.schemaMeta(schemaDepth + 2, active, cyclicOut);
+            if (child_8 != null && schemaDepth + 3 <= WireType.MAX_CONTAINER_DEPTH) {
+                children.put(8, child_8);
+            }
+            SchemaMeta child_11 = com.omnibuf.pb.conformance.AllTypesSubMsgOmniBuf.schemaMeta(schemaDepth + 2, active, cyclicOut);
+            if (child_11 != null && schemaDepth + 3 <= WireType.MAX_CONTAINER_DEPTH) {
+                children.put(11, child_11);
+            }
+            return new SchemaMeta("TestAllTypes", fieldNames, children);
+        } finally {
+            active.remove(".omnibuf.conformance.TestAllTypes");
+        }
+    }
+
+    public static SchemaMeta instanceSchemaMeta(OmniBufTestAllTypes msg, int schemaDepth) {
+        if (msg == null || schemaDepth + 1 > WireType.MAX_CONTAINER_DEPTH) {
+            return null;
+        }
         Map<Integer, String> fieldNames = new LinkedHashMap<>(17);
         fieldNames.put(1, "f1_uint32");
         fieldNames.put(2, "f2_uint64");
@@ -42,13 +110,36 @@ public final class TestAllTypesOmniBuf {
         fieldNames.put(16, "f16_fixed64");
         fieldNames.put(20, "f20_overflow_str");
         Map<Integer, SchemaMeta> children = new LinkedHashMap<>();
-        children.put(8, com.omnibuf.pb.conformance.AllTypesSubMsgOmniBuf.schemaMeta());
-        children.put(11, com.omnibuf.pb.conformance.AllTypesSubMsgOmniBuf.schemaMeta());
+        if (schemaDepth + 3 <= WireType.MAX_CONTAINER_DEPTH) {
+            if (msg.f8SubMsg != null) {
+                SchemaMeta child = com.omnibuf.pb.conformance.AllTypesSubMsgOmniBuf.instanceSchemaMeta(msg.f8SubMsg, schemaDepth + 2);
+                if (child != null) {
+                    children.put(8, child);
+                }
+            }
+            if (msg.f11SubMsgArr != null && !msg.f11SubMsgArr.isEmpty()) {
+                SchemaMeta child = null;
+                for (int i = 0, n = msg.f11SubMsgArr.size(); i < n; i++) {
+                    com.omnibuf.pb.conformance.OmniBufAllTypesSubMsg elem = msg.f11SubMsgArr.get(i);
+                    if (elem != null) {
+                        child = SchemaMeta.merge(child, com.omnibuf.pb.conformance.AllTypesSubMsgOmniBuf.instanceSchemaMeta(elem, schemaDepth + 2));
+                    }
+                }
+                if (child != null) {
+                    children.put(11, child);
+                }
+            }
+        }
         return new SchemaMeta("TestAllTypes", fieldNames, children);
     }
 
-    public static SchemaMeta schemaMeta() {
-        return SCHEMA_META;
+    private static byte[] field0Bytes() {
+        byte[] b = FIELD0_BYTES;
+        if (b == null) {
+            b = schemaMeta().encodeField0(true);
+            FIELD0_BYTES = b;
+        }
+        return b;
     }
 
     public static byte[] marshal(OmniBufTestAllTypes msg) {
@@ -60,85 +151,119 @@ public final class TestAllTypesOmniBuf {
             throw new OmniBufException("omnibuf: cannot marshal null TestAllTypes");
         }
         MarshalOptions opts = options == null ? MarshalOptions.DEFAULT : options;
-        OmniBufEncoder enc = ENCODER_POOL.get();
-        enc.reset();
-        if (opts.selfDescribing()) {
-            if (opts.deterministic()) {
-                enc.writeRawBytes(FIELD0_BYTES);
-            } else {
-                SCHEMA_META.writeField0(enc, false);
+        OmniBufEncoder enc = CodecPool.acquireEncoder();
+        try {
+            if (opts.selfDescribing()) {
+                if (isCyclicSchema()) {
+                    SchemaMeta dyn = instanceSchemaMeta(msg, 1);
+                    if (dyn != null) {
+                        dyn.writeField0(enc, opts.deterministic());
+                    }
+                } else if (opts.deterministic()) {
+                    enc.writeRawBytes(field0Bytes());
+                } else {
+                    schemaMeta().writeField0(enc, false);
+                }
             }
+            encode(enc, msg, opts.deterministic());
+            return enc.toByteArray();
+        } finally {
+            CodecPool.releaseEncoder(enc);
         }
-        encode(enc, msg, opts.deterministic());
-        return enc.toByteArray();
     }
 
     public static void encode(OmniBufEncoder enc, OmniBufTestAllTypes msg, boolean deterministic) {
-        enc.writeUint32(1, msg.getF1Uint32());
-        enc.writeUint(2, msg.getF2Uint64());
-        enc.writeSint32(3, msg.getF3Sint32());
-        enc.writeSint(4, msg.getF4Sint64());
-        enc.writeBool(5, msg.getF5Bool());
-        enc.writeString(6, msg.getF6String());
-        enc.writeBytes(7, msg.getF7Bytes());
+        enc.writeUint32(1, msg.f1Uint32);
+        enc.writeUint(2, msg.f2Uint64);
+        enc.writeSint32(3, msg.f3Sint32);
+        enc.writeSint(4, msg.f4Sint64);
+        enc.writeBool(5, msg.f5Bool);
+        enc.writeString(6, msg.f6String);
+        enc.writeBytes(7, msg.f7Bytes);
         {
-            com.omnibuf.pb.conformance.OmniBufAllTypesSubMsg sub8 = msg.getF8SubMsg();
+            com.omnibuf.pb.conformance.OmniBufAllTypesSubMsg sub8 = msg.f8SubMsg;
             if (sub8 != null) {
-                enc.beginSubMsg(8);
+                int subPos = enc.beginSubMsgFast(8);
                 com.omnibuf.pb.conformance.AllTypesSubMsgOmniBuf.encode(enc, sub8, deterministic);
-                enc.endSubMsg();
+                enc.endContainerAt(subPos);
             }
         }
-        enc.writeStringList(9, msg.getF9StringArr());
-        enc.writeUint32List(10, msg.getF10Uint32Arr());
+        enc.writeStringList(9, msg.f9StringArr);
+        enc.writeUint32List(10, msg.f10Uint32Arr);
         {
-            List<com.omnibuf.pb.conformance.OmniBufAllTypesSubMsg> list11 = msg.getF11SubMsgArr();
+            List<com.omnibuf.pb.conformance.OmniBufAllTypesSubMsg> list11 = msg.f11SubMsgArr;
             int n = list11 == null ? 0 : list11.size();
-            enc.beginSubMsgArr(11);
+            int arrPos = enc.beginTypedArrayFast(11, WireType.WIRE_SUB_MSG, n);
             for (int i = 0; i < n; i++) {
-                enc.beginSubMsgElem();
+                int elemPos = enc.beginInlineSubMsgFast();
                 com.omnibuf.pb.conformance.OmniBufAllTypesSubMsg elem = list11.get(i);
                 if (elem != null) {
                     com.omnibuf.pb.conformance.AllTypesSubMsgOmniBuf.encode(enc, elem, deterministic);
                 }
-                enc.endSubMsgElem();
+                enc.endContainerAt(elemPos);
             }
-            enc.endSubMsgArr();
+            enc.endContainerAt(arrPos);
         }
-        enc.writeMapStringUint64(12, msg.getF12MapStrUint(), deterministic);
-        enc.writeFloat32(13, msg.getF13Float32());
-        enc.writeFloat64(14, msg.getF14Float64());
-        enc.writeFixed32(15, msg.getF15Fixed32());
-        enc.writeFixed64(16, msg.getF16Fixed64());
-        enc.writeString(20, msg.getF20OverflowStr());
+        enc.writeMapStringUint64(12, msg.f12MapStrUint, deterministic);
+        enc.writeFloat32(13, msg.f13Float32);
+        enc.writeFloat64(14, msg.f14Float64);
+        enc.writeFixed32(15, msg.f15Fixed32);
+        enc.writeFixed64(16, msg.f16Fixed64);
+        enc.writeString(20, msg.f20OverflowStr);
     }
 
     public static OmniBufTestAllTypes unmarshal(byte[] data) {
+        return unmarshal(data, UnmarshalOptions.DEFAULT);
+    }
+
+    public static OmniBufTestAllTypes unmarshal(byte[] data, UnmarshalOptions options) {
         if (data == null) {
             throw new OmniBufException("omnibuf: null packet buffer");
         }
-        OmniBufTestAllTypes out = new OmniBufTestAllTypes();
-        decodeInto(data, 0, data.length, out, 0);
-        return out;
+        OmniBufDecoder dec = CodecPool.acquireDecoder(data, 0, data.length, options);
+        try {
+            OmniBufTestAllTypes out = new OmniBufTestAllTypes();
+            decodeFrom(dec, out, 0);
+            return out;
+        } finally {
+            CodecPool.releaseDecoder(dec);
+        }
     }
 
     public static void unmarshal(byte[] data, OmniBufTestAllTypes target) {
+        unmarshal(data, target, UnmarshalOptions.DEFAULT);
+    }
+
+    public static void unmarshal(byte[] data, OmniBufTestAllTypes target, UnmarshalOptions options) {
         if (data == null) {
             throw new OmniBufException("omnibuf: null packet buffer");
         }
         if (target == null) {
             throw new OmniBufException("omnibuf: null target instance");
         }
-        target.reset();
-        decodeInto(data, 0, data.length, target, 0);
+        OmniBufDecoder dec = CodecPool.acquireDecoder(data, 0, data.length, options);
+        try {
+            target.reset();
+            decodeFrom(dec, target, 0);
+        } finally {
+            CodecPool.releaseDecoder(dec);
+        }
     }
 
     public static void decodeInto(
             byte[] data, int offset, int length, OmniBufTestAllTypes target, int depth) {
-        if (depth > OmniBufDecoder.MAX_CONTAINER_DEPTH) {
+        OmniBufDecoder dec = CodecPool.acquireDecoder(data, offset, length);
+        try {
+            decodeFrom(dec, target, depth);
+        } finally {
+            CodecPool.releaseDecoder(dec);
+        }
+    }
+
+    public static void decodeFrom(OmniBufDecoder dec, OmniBufTestAllTypes target, int depth) {
+        if (depth > dec.maxNestingDepth()) {
             throw new OmniBufException("omnibuf: nesting depth exceeds MaxNestingDepth");
         }
-        OmniBufDecoder dec = new OmniBufDecoder(data, offset, length);
         while (dec.hasRemaining()) {
             long tag = dec.readTag();
             int fnum = (int) (tag >>> 4);
@@ -147,62 +272,63 @@ public final class TestAllTypesOmniBuf {
                 case 0 -> dec.skipOrValidateUnknown(0, wt, depth);
                 case 1 -> {
                     if (wt == WireType.WIRE_UINT) {
-                        target.setF1Uint32(dec.readUint32());
+                        target.f1Uint32 = dec.readUint32();
                     } else {
                         dec.skipOrValidateUnknown(fnum, wt, depth);
                     }
                 }
                 case 2 -> {
                     if (wt == WireType.WIRE_UINT) {
-                        target.setF2Uint64(dec.readUint64());
+                        target.f2Uint64 = dec.readUint64();
                     } else {
                         dec.skipOrValidateUnknown(fnum, wt, depth);
                     }
                 }
                 case 3 -> {
                     if (wt == WireType.WIRE_SINT) {
-                        target.setF3Sint32(dec.readSint32());
+                        target.f3Sint32 = dec.readSint32();
                     } else {
                         dec.skipOrValidateUnknown(fnum, wt, depth);
                     }
                 }
                 case 4 -> {
                     if (wt == WireType.WIRE_SINT) {
-                        target.setF4Sint64(dec.readSint64());
+                        target.f4Sint64 = dec.readSint64();
                     } else {
                         dec.skipOrValidateUnknown(fnum, wt, depth);
                     }
                 }
                 case 5 -> {
                     if (wt == WireType.WIRE_BOOL_FALSE || wt == WireType.WIRE_BOOL_TRUE) {
-                        target.setF5Bool(wt == WireType.WIRE_BOOL_TRUE);
+                        target.f5Bool = (wt == WireType.WIRE_BOOL_TRUE);
                     } else {
                         dec.skipOrValidateUnknown(fnum, wt, depth);
                     }
                 }
                 case 6 -> {
                     if (wt == WireType.WIRE_STRING) {
-                        target.setF6String(dec.readString());
+                        target.f6String = dec.readString();
                     } else {
                         dec.skipOrValidateUnknown(fnum, wt, depth);
                     }
                 }
                 case 7 -> {
                     if (wt == WireType.WIRE_BYTES) {
-                        target.setF7Bytes(dec.readBytes());
+                        target.f7Bytes = dec.readBytes();
                     } else {
                         dec.skipOrValidateUnknown(fnum, wt, depth);
                     }
                 }
                 case 8 -> {
                     if (wt == WireType.WIRE_SUB_MSG) {
-                        OmniBufDecoder.Slice s = dec.readLengthPrefixedSlice(0);
-                        com.omnibuf.pb.conformance.OmniBufAllTypesSubMsg sub = target.getF8SubMsg();
+                        int subLimit = dec.readLengthPrefixedLimit(0);
+                        com.omnibuf.pb.conformance.OmniBufAllTypesSubMsg sub = target.f8SubMsg;
                         if (sub == null) {
                             sub = new com.omnibuf.pb.conformance.OmniBufAllTypesSubMsg();
-                            target.setF8SubMsg(sub);
+                            target.f8SubMsg = sub;
                         }
-                        com.omnibuf.pb.conformance.AllTypesSubMsgOmniBuf.decodeInto(data, s.offset(), s.length(), sub, depth + 1);
+                        com.omnibuf.pb.conformance.AllTypesSubMsgOmniBuf.decodeFrom(dec, sub, depth + 1);
+                        dec.endContainer(subLimit);
                     } else {
                         dec.skipOrValidateUnknown(fnum, wt, depth);
                     }
@@ -211,23 +337,18 @@ public final class TestAllTypesOmniBuf {
                     if (wt != WireType.WIRE_ARRAY) {
                         dec.skipOrValidateUnknown(fnum, wt, depth);
                     } else {
-                        if (depth + 1 > OmniBufDecoder.MAX_CONTAINER_DEPTH) {
-                            throw new OmniBufException("omnibuf: WireArray exceeds MaxNestingDepth");
-                        }
-                        int valStart = dec.position();
-                        OmniBufDecoder.Slice body = dec.readLengthPrefixedSlice(2);
-                        OmniBufDecoder.ArrayHeader hdr = OmniBufDecoder.parseArrayHeader(data, body.offset(), body.end());
-                        if (hdr.elemWireType() != WireType.WIRE_STRING) {
-                            OmniBufDecoder.validateValue(data, valStart, dec.limit(), WireType.WIRE_ARRAY, depth);
-                        } else {
-                            OmniBufDecoder aDec = new OmniBufDecoder(data, hdr.payloadStart(), hdr.payloadEnd() - hdr.payloadStart());
-                            var list = target.getF9StringArr();
-                            for (int i = 0; i < hdr.count(); i++) {
-                                list.add(aDec.readString());
+                        long arrState = dec.beginArray(WireType.WIRE_STRING, depth);
+                        if (arrState >= 0L) {
+                            int count = (int) arrState;
+                            int arrLimit = (int) (arrState >>> 32);
+                            var list = target.ensureF9StringArr(count);
+                            if ((long) list.size() + count > dec.maxCollectionElements()) {
+                                throw new OmniBufException("omnibuf: accumulated WireArray count exceeds maxCollectionElements");
                             }
-                            if (aDec.hasRemaining()) {
-                                throw new OmniBufException("omnibuf: WireArray has trailing payload bytes");
+                            for (int i = 0; i < count; i++) {
+                                list.add(dec.readString());
                             }
+                            dec.endContainer(arrLimit);
                         }
                     }
                 }
@@ -235,23 +356,18 @@ public final class TestAllTypesOmniBuf {
                     if (wt != WireType.WIRE_ARRAY) {
                         dec.skipOrValidateUnknown(fnum, wt, depth);
                     } else {
-                        if (depth + 1 > OmniBufDecoder.MAX_CONTAINER_DEPTH) {
-                            throw new OmniBufException("omnibuf: WireArray exceeds MaxNestingDepth");
-                        }
-                        int valStart = dec.position();
-                        OmniBufDecoder.Slice body = dec.readLengthPrefixedSlice(2);
-                        OmniBufDecoder.ArrayHeader hdr = OmniBufDecoder.parseArrayHeader(data, body.offset(), body.end());
-                        if (hdr.elemWireType() != WireType.WIRE_UINT) {
-                            OmniBufDecoder.validateValue(data, valStart, dec.limit(), WireType.WIRE_ARRAY, depth);
-                        } else {
-                            OmniBufDecoder aDec = new OmniBufDecoder(data, hdr.payloadStart(), hdr.payloadEnd() - hdr.payloadStart());
-                            var list = target.getF10Uint32Arr();
-                            for (int i = 0; i < hdr.count(); i++) {
-                                list.add(aDec.readUint32());
+                        long arrState = dec.beginArray(WireType.WIRE_UINT, depth);
+                        if (arrState >= 0L) {
+                            int count = (int) arrState;
+                            int arrLimit = (int) (arrState >>> 32);
+                            var list = target.ensureF10Uint32Arr(count);
+                            if ((long) list.size() + count > dec.maxCollectionElements()) {
+                                throw new OmniBufException("omnibuf: accumulated WireArray count exceeds maxCollectionElements");
                             }
-                            if (aDec.hasRemaining()) {
-                                throw new OmniBufException("omnibuf: WireArray has trailing payload bytes");
+                            for (int i = 0; i < count; i++) {
+                                list.add(dec.readUint32());
                             }
+                            dec.endContainer(arrLimit);
                         }
                     }
                 }
@@ -259,26 +375,22 @@ public final class TestAllTypesOmniBuf {
                     if (wt != WireType.WIRE_ARRAY) {
                         dec.skipOrValidateUnknown(fnum, wt, depth);
                     } else {
-                        if (depth + 1 > OmniBufDecoder.MAX_CONTAINER_DEPTH) {
-                            throw new OmniBufException("omnibuf: WireArray exceeds MaxNestingDepth");
-                        }
-                        int valStart = dec.position();
-                        OmniBufDecoder.Slice body = dec.readLengthPrefixedSlice(2);
-                        OmniBufDecoder.ArrayHeader hdr = OmniBufDecoder.parseArrayHeader(data, body.offset(), body.end());
-                        if (hdr.elemWireType() != WireType.WIRE_SUB_MSG) {
-                            OmniBufDecoder.validateValue(data, valStart, dec.limit(), WireType.WIRE_ARRAY, depth);
-                        } else {
-                            OmniBufDecoder aDec = new OmniBufDecoder(data, hdr.payloadStart(), hdr.payloadEnd() - hdr.payloadStart());
-                            var list = target.getF11SubMsgArr();
-                            for (int i = 0; i < hdr.count(); i++) {
-                                OmniBufDecoder.Slice es = aDec.readLengthPrefixedSlice(0);
+                        long arrState = dec.beginArray(WireType.WIRE_SUB_MSG, depth);
+                        if (arrState >= 0L) {
+                            int count = (int) arrState;
+                            int arrLimit = (int) (arrState >>> 32);
+                            var list = target.ensureF11SubMsgArr(count);
+                            if ((long) list.size() + count > dec.maxCollectionElements()) {
+                                throw new OmniBufException("omnibuf: accumulated WireArray count exceeds maxCollectionElements");
+                            }
+                            for (int i = 0; i < count; i++) {
+                                int elemLimit = dec.readLengthPrefixedLimit(0);
                                 com.omnibuf.pb.conformance.OmniBufAllTypesSubMsg elem = new com.omnibuf.pb.conformance.OmniBufAllTypesSubMsg();
-                                com.omnibuf.pb.conformance.AllTypesSubMsgOmniBuf.decodeInto(data, es.offset(), es.length(), elem, depth + 2);
+                                com.omnibuf.pb.conformance.AllTypesSubMsgOmniBuf.decodeFrom(dec, elem, depth + 2);
+                                dec.endContainer(elemLimit);
                                 list.add(elem);
                             }
-                            if (aDec.hasRemaining()) {
-                                throw new OmniBufException("omnibuf: WireArray has trailing payload bytes");
-                            }
+                            dec.endContainer(arrLimit);
                         }
                     }
                 }
@@ -286,59 +398,55 @@ public final class TestAllTypesOmniBuf {
                     if (wt != WireType.WIRE_MAP) {
                         dec.skipOrValidateUnknown(fnum, wt, depth);
                     } else {
-                        if (depth + 1 > OmniBufDecoder.MAX_CONTAINER_DEPTH) {
-                            throw new OmniBufException("omnibuf: WireMap exceeds MaxNestingDepth");
-                        }
-                        int valStart = dec.position();
-                        OmniBufDecoder.Slice body = dec.readLengthPrefixedSlice(3);
-                        OmniBufDecoder.MapHeader hdr = OmniBufDecoder.parseMapHeader(data, body.offset(), body.end());
-                        if (hdr.keyWireType() != WireType.WIRE_STRING || hdr.valWireType() != WireType.WIRE_UINT) {
-                            OmniBufDecoder.validateValue(data, valStart, dec.limit(), WireType.WIRE_MAP, depth);
-                        } else {
-                            OmniBufDecoder mDec = new OmniBufDecoder(data, hdr.payloadStart(), hdr.payloadEnd() - hdr.payloadStart());
-                            Map<String, Long> map = target.getF12MapStrUint();
-                            for (int i = 0; i < hdr.count(); i++) {
-                                String k = mDec.readString();
-                                long v = mDec.readUint64();
+                        long mapState = dec.beginMap(WireType.WIRE_STRING, WireType.WIRE_UINT, depth);
+                        if (mapState >= 0L) {
+                            int count = (int) mapState;
+                            int mapLimit = (int) (mapState >>> 32);
+                            Map<String, Long> map = target.ensureF12MapStrUint(count);
+                            int maxElems = dec.maxCollectionElements();
+                            for (int i = 0; i < count; i++) {
+                                String k = dec.readString();
+                                Long v = dec.readUint64();
+                                if (!map.containsKey(k) && map.size() >= maxElems) {
+                                    throw new OmniBufException("omnibuf: accumulated WireMap count exceeds maxCollectionElements");
+                                }
                                 map.put(k, v);
                             }
-                            if (mDec.hasRemaining()) {
-                                throw new OmniBufException("omnibuf: WireMap has trailing payload bytes");
-                            }
+                            dec.endContainer(mapLimit);
                         }
                     }
                 }
                 case 13 -> {
                     if (wt == WireType.WIRE_FLOAT32) {
-                        target.setF13Float32(dec.readFloat32());
+                        target.f13Float32 = dec.readFloat32();
                     } else {
                         dec.skipOrValidateUnknown(fnum, wt, depth);
                     }
                 }
                 case 14 -> {
                     if (wt == WireType.WIRE_FLOAT64) {
-                        target.setF14Float64(dec.readFloat64());
+                        target.f14Float64 = dec.readFloat64();
                     } else {
                         dec.skipOrValidateUnknown(fnum, wt, depth);
                     }
                 }
                 case 15 -> {
                     if (wt == WireType.WIRE_FIXED32) {
-                        target.setF15Fixed32(dec.readFixed32());
+                        target.f15Fixed32 = dec.readFixed32();
                     } else {
                         dec.skipOrValidateUnknown(fnum, wt, depth);
                     }
                 }
                 case 16 -> {
                     if (wt == WireType.WIRE_FIXED64) {
-                        target.setF16Fixed64(dec.readFixed64());
+                        target.f16Fixed64 = dec.readFixed64();
                     } else {
                         dec.skipOrValidateUnknown(fnum, wt, depth);
                     }
                 }
                 case 20 -> {
                     if (wt == WireType.WIRE_STRING) {
-                        target.setF20OverflowStr(dec.readString());
+                        target.f20OverflowStr = dec.readString();
                     } else {
                         dec.skipOrValidateUnknown(fnum, wt, depth);
                     }

@@ -10,12 +10,12 @@ import java.util.List;
 import java.util.Map;
 
 public final class OmniBufAllTypesSubMsg {
-    private static final byte[] EMPTY_BYTES = new byte[0];
+    static final byte[] EMPTY_BYTES = new byte[0];
 
-    private int id = 0;
-    private String label = "";
-    private boolean flag = false;
-    private long score = 0L;
+    int id;
+    String label = "";
+    boolean flag;
+    long score;
 
     public OmniBufAllTypesSubMsg() {}
 
