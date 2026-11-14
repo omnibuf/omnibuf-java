@@ -1,5 +1,7 @@
 # OmniBuf for Java 21
 
+[![CI](https://github.com/omnibuf/omnibuf-java/actions/workflows/ci.yml/badge.svg)](https://github.com/omnibuf/omnibuf-java/actions/workflows/ci.yml)
+
 Java 21 implementation of the OmniBuf binary wire format, runtime codecs, and `buf` code generator plugin (`protoc-gen-omnibuf-java`).
 
 Passes all **758 / 758** cross-language conformance cases (`0 skipped, 0 failed`) across every integration tier.
