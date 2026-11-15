@@ -138,7 +138,7 @@ just ci           # Run lint, build, test, and conformance
 
 ## License
 
-MIT
+Released under the [Apache 2.0 License](./LICENSE).
 
 ## Reflection and modules
 
