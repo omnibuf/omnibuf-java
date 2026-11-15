@@ -1,6 +1,11 @@
 package com.omnibuf.wire;
 
 import com.omnibuf.OmniBufException;
+import java.nio.ByteBuffer;
+import java.nio.CharBuffer;
+import java.nio.charset.CharsetEncoder;
+import java.nio.charset.CoderResult;
+import java.nio.charset.CodingErrorAction;
 import java.nio.charset.StandardCharsets;
 import java.util.ArrayList;
 import java.util.Arrays;
@@ -16,6 +21,10 @@ import java.util.TreeMap;
 public final class OmniBufEncoder {
 
     private static final int MAX_ARRAY_SIZE = Integer.MAX_VALUE - 8;
+    private static final int CHAR_SCRATCH_SIZE = 2048;
+
+    final boolean isPooledSlot;
+    boolean pooledInUse;
 
     private byte[] buf;
     private int pos;
@@ -25,14 +34,24 @@ public final class OmniBufEncoder {
     private int stackDepth;
     private int depth;
 
+    private char[] charScratch;
+    private CharBuffer charScratchBuf;
+    private ByteBuffer cachedByteBuf;
+    private CharsetEncoder utf8Encoder;
+
     public OmniBufEncoder() {
-        this(256);
+        this(256, false);
     }
 
     public OmniBufEncoder(int initialCapacity) {
+        this(initialCapacity, false);
+    }
+
+    OmniBufEncoder(int initialCapacity, boolean isPooledSlot) {
         if (initialCapacity < 0 || initialCapacity > MAX_ARRAY_SIZE) {
             throw new OmniBufException("omnibuf: invalid initial encoder capacity: " + initialCapacity);
         }
+        this.isPooledSlot = isPooledSlot;
         this.buf = new byte[Math.max(32, initialCapacity)];
         this.pos = 0;
         this.stackDepth = 0;
@@ -47,6 +66,7 @@ public final class OmniBufEncoder {
         if (existingBuf == null || initialPos < 0 || initialPos > existingBuf.length) {
             throw new OmniBufException("omnibuf: invalid existing buffer or initialPos");
         }
+        this.isPooledSlot = false;
         this.buf = existingBuf;
         this.pos = initialPos;
         this.stackDepth = 0;
@@ -71,6 +91,7 @@ public final class OmniBufEncoder {
                     throw new OmniBufException("omnibuf: aliased splice exceeds maximum array size");
                 }
                 this.buf = Arrays.copyOf(this.buf, (int) nextCap);
+                this.cachedByteBuf = null;
             }
         }
     }
@@ -87,6 +108,7 @@ public final class OmniBufEncoder {
         this.depth = 0;
         if (this.buf.length > maxRetainedCapacity) {
             this.buf = new byte[Math.max(32, shrunkCapacity)];
+            this.cachedByteBuf = null;
         }
     }
 
@@ -96,6 +118,27 @@ public final class OmniBufEncoder {
 
     public int capacity() {
         return buf.length;
+    }
+
+    public byte[] ensureFree(int additional) {
+        byte[] b = this.buf;
+        if (b.length - this.pos < additional) {
+            return growAndReturn(additional);
+        }
+        return b;
+    }
+
+    private byte[] growAndReturn(int additional) {
+        ensureCapacity(additional);
+        return this.buf;
+    }
+
+    public int rawPosition() {
+        return this.pos;
+    }
+
+    public void setRawPosition(int newPos) {
+        this.pos = newPos;
     }
 
     public byte[] toByteArray() {
@@ -109,9 +152,8 @@ public final class OmniBufEncoder {
         if (additional < 0) {
             throw new OmniBufException("omnibuf: negative capacity request: " + additional);
         }
-        long needed = (long) pos + (long) additional;
-        if (needed > buf.length) {
-            growBuffer(needed);
+        if (buf.length - pos < additional) {
+            growBuffer((long) pos + (long) additional);
         }
     }
 
@@ -134,6 +176,17 @@ public final class OmniBufEncoder {
             }
         }
         buf = Arrays.copyOf(buf, (int) newCap);
+        cachedByteBuf = null;
+    }
+
+    private ByteBuffer prepareByteBuf(int writePos) {
+        ByteBuffer bb = this.cachedByteBuf;
+        if (bb == null) {
+            bb = ByteBuffer.wrap(this.buf);
+            this.cachedByteBuf = bb;
+        }
+        bb.limit(this.buf.length).position(writePos);
+        return bb;
     }
 
     private void pushContainer(int lenPos, int initialCount) {
@@ -284,6 +337,52 @@ public final class OmniBufEncoder {
         pos += 8;
     }
 
+    public void writeString1BTag(byte encodedTag, String s) {
+        if (s == null || s.isEmpty()) {
+            byte[] dst = ensureFree(2);
+            int p = this.pos;
+            dst[p] = encodedTag;
+            dst[p + 1] = 1;
+            this.pos = p + 2;
+            return;
+        }
+        int n = s.length();
+        if (n <= 127) {
+            byte[] dst = ensureFree(2 + n);
+            dst[this.pos++] = encodedTag;
+            writeShortAsciiOrFallback(s, n);
+            return;
+        }
+        byte[] dst = ensureFree(10);
+        dst[this.pos++] = encodedTag;
+        writeLargeStringStreamed(s, n);
+    }
+
+    public void writeString2BTag(short encodedTagLE, String s) {
+        if (s == null || s.isEmpty()) {
+            byte[] dst = ensureFree(3);
+            int p = this.pos;
+            PrefixVarint.setShortLE(dst, p, encodedTagLE);
+            dst[p + 2] = 1;
+            this.pos = p + 3;
+            return;
+        }
+        int n = s.length();
+        if (n <= 127) {
+            byte[] dst = ensureFree(3 + n);
+            int p = this.pos;
+            PrefixVarint.setShortLE(dst, p, encodedTagLE);
+            this.pos = p + 2;
+            writeShortAsciiOrFallback(s, n);
+            return;
+        }
+        byte[] dst = ensureFree(11);
+        int p = this.pos;
+        PrefixVarint.setShortLE(dst, p, encodedTagLE);
+        this.pos = p + 2;
+        writeLargeStringStreamed(s, n);
+    }
+
     public void writeString(int fieldNumber, String s) {
         if (s == null || s.isEmpty()) {
             ensureCapacity(10);
@@ -295,25 +394,12 @@ public final class OmniBufEncoder {
         if (n <= 127) {
             ensureCapacity(10 + n);
             writeTagUnchecked(fieldNumber, WireType.WIRE_STRING);
-            byte[] dst = this.buf;
-            int lenBytePos = this.pos;
-            int p = lenBytePos + 1;
-            for (int i = 0; i < n; i++) {
-                char c = s.charAt(i);
-                if (c >= 0x80) {
-                    this.pos = lenBytePos;
-                    writeStringNonAscii(s, n);
-                    return;
-                }
-                dst[p + i] = (byte) c;
-            }
-            dst[lenBytePos] = (byte) ((n << 1) | 1);
-            this.pos = p + n;
+            writeShortAsciiOrFallback(s, n);
             return;
         }
         ensureCapacity(9);
         writeTagUnchecked(fieldNumber, WireType.WIRE_STRING);
-        writeStringNonAscii(s, n);
+        writeLargeStringStreamed(s, n);
     }
 
     public void writeBytes(int fieldNumber, byte[] data) {
@@ -336,22 +422,65 @@ public final class OmniBufEncoder {
         int n = s.length();
         if (n <= 127) {
             ensureCapacity(1 + n);
-            byte[] dst = this.buf;
-            int lenBytePos = this.pos;
-            int p = lenBytePos + 1;
-            for (int i = 0; i < n; i++) {
-                char c = s.charAt(i);
-                if (c >= 0x80) {
-                    writeStringNonAscii(s, n);
-                    return;
-                }
-                dst[p + i] = (byte) c;
-            }
-            dst[lenBytePos] = (byte) ((n << 1) | 1);
-            this.pos = p + n;
+            writeShortAsciiOrFallback(s, n);
             return;
         }
-        writeStringNonAscii(s, n);
+        writeLargeStringStreamed(s, n);
+    }
+
+    private void writeShortAsciiOrFallback(String s, int n) {
+        byte[] dst = this.buf;
+        int lenBytePos = this.pos;
+        int p = lenBytePos + 1;
+        int i = 0;
+        for (; i + 8 <= n; i += 8) {
+            int c0 = s.charAt(i);
+            int c1 = s.charAt(i + 1);
+            int c2 = s.charAt(i + 2);
+            int c3 = s.charAt(i + 3);
+            int c4 = s.charAt(i + 4);
+            int c5 = s.charAt(i + 5);
+            int c6 = s.charAt(i + 6);
+            int c7 = s.charAt(i + 7);
+            if (((c0 | c1 | c2 | c3 | c4 | c5 | c6 | c7) & 0xFF80) != 0) {
+                this.pos = lenBytePos;
+                writeStringNonAscii(s, n);
+                return;
+            }
+            long word = (long) c0
+                | ((long) c1 << 8)
+                | ((long) c2 << 16)
+                | ((long) c3 << 24)
+                | ((long) c4 << 32)
+                | ((long) c5 << 40)
+                | ((long) c6 << 48)
+                | ((long) c7 << 56);
+            PrefixVarint.setLongLE(dst, p + i, word);
+        }
+        if (i + 4 <= n) {
+            int c0 = s.charAt(i);
+            int c1 = s.charAt(i + 1);
+            int c2 = s.charAt(i + 2);
+            int c3 = s.charAt(i + 3);
+            if (((c0 | c1 | c2 | c3) & 0xFF80) != 0) {
+                this.pos = lenBytePos;
+                writeStringNonAscii(s, n);
+                return;
+            }
+            PrefixVarint.setIntLE(dst, p + i, c0 | (c1 << 8) | (c2 << 16) | (c3 << 24));
+            i += 4;
+        }
+        for (; i < n; i++) {
+            int c = s.charAt(i);
+            if (c >= 0x80) {
+                this.pos = lenBytePos;
+                writeStringNonAscii(s, n);
+                return;
+            }
+            dst[p + i] = (byte) c;
+        }
+        dst[lenBytePos] = (byte) ((n << 1) | 1);
+        this.pos = p + n;
     }
 
     private void writeStringNonAscii(String s, int n) {
@@ -365,16 +494,8 @@ public final class OmniBufEncoder {
             this.pos = endPos;
             return;
         }
-        if (n >= 256) {
-            byte[] utf8 = s.getBytes(StandardCharsets.UTF_8);
-            if (mightContainQuestionMark(utf8)) {
-                utf8LengthStrict(s, n);
-            }
-            int utf8Len = utf8.length;
-            ensureCapacityLong((long) this.pos + 9L + (long) utf8Len);
-            int payloadPos = PrefixVarint.write(this.buf, this.pos, utf8Len);
-            System.arraycopy(utf8, 0, this.buf, payloadPos, utf8Len);
-            this.pos = payloadPos + utf8Len;
+        if (n > 127) {
+            writeLargeStringStreamed(s, n);
             return;
         }
         int utf8Len = utf8LengthStrict(s, n);
@@ -383,21 +504,101 @@ public final class OmniBufEncoder {
         this.pos = encodeUtf8Into(s, n, this.buf, payloadPos);
     }
 
-    private static boolean mightContainQuestionMark(byte[] utf8) {
-        int i = 0;
-        int limit = utf8.length - 8;
-        for (; i <= limit; i += 8) {
-            long x = PrefixVarint.getLongLE(utf8, i) ^ 0x3F3F_3F3F_3F3F_3F3FL;
-            if (((x - 0x0101_0101_0101_0101L) & ~x & 0x8080_8080_8080_8080L) != 0L) {
-                return true;
-            }
+    private void writeLargeStringStreamed(String s, int n) {
+        int reservedHdr = n > (int) PrefixVarint.MAX_4BYTE ? 9 : (n >= 16_384 ? 4 : 2);
+        ensureCapacityLong((long) this.pos + (long) reservedHdr + (long) n);
+        int lenPos = this.pos;
+        int payloadStart = lenPos + reservedHdr;
+
+        char[] scratch = this.charScratch;
+        CharBuffer cb = this.charScratchBuf;
+        CharsetEncoder enc = this.utf8Encoder;
+        if (scratch == null) {
+            scratch = new char[CHAR_SCRATCH_SIZE];
+            cb = CharBuffer.wrap(scratch);
+            enc = StandardCharsets.UTF_8.newEncoder()
+                .onMalformedInput(CodingErrorAction.REPORT)
+                .onUnmappableCharacter(CodingErrorAction.REPORT);
+            this.charScratch = scratch;
+            this.charScratchBuf = cb;
+            this.utf8Encoder = enc;
+        } else {
+            enc.reset();
         }
-        for (; i < utf8.length; i++) {
-            if (utf8[i] == (byte) '?') {
-                return true;
+
+        ByteBuffer bb = prepareByteBuf(payloadStart);
+        int srcOff = 0;
+        while (srcOff < n) {
+            int chunk = Math.min(CHAR_SCRATCH_SIZE, n - srcOff);
+            int srcEnd = srcOff + chunk;
+            if (srcEnd < n
+                    && Character.isHighSurrogate(s.charAt(srcEnd - 1))
+                    && Character.isLowSurrogate(s.charAt(srcEnd))) {
+                chunk--;
+                srcEnd--;
             }
+            s.getChars(srcOff, srcEnd, scratch, 0);
+            cb.position(0).limit(chunk);
+            boolean endOfInput = (srcEnd == n);
+            for (;;) {
+                CoderResult cr = enc.encode(cb, bb, endOfInput);
+                if (cr.isUnderflow()) {
+                    break;
+                }
+                if (cr.isOverflow()) {
+                    this.pos = bb.position();
+                    int remChars = (n - srcOff) - cb.position();
+                    ensureCapacityLong((long) this.pos + Math.max((long) remChars * 3L, 64L));
+                    bb = prepareByteBuf(this.pos);
+                    continue;
+                }
+                throw new OmniBufException("omnibuf: unpaired UTF-16 surrogate in WireString");
+            }
+            srcOff = srcEnd;
         }
-        return false;
+
+        for (;;) {
+            CoderResult cr = enc.flush(bb);
+            if (cr.isUnderflow()) {
+                break;
+            }
+            if (cr.isOverflow()) {
+                this.pos = bb.position();
+                ensureCapacity(16);
+                bb = prepareByteBuf(this.pos);
+                continue;
+            }
+            throw new OmniBufException("omnibuf: unpaired UTF-16 surrogate in WireString");
+        }
+
+        int endPos = bb.position();
+        int utf8Len = endPos - payloadStart;
+        this.pos = endPos;
+        if (reservedHdr == 2) {
+            if (utf8Len <= (int) PrefixVarint.MAX_2BYTE) {
+                PrefixVarint.setShortLE(this.buf, lenPos, (short) ((utf8Len << 2) | 2));
+                return;
+            }
+            int actualHdr = PrefixVarint.encodedLength(utf8Len);
+            int delta = actualHdr - 2;
+            ensureCapacity(delta);
+            System.arraycopy(this.buf, payloadStart, this.buf, lenPos + actualHdr, utf8Len);
+            PrefixVarint.write(this.buf, lenPos, utf8Len);
+            this.pos += delta;
+            return;
+        }
+        if (reservedHdr == 4) {
+            if (utf8Len <= (int) PrefixVarint.MAX_4BYTE) {
+                PrefixVarint.setIntLE(this.buf, lenPos, (utf8Len << 3) | 4);
+                return;
+            }
+            ensureCapacity(5);
+            System.arraycopy(this.buf, payloadStart, this.buf, lenPos + 9, utf8Len);
+            PrefixVarint.write(this.buf, lenPos, utf8Len);
+            this.pos += 5;
+            return;
+        }
+        PrefixVarint.write(this.buf, lenPos, utf8Len);
     }
 
     private static int utf8LengthStrict(String s, int n) {
@@ -473,6 +674,10 @@ public final class OmniBufEncoder {
     // ========================================================================
 
     public int beginSubMsgFast(int fieldNumber) {
+        return beginSubMsgFast(fieldNumber, false);
+    }
+
+    public int beginSubMsgFast(int fieldNumber, boolean largeHint) {
         if (fieldNumber < 0 || fieldNumber > WireType.MAX_FIELD_NUMBER) {
             throw new OmniBufException("omnibuf: field number out of range: " + fieldNumber);
         }
@@ -481,23 +686,38 @@ public final class OmniBufEncoder {
                 "omnibuf: container nesting depth exceeds MaxNestingDepth (" + WireType.MAX_CONTAINER_DEPTH + ")"
             );
         }
-        ensureCapacity(11);
+        ensureCapacity(13);
         if (fieldNumber == 0) {
             buf[pos++] = WireType.FIELD0_TAG_BYTE;
         } else {
             writeTagUnchecked(fieldNumber, WireType.WIRE_SUB_MSG);
         }
         int lenPos = this.pos;
-        this.pos = lenPos + 2;
         this.depth++;
+        if (largeHint) {
+            this.pos = lenPos + 4;
+            return ~lenPos;
+        }
+        this.pos = lenPos + 2;
         return lenPos;
     }
 
     public int beginInlineSubMsgFast() {
+        return beginInlineSubMsgFast(false);
+    }
+
+    public int beginInlineSubMsgFast(boolean largeHint) {
         if (depth >= WireType.MAX_CONTAINER_DEPTH) {
             throw new OmniBufException(
                 "omnibuf: container nesting depth exceeds MaxNestingDepth (" + WireType.MAX_CONTAINER_DEPTH + ")"
             );
+        }
+        if (largeHint) {
+            ensureCapacity(4);
+            int lenPos = this.pos;
+            this.pos = lenPos + 4;
+            this.depth++;
+            return ~lenPos;
         }
         ensureCapacity(2);
         int lenPos = this.pos;
@@ -507,6 +727,11 @@ public final class OmniBufEncoder {
     }
 
     public int beginTypedArrayFast(int fieldNumber, int elemWireType, int count) {
+        return beginTypedArrayFast(fieldNumber, elemWireType, count, false);
+    }
+
+    public int beginTypedArrayFast(
+            int fieldNumber, int elemWireType, int count, boolean largeHint) {
         if (fieldNumber <= 0 || fieldNumber > WireType.MAX_FIELD_NUMBER) {
             throw new OmniBufException("omnibuf: invalid array field number: " + fieldNumber);
         }
@@ -521,13 +746,14 @@ public final class OmniBufEncoder {
                 "omnibuf: container nesting depth exceeds MaxNestingDepth (" + WireType.MAX_CONTAINER_DEPTH + ")"
             );
         }
-        ensureCapacity(21);
+        ensureCapacity(23);
         writeTagUnchecked(fieldNumber, WireType.WIRE_ARRAY);
         int lenPos = this.pos;
-        buf[lenPos + 2] = (byte) elemWireType;
-        this.pos = PrefixVarint.write(buf, lenPos + 3, Integer.toUnsignedLong(count));
+        int hdrSize = largeHint ? 4 : 2;
+        buf[lenPos + hdrSize] = (byte) elemWireType;
+        this.pos = PrefixVarint.write(buf, lenPos + hdrSize + 1, Integer.toUnsignedLong(count));
         this.depth++;
-        return lenPos;
+        return largeHint ? ~lenPos : lenPos;
     }
 
     public int beginTypedMapFast(int fieldNumber, int keyWireType, int valWireType, int count) {
@@ -558,18 +784,29 @@ public final class OmniBufEncoder {
         return lenPos;
     }
 
-    public void endContainerAt(int lenPos) {
+    public void endContainerAt(int token) {
         if (depth <= 0) {
             throw new OmniBufException("omnibuf: endContainerAt with no open container");
         }
         depth--;
-        int payloadStart = lenPos + 2;
-        int subLen = this.pos - payloadStart;
-        if (subLen <= (int) PrefixVarint.MAX_2BYTE) {
-            PrefixVarint.writeOverlong2Byte(buf, lenPos, subLen);
+        if (token >= 0) {
+            int payloadStart = token + 2;
+            int subLen = this.pos - payloadStart;
+            if (subLen <= (int) PrefixVarint.MAX_2BYTE) {
+                PrefixVarint.writeOverlong2Byte(buf, token, subLen);
+                return;
+            }
+            backpatchLargeContainer(token, payloadStart, subLen);
             return;
         }
-        backpatchLargeContainer(lenPos, payloadStart, subLen);
+        int lenPos = ~token;
+        int payloadStart = lenPos + 4;
+        int subLen = this.pos - payloadStart;
+        if (subLen > (int) PrefixVarint.MAX_2BYTE && subLen <= (int) PrefixVarint.MAX_4BYTE) {
+            PrefixVarint.setIntLE(buf, lenPos, (subLen << 3) | 4);
+            return;
+        }
+        backpatchHintedContainerFallback(lenPos, payloadStart, subLen);
     }
 
     private void backpatchLargeContainer(int lenPos, int payloadStart, int subLen) {
@@ -584,6 +821,19 @@ public final class OmniBufEncoder {
         System.arraycopy(buf, payloadStart, buf, lenPos + 9, subLen);
         PrefixVarint.write(buf, lenPos, subLen);
         pos += 7;
+    }
+
+    private void backpatchHintedContainerFallback(int lenPos, int payloadStart, int subLen) {
+        if (subLen <= (int) PrefixVarint.MAX_2BYTE) {
+            System.arraycopy(buf, payloadStart, buf, lenPos + 2, subLen);
+            PrefixVarint.writeOverlong2Byte(buf, lenPos, subLen);
+            pos -= 2;
+            return;
+        }
+        ensureCapacity(5);
+        System.arraycopy(buf, payloadStart, buf, lenPos + 9, subLen);
+        PrefixVarint.write(buf, lenPos, subLen);
+        pos += 5;
     }
 
     // ========================================================================
@@ -712,7 +962,8 @@ public final class OmniBufEncoder {
 
     public void writeStringList(int fieldNumber, List<String> values) {
         int n = values == null ? 0 : values.size();
-        int lenPos = beginTypedArrayFast(fieldNumber, WireType.WIRE_STRING, n);
+        boolean largeHint = n > 0 && values.get(0) != null && values.get(0).length() > 16_383;
+        int lenPos = beginTypedArrayFast(fieldNumber, WireType.WIRE_STRING, n, largeHint);
         for (int i = 0; i < n; i++) {
             writeStringElement(values.get(i));
         }
@@ -721,7 +972,8 @@ public final class OmniBufEncoder {
 
     public void writeBytesList(int fieldNumber, List<byte[]> values) {
         int n = values == null ? 0 : values.size();
-        int lenPos = beginTypedArrayFast(fieldNumber, WireType.WIRE_BYTES, n);
+        boolean largeHint = n > 0 && values.get(0) != null && values.get(0).length > 16_383;
+        int lenPos = beginTypedArrayFast(fieldNumber, WireType.WIRE_BYTES, n, largeHint);
         for (int i = 0; i < n; i++) {
             writeBytesElement(values.get(i));
         }
@@ -735,9 +987,16 @@ public final class OmniBufEncoder {
             ensureCapacityLong((long) pos + (long) n * 9L);
             byte[] dst = this.buf;
             int p = this.pos;
-            for (int i = 0; i < n; i++) {
-                Integer elem = values.get(i);
-                p = PrefixVarint.write(dst, p, Integer.toUnsignedLong(elem == null ? 0 : elem));
+            if (values instanceof IntArrayList il) {
+                int[] raw = il.rawArray();
+                for (int i = 0; i < n; i++) {
+                    p = PrefixVarint.write(dst, p, Integer.toUnsignedLong(raw[i]));
+                }
+            } else {
+                for (int i = 0; i < n; i++) {
+                    Integer elem = values.get(i);
+                    p = PrefixVarint.write(dst, p, Integer.toUnsignedLong(elem == null ? 0 : elem));
+                }
             }
             this.pos = p;
         }
@@ -766,9 +1025,16 @@ public final class OmniBufEncoder {
             ensureCapacityLong((long) pos + (long) n * 9L);
             byte[] dst = this.buf;
             int p = this.pos;
-            for (int i = 0; i < n; i++) {
-                Long elem = values.get(i);
-                p = PrefixVarint.write(dst, p, elem == null ? 0L : elem);
+            if (values instanceof LongArrayList ll) {
+                long[] raw = ll.rawArray();
+                for (int i = 0; i < n; i++) {
+                    p = PrefixVarint.write(dst, p, raw[i]);
+                }
+            } else {
+                for (int i = 0; i < n; i++) {
+                    Long elem = values.get(i);
+                    p = PrefixVarint.write(dst, p, elem == null ? 0L : elem);
+                }
             }
             this.pos = p;
         }
@@ -782,9 +1048,16 @@ public final class OmniBufEncoder {
             ensureCapacityLong((long) pos + (long) n * 9L);
             byte[] dst = this.buf;
             int p = this.pos;
-            for (int i = 0; i < n; i++) {
-                Integer elem = values.get(i);
-                p = PrefixVarint.write(dst, p, PrefixVarint.encodeZigZag32(elem == null ? 0 : elem));
+            if (values instanceof IntArrayList il) {
+                int[] raw = il.rawArray();
+                for (int i = 0; i < n; i++) {
+                    p = PrefixVarint.write(dst, p, PrefixVarint.encodeZigZag32(raw[i]));
+                }
+            } else {
+                for (int i = 0; i < n; i++) {
+                    Integer elem = values.get(i);
+                    p = PrefixVarint.write(dst, p, PrefixVarint.encodeZigZag32(elem == null ? 0 : elem));
+                }
             }
             this.pos = p;
         }
@@ -798,9 +1071,16 @@ public final class OmniBufEncoder {
             ensureCapacityLong((long) pos + (long) n * 9L);
             byte[] dst = this.buf;
             int p = this.pos;
-            for (int i = 0; i < n; i++) {
-                Long elem = values.get(i);
-                p = PrefixVarint.write(dst, p, PrefixVarint.encodeZigZag64(elem == null ? 0L : elem));
+            if (values instanceof LongArrayList ll) {
+                long[] raw = ll.rawArray();
+                for (int i = 0; i < n; i++) {
+                    p = PrefixVarint.write(dst, p, PrefixVarint.encodeZigZag64(raw[i]));
+                }
+            } else {
+                for (int i = 0; i < n; i++) {
+                    Long elem = values.get(i);
+                    p = PrefixVarint.write(dst, p, PrefixVarint.encodeZigZag64(elem == null ? 0L : elem));
+                }
             }
             this.pos = p;
         }
@@ -830,10 +1110,18 @@ public final class OmniBufEncoder {
             ensureCapacityLong((long) pos + (long) n * 4L);
             byte[] dst = this.buf;
             int p = this.pos;
-            for (int i = 0; i < n; i++) {
-                Integer elem = values.get(i);
-                PrefixVarint.setIntLE(dst, p, elem == null ? 0 : elem);
-                p += 4;
+            if (values instanceof IntArrayList il) {
+                int[] raw = il.rawArray();
+                for (int i = 0; i < n; i++) {
+                    PrefixVarint.setIntLE(dst, p, raw[i]);
+                    p += 4;
+                }
+            } else {
+                for (int i = 0; i < n; i++) {
+                    Integer elem = values.get(i);
+                    PrefixVarint.setIntLE(dst, p, elem == null ? 0 : elem);
+                    p += 4;
+                }
             }
             this.pos = p;
         }
@@ -847,10 +1135,18 @@ public final class OmniBufEncoder {
             ensureCapacityLong((long) pos + (long) n * 8L);
             byte[] dst = this.buf;
             int p = this.pos;
-            for (int i = 0; i < n; i++) {
-                Long elem = values.get(i);
-                PrefixVarint.setLongLE(dst, p, elem == null ? 0L : elem);
-                p += 8;
+            if (values instanceof LongArrayList ll) {
+                long[] raw = ll.rawArray();
+                for (int i = 0; i < n; i++) {
+                    PrefixVarint.setLongLE(dst, p, raw[i]);
+                    p += 8;
+                }
+            } else {
+                for (int i = 0; i < n; i++) {
+                    Long elem = values.get(i);
+                    PrefixVarint.setLongLE(dst, p, elem == null ? 0L : elem);
+                    p += 8;
+                }
             }
             this.pos = p;
         }

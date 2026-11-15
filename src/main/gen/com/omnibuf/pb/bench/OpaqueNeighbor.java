@@ -128,7 +128,7 @@ public final class OpaqueNeighbor {
                 enc.writeUint32(1, this.dirty_peerAsn);
             }
             case 2 -> {
-                enc.writeString(2, this.dirty_router);
+                enc.writeString1BTag((byte) 0x55, this.dirty_router);
             }
             case 3 -> {
                 enc.writeUint32(3, this.dirty_latencyUs);

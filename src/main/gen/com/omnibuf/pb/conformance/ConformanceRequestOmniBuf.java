@@ -10,6 +10,7 @@ import com.omnibuf.UnmarshalOptions;
 import com.omnibuf.wire.CodecPool;
 import com.omnibuf.wire.OmniBufDecoder;
 import com.omnibuf.wire.OmniBufEncoder;
+import com.omnibuf.wire.PrefixVarint;
 import com.omnibuf.wire.WireType;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
@@ -128,16 +129,47 @@ public final class ConformanceRequestOmniBuf {
         }
     }
 
+    public static boolean isLargePayload(OmniBufConformanceRequest msg) {
+        return isLargePayload(msg, 2);
+    }
+
+    public static boolean isLargePayload(OmniBufConformanceRequest msg, int depthLeft) {
+        if (msg == null || depthLeft < 0) {
+            return false;
+        }
+        if (((msg.testName == null ? 0 : msg.testName.length())
+                | (msg.messageType == null ? 0 : msg.messageType.length())
+                | (msg.omnibufPayload == null ? 0 : msg.omnibufPayload.length)
+                | (msg.jsonPayload == null ? 0 : msg.jsonPayload.length())) > 16_383) {
+            return true;
+        }
+        return false;
+    }
+
     public static void encode(OmniBufEncoder enc, OmniBufConformanceRequest msg, boolean deterministic) {
-        enc.writeString(1, msg.testName);
-        enc.writeString(2, msg.messageType);
-        enc.writeSint32(3, msg.tier);
-        enc.writeSint32(4, msg.requestedOutputFormat);
+        enc.writeString1BTag((byte) 0x35, msg.testName);
+        enc.writeString1BTag((byte) 0x55, msg.messageType);
+        {
+            byte[] dst = enc.ensureFree(20);
+            int p = enc.rawPosition();
+            dst[p++] = (byte) 0x63;
+            p = PrefixVarint.write(dst, p, PrefixVarint.encodeZigZag32(msg.tier));
+            dst[p++] = (byte) 0x83;
+            p = PrefixVarint.write(dst, p, PrefixVarint.encodeZigZag32(msg.requestedOutputFormat));
+            enc.setRawPosition(p);
+        }
         enc.writeBytes(5, msg.omnibufPayload);
-        enc.writeString(6, msg.jsonPayload);
-        enc.writeBool(7, msg.selfDescribing);
-        enc.writeBool(8, msg.testOpaqueSplice);
-        enc.writeBool(9, msg.testOpaqueSpliceShrink);
+        enc.writeString1BTag((byte) 0xd5, msg.jsonPayload);
+        {
+            byte[] dst = enc.ensureFree(5);
+            int p = enc.rawPosition();
+            dst[p++] = msg.selfDescribing ? (byte) 0xe7 : (byte) 0xe5;
+            PrefixVarint.setShortLE(dst, p, msg.testOpaqueSplice ? (short) 0x20e : (short) 0x20a);
+            p += 2;
+            PrefixVarint.setShortLE(dst, p, msg.testOpaqueSpliceShrink ? (short) 0x24e : (short) 0x24a);
+            p += 2;
+            enc.setRawPosition(p);
+        }
     }
 
     public static OmniBufConformanceRequest unmarshal(byte[] data) {

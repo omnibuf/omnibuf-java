@@ -128,7 +128,7 @@ public final class OpaqueAllTypesSubMsg {
                 enc.writeUint32(1, this.dirty_id);
             }
             case 2 -> {
-                enc.writeString(2, this.dirty_label);
+                enc.writeString1BTag((byte) 0x55, this.dirty_label);
             }
             case 3 -> {
                 enc.writeBool(3, this.dirty_flag);

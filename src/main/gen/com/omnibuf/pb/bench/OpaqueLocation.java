@@ -153,13 +153,13 @@ public final class OpaqueLocation {
     private void writeDirtyField(OmniBufEncoder enc, int fieldNumber) {
         switch (fieldNumber) {
             case 1 -> {
-                enc.writeString(1, this.dirty_region);
+                enc.writeString1BTag((byte) 0x35, this.dirty_region);
             }
             case 2 -> {
-                enc.writeString(2, this.dirty_datacenter);
+                enc.writeString1BTag((byte) 0x55, this.dirty_datacenter);
             }
             case 3 -> {
-                enc.writeString(3, this.dirty_city);
+                enc.writeString1BTag((byte) 0x75, this.dirty_city);
             }
             case 4 -> {
                 enc.writeUint32(4, this.dirty_rack);

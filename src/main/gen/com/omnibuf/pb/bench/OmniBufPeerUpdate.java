@@ -4,6 +4,7 @@
 package com.omnibuf.pb.bench;
 
 import com.omnibuf.MarshalOptions;
+import com.omnibuf.wire.IntArrayList;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -101,17 +102,23 @@ public final class OmniBufPeerUpdate {
         return this.tags;
     }
 
-    List<String> ensureTags(int minCap) {
+    ArrayList<String> ensureTags(int minCap) {
         List<String> cur = this.tags;
         int cap = Math.min(minCap, 4096);
-        if (cur == null) {
-            cur = new ArrayList<>(cap);
-            this.tags = cur;
-        } else if (!(cur instanceof ArrayList<?>)) {
-            cur = new ArrayList<>(cur);
-            this.tags = cur;
+        if (cur instanceof ArrayList<String> al) {
+            if (al.isEmpty() && cap > 10) {
+                al.ensureCapacity(cap);
+            }
+            return al;
         }
-        return cur;
+        if (cur == null) {
+            ArrayList<String> al = new ArrayList<>(cap);
+            this.tags = al;
+            return al;
+        }
+        ArrayList<String> al = new ArrayList<>(cur);
+        this.tags = al;
+        return al;
     }
 
     public OmniBufPeerUpdate setTags(List<String> value) {
@@ -121,22 +128,27 @@ public final class OmniBufPeerUpdate {
 
     public List<Integer> getPrefixes() {
         if (this.prefixes == null) {
-            this.prefixes = new ArrayList<>();
+            this.prefixes = new IntArrayList();
         }
         return this.prefixes;
     }
 
-    List<Integer> ensurePrefixes(int minCap) {
+    IntArrayList ensurePrefixes(int minCap) {
         List<Integer> cur = this.prefixes;
         int cap = Math.min(minCap, 4096);
-        if (cur == null) {
-            cur = new ArrayList<>(cap);
-            this.prefixes = cur;
-        } else if (!(cur instanceof ArrayList<?>)) {
-            cur = new ArrayList<>(cur);
-            this.prefixes = cur;
+        if (cur instanceof IntArrayList il) {
+            il.ensureAdditional(cap);
+            return il;
         }
-        return cur;
+        if (cur == null) {
+            IntArrayList il = new IntArrayList(cap);
+            this.prefixes = il;
+            return il;
+        }
+        IntArrayList il = new IntArrayList(cur);
+        il.ensureAdditional(cap);
+        this.prefixes = il;
+        return il;
     }
 
     public OmniBufPeerUpdate setPrefixes(List<Integer> value) {
@@ -169,17 +181,23 @@ public final class OmniBufPeerUpdate {
         return this.neighbors;
     }
 
-    List<com.omnibuf.pb.bench.OmniBufNeighbor> ensureNeighbors(int minCap) {
+    ArrayList<com.omnibuf.pb.bench.OmniBufNeighbor> ensureNeighbors(int minCap) {
         List<com.omnibuf.pb.bench.OmniBufNeighbor> cur = this.neighbors;
         int cap = Math.min(minCap, 4096);
-        if (cur == null) {
-            cur = new ArrayList<>(cap);
-            this.neighbors = cur;
-        } else if (!(cur instanceof ArrayList<?>)) {
-            cur = new ArrayList<>(cur);
-            this.neighbors = cur;
+        if (cur instanceof ArrayList<com.omnibuf.pb.bench.OmniBufNeighbor> al) {
+            if (al.isEmpty() && cap > 10) {
+                al.ensureCapacity(cap);
+            }
+            return al;
         }
-        return cur;
+        if (cur == null) {
+            ArrayList<com.omnibuf.pb.bench.OmniBufNeighbor> al = new ArrayList<>(cap);
+            this.neighbors = al;
+            return al;
+        }
+        ArrayList<com.omnibuf.pb.bench.OmniBufNeighbor> al = new ArrayList<>(cur);
+        this.neighbors = al;
+        return al;
     }
 
     public OmniBufPeerUpdate setNeighbors(List<com.omnibuf.pb.bench.OmniBufNeighbor> value) {

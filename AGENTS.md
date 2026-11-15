@@ -29,8 +29,8 @@ just ci           # Full pipeline: lint, build, test, and conformance
 
 - `com.omnibuf`: Public runtime entry points (`OmniBufMapper`, `OmniBufProtobuf`, `OmniBufBlind`, `SchemaMeta`, `MarshalOptions`, `UnmarshalOptions`, `UnsignedLong`, `OmniBufException`).
 - `com.omnibuf.annotation`: `@OmniBufMessage`, `@OmniBufField`, and `WireKind` for `TIER_ANNOTATED_STRUCT` classes and Java 21 `record` types.
-- `com.omnibuf.wire`: Low-level wire primitives (`WireType`, `PrefixVarint`, `Utf8Validator`, `OmniBufEncoder`, `OmniBufDecoder`, `OmniBufOpaque`, `CodecPool`).
-- `com.omnibuf.plugin`: `ProtocGenOmniBufJava` (`CodeGeneratorRequest` to `CodeGeneratorResponse` generator packaged into standalone `target/omnibuf-java-0.1.0-protoc-gen.jar` and invoked by `./bin/protoc-gen-omnibuf-java` from `buf.gen.yaml`).
+- `com.omnibuf.wire`: Low-level wire primitives (`WireType`, `PrefixVarint`, `Utf8Validator`, `OmniBufEncoder`, `OmniBufDecoder`, `OmniBufOpaque`, `CodecPool`, `IntArrayList`, `LongArrayList`).
+- `com.omnibuf.plugin`: `ProtocGenOmniBufJava` (`CodeGeneratorRequest` to `CodeGeneratorResponse` generator packaged into standalone `target/omnibuf-java-*-protoc-gen.jar` and invoked by `./bin/protoc-gen-omnibuf-java` from `buf.gen.yaml`).
 - `src/test/java/com/omnibuf/conformance`: Stdin/stdout 4-byte LE framed conformance harness (`ConformanceMain`, invoked by `./bin/conformance-java`).
 - `src/test/java/com/omnibuf/bench`: Reproducible `PeerUpdate` benchmark runner (`BenchmarkMain`).
 - `src/main/gen`: Checked-in generated Java test/benchmark schema sources produced by `buf generate` and compiled in test scope.

@@ -488,12 +488,12 @@ public final class OmniBufOpaque {
         int b0 = packet[p] & 0xFF;
         if ((b0 & 1) != 0) {
             int strLen = b0 >>> 1;
-            return Utf8Validator.decodeStrict(packet, p + 1, strLen);
+            return Utf8Validator.decodeStrictUnchecked(packet, p + 1, strLen);
         }
         long slicePacked = PrefixVarint.readLengthSlicePacked(packet, p, valEnd, 0);
         int start = (int) (slicePacked >>> 32);
         int end = (int) slicePacked;
-        return Utf8Validator.decodeStrict(packet, start, end - start);
+        return Utf8Validator.decodeStrictUnchecked(packet, start, end - start);
     }
 
     public static byte[] readBytes(byte[] packet, int offset, int length, int fieldNum) {
@@ -801,7 +801,7 @@ public final class OmniBufOpaque {
                 long packed = PrefixVarint.readLengthSlicePacked(packet, p, end, 0);
                 int sStart = (int) (packed >>> 32);
                 int sEnd = (int) packed;
-                out.add(Utf8Validator.decodeStrict(packet, sStart, sEnd - sStart));
+                out.add(Utf8Validator.decodeStrictUnchecked(packet, sStart, sEnd - sStart));
                 p = sEnd;
             }
             if (p != end) {
@@ -1120,7 +1120,7 @@ public final class OmniBufOpaque {
                 long packed = PrefixVarint.readLengthSlicePacked(packet, p, end, 0);
                 int kStart = (int) (packed >>> 32);
                 int kEnd = (int) packed;
-                String k = Utf8Validator.decodeStrict(packet, kStart, kEnd - kStart);
+                String k = Utf8Validator.decodeStrictUnchecked(packet, kStart, kEnd - kStart);
                 p = kEnd;
                 PrefixVarint.Decoded vd = PrefixVarint.decode(packet, p, end);
                 out.put(k, vd.value());

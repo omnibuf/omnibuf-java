@@ -4,6 +4,7 @@
 package com.omnibuf.pb.conformance;
 
 import com.omnibuf.MarshalOptions;
+import com.omnibuf.wire.IntArrayList;
 import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
@@ -140,17 +141,23 @@ public final class OmniBufTestAllTypes {
         return this.f9StringArr;
     }
 
-    List<String> ensureF9StringArr(int minCap) {
+    ArrayList<String> ensureF9StringArr(int minCap) {
         List<String> cur = this.f9StringArr;
         int cap = Math.min(minCap, 4096);
-        if (cur == null) {
-            cur = new ArrayList<>(cap);
-            this.f9StringArr = cur;
-        } else if (!(cur instanceof ArrayList<?>)) {
-            cur = new ArrayList<>(cur);
-            this.f9StringArr = cur;
+        if (cur instanceof ArrayList<String> al) {
+            if (al.isEmpty() && cap > 10) {
+                al.ensureCapacity(cap);
+            }
+            return al;
         }
-        return cur;
+        if (cur == null) {
+            ArrayList<String> al = new ArrayList<>(cap);
+            this.f9StringArr = al;
+            return al;
+        }
+        ArrayList<String> al = new ArrayList<>(cur);
+        this.f9StringArr = al;
+        return al;
     }
 
     public OmniBufTestAllTypes setF9StringArr(List<String> value) {
@@ -160,22 +167,27 @@ public final class OmniBufTestAllTypes {
 
     public List<Integer> getF10Uint32Arr() {
         if (this.f10Uint32Arr == null) {
-            this.f10Uint32Arr = new ArrayList<>();
+            this.f10Uint32Arr = new IntArrayList();
         }
         return this.f10Uint32Arr;
     }
 
-    List<Integer> ensureF10Uint32Arr(int minCap) {
+    IntArrayList ensureF10Uint32Arr(int minCap) {
         List<Integer> cur = this.f10Uint32Arr;
         int cap = Math.min(minCap, 4096);
-        if (cur == null) {
-            cur = new ArrayList<>(cap);
-            this.f10Uint32Arr = cur;
-        } else if (!(cur instanceof ArrayList<?>)) {
-            cur = new ArrayList<>(cur);
-            this.f10Uint32Arr = cur;
+        if (cur instanceof IntArrayList il) {
+            il.ensureAdditional(cap);
+            return il;
         }
-        return cur;
+        if (cur == null) {
+            IntArrayList il = new IntArrayList(cap);
+            this.f10Uint32Arr = il;
+            return il;
+        }
+        IntArrayList il = new IntArrayList(cur);
+        il.ensureAdditional(cap);
+        this.f10Uint32Arr = il;
+        return il;
     }
 
     public OmniBufTestAllTypes setF10Uint32Arr(List<Integer> value) {
@@ -190,17 +202,23 @@ public final class OmniBufTestAllTypes {
         return this.f11SubMsgArr;
     }
 
-    List<com.omnibuf.pb.conformance.OmniBufAllTypesSubMsg> ensureF11SubMsgArr(int minCap) {
+    ArrayList<com.omnibuf.pb.conformance.OmniBufAllTypesSubMsg> ensureF11SubMsgArr(int minCap) {
         List<com.omnibuf.pb.conformance.OmniBufAllTypesSubMsg> cur = this.f11SubMsgArr;
         int cap = Math.min(minCap, 4096);
-        if (cur == null) {
-            cur = new ArrayList<>(cap);
-            this.f11SubMsgArr = cur;
-        } else if (!(cur instanceof ArrayList<?>)) {
-            cur = new ArrayList<>(cur);
-            this.f11SubMsgArr = cur;
+        if (cur instanceof ArrayList<com.omnibuf.pb.conformance.OmniBufAllTypesSubMsg> al) {
+            if (al.isEmpty() && cap > 10) {
+                al.ensureCapacity(cap);
+            }
+            return al;
         }
-        return cur;
+        if (cur == null) {
+            ArrayList<com.omnibuf.pb.conformance.OmniBufAllTypesSubMsg> al = new ArrayList<>(cap);
+            this.f11SubMsgArr = al;
+            return al;
+        }
+        ArrayList<com.omnibuf.pb.conformance.OmniBufAllTypesSubMsg> al = new ArrayList<>(cur);
+        this.f11SubMsgArr = al;
+        return al;
     }
 
     public OmniBufTestAllTypes setF11SubMsgArr(List<com.omnibuf.pb.conformance.OmniBufAllTypesSubMsg> value) {
@@ -215,17 +233,20 @@ public final class OmniBufTestAllTypes {
         return this.f12MapStrUint;
     }
 
-    Map<String, Long> ensureF12MapStrUint(int minCap) {
+    LinkedHashMap<String, Long> ensureF12MapStrUint(int minCap) {
         Map<String, Long> cur = this.f12MapStrUint;
         int cap = Math.min(minCap, 4096);
-        if (cur == null) {
-            cur = new LinkedHashMap<>(Math.max(4, cap + (cap >>> 1) + 1));
-            this.f12MapStrUint = cur;
-        } else if (!(cur instanceof LinkedHashMap<?, ?>)) {
-            cur = new LinkedHashMap<>(cur);
-            this.f12MapStrUint = cur;
+        if (cur instanceof LinkedHashMap<String, Long> lhm) {
+            return lhm;
         }
-        return cur;
+        if (cur == null) {
+            LinkedHashMap<String, Long> lhm = new LinkedHashMap<>(Math.max(4, cap + (cap >>> 1) + 1));
+            this.f12MapStrUint = lhm;
+            return lhm;
+        }
+        LinkedHashMap<String, Long> lhm = new LinkedHashMap<>(cur);
+        this.f12MapStrUint = lhm;
+        return lhm;
     }
 
     public OmniBufTestAllTypes setF12MapStrUint(Map<String, Long> value) {

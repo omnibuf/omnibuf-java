@@ -10,6 +10,7 @@ import com.google.protobuf.DescriptorProtos.FileDescriptorProto;
 import com.google.protobuf.DescriptorProtos.OneofDescriptorProto;
 import com.google.protobuf.compiler.PluginProtos.CodeGeneratorRequest;
 import com.google.protobuf.compiler.PluginProtos.CodeGeneratorResponse;
+import com.omnibuf.wire.WireType;
 import java.io.IOException;
 import java.util.ArrayList;
 import java.util.Comparator;
@@ -557,6 +558,21 @@ public final class ProtocGenOmniBufJava {
             sb.append("package ").append(info.javaPackage()).append(";\n\n");
         }
         sb.append("import com.omnibuf.MarshalOptions;\n");
+        boolean needsIntList = false;
+        boolean needsLongList = false;
+        for (ResolvedField f : fields) {
+            if (isRepeatedInt32Scalar(f)) {
+                needsIntList = true;
+            } else if (isRepeatedInt64Scalar(f)) {
+                needsLongList = true;
+            }
+        }
+        if (needsIntList) {
+            sb.append("import com.omnibuf.wire.IntArrayList;\n");
+        }
+        if (needsLongList) {
+            sb.append("import com.omnibuf.wire.LongArrayList;\n");
+        }
         sb.append("import java.util.ArrayList;\n");
         sb.append("import java.util.LinkedHashMap;\n");
         sb.append("import java.util.List;\n");
@@ -626,26 +642,89 @@ public final class ProtocGenOmniBufJava {
         for (ResolvedField f : fields) {
             String fType = javaFieldType(f);
             if (f.isRepeated()) {
-                sb.append("    public ").append(fType).append(" get").append(f.pascalName()).append("() {\n");
-                sb.append("        if (this.").append(f.camelName()).append(" == null) {\n");
-                sb.append("            this.").append(f.camelName()).append(" = new ArrayList<>();\n");
-                sb.append("        }\n");
-                sb.append("        return this.").append(f.camelName()).append(";\n");
-                sb.append("    }\n\n");
+                if (isRepeatedInt32Scalar(f)) {
+                    sb.append("    public ").append(fType).append(" get").append(f.pascalName()).append("() {\n");
+                    sb.append("        if (this.").append(f.camelName()).append(" == null) {\n");
+                    sb.append("            this.").append(f.camelName()).append(" = new IntArrayList();\n");
+                    sb.append("        }\n");
+                    sb.append("        return this.").append(f.camelName()).append(";\n");
+                    sb.append("    }\n\n");
 
-                sb.append("    ").append(fType).append(" ensure").append(f.pascalName()).append("(int minCap) {\n");
-                sb.append("        ").append(fType).append(" cur = this.").append(f.camelName()).append(";\n");
-                sb.append("        int cap = Math.min(minCap, 4096);\n");
-                sb.append("        if (cur == null) {\n");
-                sb.append("            cur = new ArrayList<>(cap);\n");
-                sb.append("            this.").append(f.camelName()).append(" = cur;\n");
-                sb.append("        } else if (!(cur instanceof ArrayList<?>)) {\n");
-                sb.append("            cur = new ArrayList<>(cur);\n");
-                sb.append("            this.").append(f.camelName()).append(" = cur;\n");
-                sb.append("        }\n");
-                sb.append("        return cur;\n");
-                sb.append("    }\n\n");
+                    sb.append("    IntArrayList ensure").append(f.pascalName()).append("(int minCap) {\n");
+                    sb.append("        ").append(fType).append(" cur = this.").append(f.camelName()).append(";\n");
+                    sb.append("        int cap = Math.min(minCap, 4096);\n");
+                    sb.append("        if (cur instanceof IntArrayList il) {\n");
+                    sb.append("            il.ensureAdditional(cap);\n");
+                    sb.append("            return il;\n");
+                    sb.append("        }\n");
+                    sb.append("        if (cur == null) {\n");
+                    sb.append("            IntArrayList il = new IntArrayList(cap);\n");
+                    sb.append("            this.").append(f.camelName()).append(" = il;\n");
+                    sb.append("            return il;\n");
+                    sb.append("        }\n");
+                    sb.append("        IntArrayList il = new IntArrayList(cur);\n");
+                    sb.append("        il.ensureAdditional(cap);\n");
+                    sb.append("        this.").append(f.camelName()).append(" = il;\n");
+                    sb.append("        return il;\n");
+                    sb.append("    }\n\n");
+                } else if (isRepeatedInt64Scalar(f)) {
+                    sb.append("    public ").append(fType).append(" get").append(f.pascalName()).append("() {\n");
+                    sb.append("        if (this.").append(f.camelName()).append(" == null) {\n");
+                    sb.append("            this.").append(f.camelName()).append(" = new LongArrayList();\n");
+                    sb.append("        }\n");
+                    sb.append("        return this.").append(f.camelName()).append(";\n");
+                    sb.append("    }\n\n");
+
+                    sb.append("    LongArrayList ensure").append(f.pascalName()).append("(int minCap) {\n");
+                    sb.append("        ").append(fType).append(" cur = this.").append(f.camelName()).append(";\n");
+                    sb.append("        int cap = Math.min(minCap, 4096);\n");
+                    sb.append("        if (cur instanceof LongArrayList ll) {\n");
+                    sb.append("            ll.ensureAdditional(cap);\n");
+                    sb.append("            return ll;\n");
+                    sb.append("        }\n");
+                    sb.append("        if (cur == null) {\n");
+                    sb.append("            LongArrayList ll = new LongArrayList(cap);\n");
+                    sb.append("            this.").append(f.camelName()).append(" = ll;\n");
+                    sb.append("            return ll;\n");
+                    sb.append("        }\n");
+                    sb.append("        LongArrayList ll = new LongArrayList(cur);\n");
+                    sb.append("        ll.ensureAdditional(cap);\n");
+                    sb.append("        this.").append(f.camelName()).append(" = ll;\n");
+                    sb.append("        return ll;\n");
+                    sb.append("    }\n\n");
+                } else {
+                    String elemBox = boxedType(f.proto(), f.subMessage());
+                    String arrListType = "ArrayList<" + elemBox + ">";
+                    sb.append("    public ").append(fType).append(" get").append(f.pascalName()).append("() {\n");
+                    sb.append("        if (this.").append(f.camelName()).append(" == null) {\n");
+                    sb.append("            this.").append(f.camelName()).append(" = new ArrayList<>();\n");
+                    sb.append("        }\n");
+                    sb.append("        return this.").append(f.camelName()).append(";\n");
+                    sb.append("    }\n\n");
+
+                    sb.append("    ").append(arrListType).append(" ensure").append(f.pascalName()).append("(int minCap) {\n");
+                    sb.append("        ").append(fType).append(" cur = this.").append(f.camelName()).append(";\n");
+                    sb.append("        int cap = Math.min(minCap, 4096);\n");
+                    sb.append("        if (cur instanceof ").append(arrListType).append(" al) {\n");
+                    sb.append("            if (al.isEmpty() && cap > 10) {\n");
+                    sb.append("                al.ensureCapacity(cap);\n");
+                    sb.append("            }\n");
+                    sb.append("            return al;\n");
+                    sb.append("        }\n");
+                    sb.append("        if (cur == null) {\n");
+                    sb.append("            ").append(arrListType).append(" al = new ArrayList<>(cap);\n");
+                    sb.append("            this.").append(f.camelName()).append(" = al;\n");
+                    sb.append("            return al;\n");
+                    sb.append("        }\n");
+                    sb.append("        ").append(arrListType).append(" al = new ArrayList<>(cur);\n");
+                    sb.append("        this.").append(f.camelName()).append(" = al;\n");
+                    sb.append("        return al;\n");
+                    sb.append("    }\n\n");
+                }
             } else if (f.isMap()) {
+                String kBox = boxedType(f.mapKeyProto(), null);
+                String vBox = boxedType(f.mapValProto(), f.subMessage());
+                String lhmType = "LinkedHashMap<" + kBox + ", " + vBox + ">";
                 sb.append("    public ").append(fType).append(" get").append(f.pascalName()).append("() {\n");
                 sb.append("        if (this.").append(f.camelName()).append(" == null) {\n");
                 sb.append("            this.").append(f.camelName()).append(" = new LinkedHashMap<>();\n");
@@ -653,17 +732,20 @@ public final class ProtocGenOmniBufJava {
                 sb.append("        return this.").append(f.camelName()).append(";\n");
                 sb.append("    }\n\n");
 
-                sb.append("    ").append(fType).append(" ensure").append(f.pascalName()).append("(int minCap) {\n");
+                sb.append("    ").append(lhmType).append(" ensure").append(f.pascalName()).append("(int minCap) {\n");
                 sb.append("        ").append(fType).append(" cur = this.").append(f.camelName()).append(";\n");
                 sb.append("        int cap = Math.min(minCap, 4096);\n");
-                sb.append("        if (cur == null) {\n");
-                sb.append("            cur = new LinkedHashMap<>(Math.max(4, cap + (cap >>> 1) + 1));\n");
-                sb.append("            this.").append(f.camelName()).append(" = cur;\n");
-                sb.append("        } else if (!(cur instanceof LinkedHashMap<?, ?>)) {\n");
-                sb.append("            cur = new LinkedHashMap<>(cur);\n");
-                sb.append("            this.").append(f.camelName()).append(" = cur;\n");
+                sb.append("        if (cur instanceof ").append(lhmType).append(" lhm) {\n");
+                sb.append("            return lhm;\n");
                 sb.append("        }\n");
-                sb.append("        return cur;\n");
+                sb.append("        if (cur == null) {\n");
+                sb.append("            ").append(lhmType).append(" lhm = new LinkedHashMap<>(Math.max(4, cap + (cap >>> 1) + 1));\n");
+                sb.append("            this.").append(f.camelName()).append(" = lhm;\n");
+                sb.append("            return lhm;\n");
+                sb.append("        }\n");
+                sb.append("        ").append(lhmType).append(" lhm = new LinkedHashMap<>(cur);\n");
+                sb.append("        this.").append(f.camelName()).append(" = lhm;\n");
+                sb.append("        return lhm;\n");
                 sb.append("    }\n\n");
             } else {
                 sb.append("    public ").append(fType).append(" get").append(f.pascalName()).append("() {\n");
@@ -783,7 +865,7 @@ public final class ProtocGenOmniBufJava {
         sb.append("import com.omnibuf.wire.CodecPool;\n");
         sb.append("import com.omnibuf.wire.OmniBufDecoder;\n");
         sb.append("import com.omnibuf.wire.OmniBufEncoder;\n");
-        if (needsPrefixVarintImport(fields)) {
+        if (needsCodecPrefixVarintImport(fields)) {
             sb.append("import com.omnibuf.wire.PrefixVarint;\n");
         }
         boolean hasSubMessageFields = false;
@@ -994,10 +1076,37 @@ public final class ProtocGenOmniBufJava {
         sb.append("        }\n");
         sb.append("    }\n\n");
 
+        emitIsLargePayloadMethods(sb, info, fields);
+
         sb.append("    public static void encode(OmniBufEncoder enc, ")
             .append(info.modelClass())
             .append(" msg, boolean deterministic) {\n");
-        for (ResolvedField f : fields) {
+        int idx = 0;
+        while (idx < fields.size()) {
+            ResolvedField f = fields.get(idx);
+            if (isUnconditionalFusableScalar(f)) {
+                int runEnd = idx + 1;
+                while (runEnd < fields.size()
+                        && (runEnd - idx) < 32
+                        && isUnconditionalFusableScalar(fields.get(runEnd))) {
+                    runEnd++;
+                }
+                int maxBytes = 0;
+                for (int k = idx; k < runEnd; k++) {
+                    maxBytes += maxEncodedScalarBytes(fields.get(k));
+                }
+                sb.append("        {\n");
+                sb.append("            byte[] dst = enc.ensureFree(").append(maxBytes).append(");\n");
+                sb.append("            int p = enc.rawPosition();\n");
+                for (int k = idx; k < runEnd; k++) {
+                    ResolvedField sf = fields.get(k);
+                    emitFusedScalarWrite(sb, sf, "msg." + sf.camelName(), "            ");
+                }
+                sb.append("            enc.setRawPosition(p);\n");
+                sb.append("        }\n");
+                idx = runEnd;
+                continue;
+            }
             if (f.oneof() != null) {
                 sb.append("        if (msg.").append(f.oneof().camelName()).append("Case == ")
                     .append(f.number()).append(") {\n");
@@ -1010,6 +1119,7 @@ public final class ProtocGenOmniBufJava {
             } else {
                 emitFieldEncode(sb, info, f, "msg." + f.camelName(), "        ");
             }
+            idx++;
         }
         sb.append("    }\n\n");
 
@@ -1087,6 +1197,286 @@ public final class ProtocGenOmniBufJava {
 
         sb.append("}\n");
         return sb.toString();
+    }
+
+    private static boolean needsCodecPrefixVarintImport(List<ResolvedField> fields) {
+        if (needsPrefixVarintImport(fields)) {
+            return true;
+        }
+        for (ResolvedField f : fields) {
+            if (isUnconditionalFusableScalar(f)) {
+                if (f.proto().getType() != Type.TYPE_BOOL || f.number() >= 8) {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    private static boolean isRepeatedInt32Scalar(ResolvedField f) {
+        if (!f.isRepeated()) {
+            return false;
+        }
+        return switch (f.proto().getType()) {
+            case TYPE_INT32, TYPE_SINT32, TYPE_UINT32, TYPE_FIXED32, TYPE_SFIXED32, TYPE_ENUM -> true;
+            default -> false;
+        };
+    }
+
+    private static boolean isRepeatedInt64Scalar(ResolvedField f) {
+        if (!f.isRepeated()) {
+            return false;
+        }
+        return switch (f.proto().getType()) {
+            case TYPE_INT64, TYPE_SINT64, TYPE_UINT64, TYPE_FIXED64, TYPE_SFIXED64 -> true;
+            default -> false;
+        };
+    }
+
+    private static boolean isUnconditionalFusableScalar(ResolvedField f) {
+        if (f.isMap() || f.isRepeated() || f.oneof() != null || f.hasExplicitScalarPresence()) {
+            return false;
+        }
+        return switch (f.proto().getType()) {
+            case TYPE_UINT32,
+                 TYPE_UINT64,
+                 TYPE_INT32,
+                 TYPE_SINT32,
+                 TYPE_ENUM,
+                 TYPE_INT64,
+                 TYPE_SINT64,
+                 TYPE_BOOL,
+                 TYPE_FIXED32,
+                 TYPE_SFIXED32,
+                 TYPE_FLOAT,
+                 TYPE_FIXED64,
+                 TYPE_SFIXED64,
+                 TYPE_DOUBLE -> true;
+            default -> false;
+        };
+    }
+
+    private static int encodedTagByteLength(int fnum) {
+        if (fnum < 8) {
+            return 1;
+        }
+        if (fnum < 1024) {
+            return 2;
+        }
+        if (fnum < 33_554_432) {
+            return 4;
+        }
+        return 9;
+    }
+
+    private static int maxEncodedScalarBytes(ResolvedField f) {
+        int tagBytes = encodedTagByteLength(f.number());
+        return tagBytes + switch (f.proto().getType()) {
+            case TYPE_BOOL -> 0;
+            case TYPE_FIXED32, TYPE_SFIXED32, TYPE_FLOAT -> 4;
+            case TYPE_FIXED64, TYPE_SFIXED64, TYPE_DOUBLE -> 8;
+            default -> 9;
+        };
+    }
+
+    private static int wireTypeInt(Type t) {
+        return switch (t) {
+            case TYPE_UINT32, TYPE_UINT64 -> WireType.WIRE_UINT;
+            case TYPE_INT32, TYPE_INT64, TYPE_SINT32, TYPE_SINT64, TYPE_ENUM -> WireType.WIRE_SINT;
+            case TYPE_BOOL -> WireType.WIRE_BOOL_FALSE;
+            case TYPE_FIXED32 -> WireType.WIRE_FIXED32;
+            case TYPE_SFIXED32 -> WireType.WIRE_SFIXED32;
+            case TYPE_FLOAT -> WireType.WIRE_FLOAT32;
+            case TYPE_FIXED64 -> WireType.WIRE_FIXED64;
+            case TYPE_SFIXED64 -> WireType.WIRE_SFIXED64;
+            case TYPE_DOUBLE -> WireType.WIRE_FLOAT64;
+            case TYPE_STRING -> WireType.WIRE_STRING;
+            case TYPE_BYTES -> WireType.WIRE_BYTES;
+            case TYPE_MESSAGE -> WireType.WIRE_SUB_MSG;
+            default -> throw new IllegalStateException("Unsupported wireTypeInt: " + t);
+        };
+    }
+
+    private static String tag1BLiteral(int fnum, int wt) {
+        int b = ((((fnum << 4) | wt) << 1) | 1) & 0xFF;
+        return "(byte) 0x" + Integer.toHexString(b);
+    }
+
+    private static String tag2BLiteral(int fnum, int wt) {
+        int s = ((((fnum << 4) | wt) << 2) | 2) & 0xFFFF;
+        return "(short) 0x" + Integer.toHexString(s);
+    }
+
+    private static String tag4BLiteral(int fnum, int wt) {
+        int v = (int) (((((long) fnum << 4) | wt) << 3) | 4L);
+        return "0x" + Integer.toHexString(v);
+    }
+
+    private static String tag9BPayloadLiteral(int fnum, int wt) {
+        long v = (Integer.toUnsignedLong(fnum) << 4) | (wt & 0x0FL);
+        return "0x" + Long.toHexString(v) + "L";
+    }
+
+    private static void emitConstTagWriteToDst(StringBuilder sb, int fnum, int wt, String indent) {
+        if (fnum < 8) {
+            sb.append(indent).append("dst[p++] = ").append(tag1BLiteral(fnum, wt)).append(";\n");
+        } else if (fnum < 1024) {
+            sb.append(indent).append("PrefixVarint.setShortLE(dst, p, ")
+                .append(tag2BLiteral(fnum, wt)).append(");\n");
+            sb.append(indent).append("p += 2;\n");
+        } else if (fnum < 33_554_432) {
+            sb.append(indent).append("PrefixVarint.setIntLE(dst, p, ")
+                .append(tag4BLiteral(fnum, wt)).append(");\n");
+            sb.append(indent).append("p += 4;\n");
+        } else {
+            sb.append(indent).append("dst[p] = 0;\n");
+            sb.append(indent).append("PrefixVarint.setLongLE(dst, p + 1, ")
+                .append(tag9BPayloadLiteral(fnum, wt)).append(");\n");
+            sb.append(indent).append("p += 9;\n");
+        }
+    }
+
+    private static void emitFusedScalarWrite(
+            StringBuilder sb, ResolvedField f, String expr, String indent) {
+        int fnum = f.number();
+        Type t = f.proto().getType();
+        if (t == Type.TYPE_BOOL) {
+            if (fnum < 8) {
+                sb.append(indent).append("dst[p++] = ").append(expr).append(" ? ")
+                    .append(tag1BLiteral(fnum, WireType.WIRE_BOOL_TRUE)).append(" : ")
+                    .append(tag1BLiteral(fnum, WireType.WIRE_BOOL_FALSE)).append(";\n");
+            } else if (fnum < 1024) {
+                sb.append(indent).append("PrefixVarint.setShortLE(dst, p, ").append(expr).append(" ? ")
+                    .append(tag2BLiteral(fnum, WireType.WIRE_BOOL_TRUE)).append(" : ")
+                    .append(tag2BLiteral(fnum, WireType.WIRE_BOOL_FALSE)).append(");\n");
+                sb.append(indent).append("p += 2;\n");
+            } else if (fnum < 33_554_432) {
+                sb.append(indent).append("PrefixVarint.setIntLE(dst, p, ").append(expr).append(" ? ")
+                    .append(tag4BLiteral(fnum, WireType.WIRE_BOOL_TRUE)).append(" : ")
+                    .append(tag4BLiteral(fnum, WireType.WIRE_BOOL_FALSE)).append(");\n");
+                sb.append(indent).append("p += 4;\n");
+            } else {
+                sb.append(indent).append("dst[p] = 0;\n");
+                sb.append(indent).append("PrefixVarint.setLongLE(dst, p + 1, ").append(expr).append(" ? ")
+                    .append(tag9BPayloadLiteral(fnum, WireType.WIRE_BOOL_TRUE)).append(" : ")
+                    .append(tag9BPayloadLiteral(fnum, WireType.WIRE_BOOL_FALSE)).append(");\n");
+                sb.append(indent).append("p += 9;\n");
+            }
+            return;
+        }
+        emitConstTagWriteToDst(sb, fnum, wireTypeInt(t), indent);
+        switch (t) {
+            case TYPE_UINT32 -> sb.append(indent)
+                .append("p = PrefixVarint.write(dst, p, Integer.toUnsignedLong(").append(expr).append("));\n");
+            case TYPE_UINT64 -> sb.append(indent)
+                .append("p = PrefixVarint.write(dst, p, ").append(expr).append(");\n");
+            case TYPE_INT32, TYPE_SINT32, TYPE_ENUM -> sb.append(indent)
+                .append("p = PrefixVarint.write(dst, p, PrefixVarint.encodeZigZag32(").append(expr).append("));\n");
+            case TYPE_INT64, TYPE_SINT64 -> sb.append(indent)
+                .append("p = PrefixVarint.write(dst, p, PrefixVarint.encodeZigZag64(").append(expr).append("));\n");
+            case TYPE_FIXED32, TYPE_SFIXED32 -> {
+                sb.append(indent).append("PrefixVarint.setIntLE(dst, p, ").append(expr).append(");\n");
+                sb.append(indent).append("p += 4;\n");
+            }
+            case TYPE_FLOAT -> {
+                sb.append(indent).append("PrefixVarint.setIntLE(dst, p, Float.floatToRawIntBits(").append(expr).append("));\n");
+                sb.append(indent).append("p += 4;\n");
+            }
+            case TYPE_FIXED64, TYPE_SFIXED64 -> {
+                sb.append(indent).append("PrefixVarint.setLongLE(dst, p, ").append(expr).append(");\n");
+                sb.append(indent).append("p += 8;\n");
+            }
+            case TYPE_DOUBLE -> {
+                sb.append(indent).append("PrefixVarint.setLongLE(dst, p, Double.doubleToRawLongBits(").append(expr).append("));\n");
+                sb.append(indent).append("p += 8;\n");
+            }
+            default -> throw new IllegalStateException("Unsupported fused scalar: " + t);
+        }
+    }
+
+    private static void emitIsLargePayloadMethods(
+            StringBuilder sb, MessageInfo info, List<ResolvedField> fields) {
+        sb.append("    public static boolean isLargePayload(").append(info.modelClass()).append(" msg) {\n");
+        sb.append("        return isLargePayload(msg, 2);\n");
+        sb.append("    }\n\n");
+
+        sb.append("    public static boolean isLargePayload(")
+            .append(info.modelClass()).append(" msg, int depthLeft) {\n");
+        sb.append("        if (msg == null || depthLeft < 0) {\n");
+        sb.append("            return false;\n");
+        sb.append("        }\n");
+
+        List<String> lengthExprs = new ArrayList<>();
+        List<ResolvedField> subFields = new ArrayList<>();
+        for (ResolvedField f : fields) {
+            if (f.isMap()) {
+                continue;
+            }
+            if (!f.isRepeated()
+                    && (f.proto().getType() == Type.TYPE_STRING || f.proto().getType() == Type.TYPE_BYTES)) {
+                String lenSuffix = f.proto().getType() == Type.TYPE_STRING ? ".length()" : ".length";
+                String ref = "msg." + f.camelName();
+                if (f.oneof() != null) {
+                    lengthExprs.add(
+                        "(msg." + f.oneof().camelName() + "Case == " + f.number()
+                            + " && " + ref + " != null ? " + ref + lenSuffix + " : 0)"
+                    );
+                } else if (f.hasExplicitScalarPresence()) {
+                    lengthExprs.add(
+                        "(msg.has_" + f.camelName() + " && " + ref + " != null ? " + ref + lenSuffix + " : 0)"
+                    );
+                } else {
+                    lengthExprs.add("(" + ref + " == null ? 0 : " + ref + lenSuffix + ")");
+                }
+            } else if (f.proto().getType() == Type.TYPE_MESSAGE && f.subMessage() != null) {
+                subFields.add(f);
+            }
+        }
+
+        for (int i = 0; i < lengthExprs.size(); i += 16) {
+            int end = Math.min(lengthExprs.size(), i + 16);
+            if (end - i == 1) {
+                sb.append("        if (").append(lengthExprs.get(i)).append(" > 16_383) {\n");
+            } else {
+                sb.append("        if ((").append(lengthExprs.get(i));
+                for (int j = i + 1; j < end; j++) {
+                    sb.append("\n                | ").append(lengthExprs.get(j));
+                }
+                sb.append(") > 16_383) {\n");
+            }
+            sb.append("            return true;\n");
+            sb.append("        }\n");
+        }
+
+        if (!subFields.isEmpty()) {
+            sb.append("        if (depthLeft > 0) {\n");
+            for (ResolvedField sf : subFields) {
+                String subCodec = sf.subMessage().qualifiedCodec();
+                String ref = "msg." + sf.camelName();
+                if (sf.isRepeated()) {
+                    sb.append("            if (").append(ref).append(" != null && !").append(ref)
+                        .append(".isEmpty() && ").append(subCodec)
+                        .append(".isLargePayload(").append(ref).append(".get(0), depthLeft - 1)) {\n");
+                    sb.append("                return true;\n");
+                    sb.append("            }\n");
+                } else if (sf.oneof() != null) {
+                    sb.append("            if (msg.").append(sf.oneof().camelName()).append("Case == ")
+                        .append(sf.number()).append(" && ").append(ref).append(" != null && ")
+                        .append(subCodec).append(".isLargePayload(").append(ref).append(", depthLeft - 1)) {\n");
+                    sb.append("                return true;\n");
+                    sb.append("            }\n");
+                } else {
+                    sb.append("            if (").append(ref).append(" != null && ")
+                        .append(subCodec).append(".isLargePayload(").append(ref).append(", depthLeft - 1)) {\n");
+                    sb.append("                return true;\n");
+                    sb.append("            }\n");
+                }
+            }
+            sb.append("        }\n");
+        }
+
+        sb.append("        return false;\n");
+        sb.append("    }\n\n");
     }
 
     private static boolean needsPrefixVarintImport(List<ResolvedField> fields) {
@@ -1186,10 +1576,13 @@ public final class ProtocGenOmniBufJava {
                     sb.append(indent).append("    List<").append(subModel).append("> ").append(varName)
                         .append(" = ").append(expr).append(";\n");
                     sb.append(indent).append("    int n = ").append(varName).append(" == null ? 0 : ").append(varName).append(".size();\n");
-                    sb.append(indent).append("    int arrPos = enc.beginTypedArrayFast(").append(fnum).append(", WireType.WIRE_SUB_MSG, n);\n");
+                    sb.append(indent).append("    boolean largeArr = n > 0 && ").append(subCodec)
+                        .append(".isLargePayload(").append(varName).append(".get(0));\n");
+                    sb.append(indent).append("    int arrPos = enc.beginTypedArrayFast(").append(fnum).append(", WireType.WIRE_SUB_MSG, n, largeArr);\n");
                     sb.append(indent).append("    for (int i = 0; i < n; i++) {\n");
-                    sb.append(indent).append("        int elemPos = enc.beginInlineSubMsgFast();\n");
                     sb.append(indent).append("        ").append(subModel).append(" elem = ").append(varName).append(".get(i);\n");
+                    sb.append(indent).append("        int elemPos = enc.beginInlineSubMsgFast(")
+                        .append(subCodec).append(".isLargePayload(elem));\n");
                     sb.append(indent).append("        if (elem != null) {\n");
                     sb.append(indent).append("            ").append(subCodec).append(".encode(enc, elem, deterministic);\n");
                     sb.append(indent).append("        }\n");
@@ -1215,7 +1608,17 @@ public final class ProtocGenOmniBufJava {
             case TYPE_SFIXED64 -> sb.append(indent).append("enc.writeSfixed64(").append(fnum).append(", ").append(expr).append(");\n");
             case TYPE_FLOAT -> sb.append(indent).append("enc.writeFloat32(").append(fnum).append(", ").append(expr).append(");\n");
             case TYPE_DOUBLE -> sb.append(indent).append("enc.writeFloat64(").append(fnum).append(", ").append(expr).append(");\n");
-            case TYPE_STRING -> sb.append(indent).append("enc.writeString(").append(fnum).append(", ").append(expr).append(");\n");
+            case TYPE_STRING -> {
+                if (fnum < 8) {
+                    sb.append(indent).append("enc.writeString1BTag(")
+                        .append(tag1BLiteral(fnum, WireType.WIRE_STRING)).append(", ").append(expr).append(");\n");
+                } else if (fnum < 1024) {
+                    sb.append(indent).append("enc.writeString2BTag(")
+                        .append(tag2BLiteral(fnum, WireType.WIRE_STRING)).append(", ").append(expr).append(");\n");
+                } else {
+                    sb.append(indent).append("enc.writeString(").append(fnum).append(", ").append(expr).append(");\n");
+                }
+            }
             case TYPE_BYTES -> sb.append(indent).append("enc.writeBytes(").append(fnum).append(", ").append(expr).append(");\n");
             case TYPE_MESSAGE -> {
                 String subModel = f.subMessage().qualifiedModel();
@@ -1224,7 +1627,8 @@ public final class ProtocGenOmniBufJava {
                 sb.append(indent).append("{\n");
                 sb.append(indent).append("    ").append(subModel).append(' ').append(varName).append(" = ").append(expr).append(";\n");
                 sb.append(indent).append("    if (").append(varName).append(" != null) {\n");
-                sb.append(indent).append("        int subPos = enc.beginSubMsgFast(").append(fnum).append(");\n");
+                sb.append(indent).append("        int subPos = enc.beginSubMsgFast(").append(fnum)
+                    .append(", ").append(subCodec).append(".isLargePayload(").append(varName).append("));\n");
                 sb.append(indent).append("        ").append(subCodec).append(".encode(enc, ").append(varName).append(", deterministic);\n");
                 sb.append(indent).append("        enc.endContainerAt(subPos);\n");
                 sb.append(indent).append("    }\n");
@@ -1297,8 +1701,7 @@ public final class ProtocGenOmniBufJava {
             sb.append("                        if (mapState >= 0L) {\n");
             sb.append("                            int count = (int) mapState;\n");
             sb.append("                            int mapLimit = (int) (mapState >>> 32);\n");
-            sb.append("                            Map<").append(kBox).append(", ").append(vBox)
-                .append("> map = target.ensure").append(f.pascalName()).append("(count);\n");
+            sb.append("                            var map = target.ensure").append(f.pascalName()).append("(count);\n");
             sb.append("                            int maxElems = dec.maxCollectionElements();\n");
             sb.append("                            for (int i = 0; i < count; i++) {\n");
             sb.append("                                ").append(kBox).append(" k = ")
@@ -1339,19 +1742,24 @@ public final class ProtocGenOmniBufJava {
             sb.append("                            if ((long) list.size() + count > dec.maxCollectionElements()) {\n");
             sb.append("                                throw new OmniBufException(\"omnibuf: accumulated WireArray count exceeds maxCollectionElements\");\n");
             sb.append("                            }\n");
-            sb.append("                            for (int i = 0; i < count; i++) {\n");
-            if (f.proto().getType() == Type.TYPE_MESSAGE) {
-                String subModel = f.subMessage().qualifiedModel();
-                String subCodec = f.subMessage().qualifiedCodec();
-                sb.append("                                int elemLimit = dec.readLengthPrefixedLimit(0);\n");
-                sb.append("                                ").append(subModel).append(" elem = new ").append(subModel).append("();\n");
-                sb.append("                                ").append(subCodec).append(".decodeFrom(dec, elem, depth + 2);\n");
-                sb.append("                                dec.endContainer(elemLimit);\n");
-                sb.append("                                list.add(elem);\n");
+            String bulkRead = bulkRepeatedReadMethod(f.proto().getType());
+            if (bulkRead != null) {
+                sb.append("                            dec.").append(bulkRead).append("(list, count);\n");
             } else {
-                sb.append("                                list.add(").append(arrayElementReadExpr(f.proto().getType())).append(");\n");
+                sb.append("                            for (int i = 0; i < count; i++) {\n");
+                if (f.proto().getType() == Type.TYPE_MESSAGE) {
+                    String subModel = f.subMessage().qualifiedModel();
+                    String subCodec = f.subMessage().qualifiedCodec();
+                    sb.append("                                int elemLimit = dec.readLengthPrefixedLimit(0);\n");
+                    sb.append("                                ").append(subModel).append(" elem = new ").append(subModel).append("();\n");
+                    sb.append("                                ").append(subCodec).append(".decodeFrom(dec, elem, depth + 2);\n");
+                    sb.append("                                dec.endContainer(elemLimit);\n");
+                    sb.append("                                list.add(elem);\n");
+                } else {
+                    sb.append("                                list.add(").append(arrayElementReadExpr(f.proto().getType())).append(");\n");
+                }
+                sb.append("                            }\n");
             }
-            sb.append("                            }\n");
             sb.append("                            dec.endContainer(arrLimit);\n");
             sb.append("                        }\n");
             sb.append("                    }\n");
@@ -1993,6 +2401,18 @@ public final class ProtocGenOmniBufJava {
             case TYPE_STRING -> "dec.readString()";
             case TYPE_BYTES -> "dec.readBytes()";
             default -> throw new IllegalStateException("Unsupported scalar read: " + t);
+        };
+    }
+
+    private static String bulkRepeatedReadMethod(Type t) {
+        return switch (t) {
+            case TYPE_UINT32 -> "readUint32Into";
+            case TYPE_INT32, TYPE_SINT32, TYPE_ENUM -> "readSint32Into";
+            case TYPE_FIXED32, TYPE_SFIXED32 -> "readFixed32Into";
+            case TYPE_UINT64 -> "readUint64Into";
+            case TYPE_INT64, TYPE_SINT64 -> "readSint64Into";
+            case TYPE_FIXED64, TYPE_SFIXED64 -> "readFixed64Into";
+            default -> null;
         };
     }
 

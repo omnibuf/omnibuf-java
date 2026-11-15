@@ -121,10 +121,30 @@ public final class Utf8Validator {
         if (len == 0) {
             return "";
         }
+        return decodeStrictUnchecked(buf, off, len);
+    }
+
+    /**
+     * Validates and decodes {@code buf[off..off+len]} when caller has already verified
+     * {@code buf != null && off >= 0 && len >= 0 && off + len <= buf.length}.
+     */
+    public static String decodeStrictUnchecked(byte[] buf, int off, int len) {
+        if (len == 0) {
+            return "";
+        }
         // Fast path for pure ASCII strings (common for keys, router IDs, labels).
         if (isPureAscii(buf, off, len)) {
-            return new String(buf, off, len, StandardCharsets.ISO_8859_1);
+            return newAsciiString(buf, off, len);
         }
+        return decodeUtf8NonAscii(buf, off, len);
+    }
+
+    @SuppressWarnings("deprecation")
+    private static String newAsciiString(byte[] buf, int off, int len) {
+        return new String(buf, 0, off, len);
+    }
+
+    private static String decodeUtf8NonAscii(byte[] buf, int off, int len) {
         CharsetDecoder decoder = STRICT_DECODER.get();
         decoder.reset();
         try {

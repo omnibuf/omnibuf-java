@@ -348,7 +348,7 @@ public final class OpaqueTestAllTypes {
                 enc.writeBool(5, this.dirty_f5Bool);
             }
             case 6 -> {
-                enc.writeString(6, this.dirty_f6String);
+                enc.writeString1BTag((byte) 0xd5, this.dirty_f6String);
             }
             case 7 -> {
                 enc.writeBytes(7, this.dirty_f7Bytes);
@@ -357,7 +357,7 @@ public final class OpaqueTestAllTypes {
                 {
                     com.omnibuf.pb.conformance.OmniBufAllTypesSubMsg sub8 = this.dirty_f8SubMsg;
                     if (sub8 != null) {
-                        int subPos = enc.beginSubMsgFast(8);
+                        int subPos = enc.beginSubMsgFast(8, com.omnibuf.pb.conformance.AllTypesSubMsgOmniBuf.isLargePayload(sub8));
                         com.omnibuf.pb.conformance.AllTypesSubMsgOmniBuf.encode(enc, sub8, deterministic);
                         enc.endContainerAt(subPos);
                     }
@@ -373,10 +373,11 @@ public final class OpaqueTestAllTypes {
                 {
                     List<com.omnibuf.pb.conformance.OmniBufAllTypesSubMsg> list11 = this.dirty_f11SubMsgArr;
                     int n = list11 == null ? 0 : list11.size();
-                    int arrPos = enc.beginTypedArrayFast(11, WireType.WIRE_SUB_MSG, n);
+                    boolean largeArr = n > 0 && com.omnibuf.pb.conformance.AllTypesSubMsgOmniBuf.isLargePayload(list11.get(0));
+                    int arrPos = enc.beginTypedArrayFast(11, WireType.WIRE_SUB_MSG, n, largeArr);
                     for (int i = 0; i < n; i++) {
-                        int elemPos = enc.beginInlineSubMsgFast();
                         com.omnibuf.pb.conformance.OmniBufAllTypesSubMsg elem = list11.get(i);
+                        int elemPos = enc.beginInlineSubMsgFast(com.omnibuf.pb.conformance.AllTypesSubMsgOmniBuf.isLargePayload(elem));
                         if (elem != null) {
                             com.omnibuf.pb.conformance.AllTypesSubMsgOmniBuf.encode(enc, elem, deterministic);
                         }
@@ -401,7 +402,7 @@ public final class OpaqueTestAllTypes {
                 enc.writeFixed64(16, this.dirty_f16Fixed64);
             }
             case 20 -> {
-                enc.writeString(20, this.dirty_f20OverflowStr);
+                enc.writeString2BTag((short) 0x52a, this.dirty_f20OverflowStr);
             }
             default -> {}
         }

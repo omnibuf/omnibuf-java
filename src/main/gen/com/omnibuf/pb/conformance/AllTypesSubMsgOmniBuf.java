@@ -10,6 +10,7 @@ import com.omnibuf.UnmarshalOptions;
 import com.omnibuf.wire.CodecPool;
 import com.omnibuf.wire.OmniBufDecoder;
 import com.omnibuf.wire.OmniBufEncoder;
+import com.omnibuf.wire.PrefixVarint;
 import com.omnibuf.wire.WireType;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
@@ -118,11 +119,37 @@ public final class AllTypesSubMsgOmniBuf {
         }
     }
 
+    public static boolean isLargePayload(OmniBufAllTypesSubMsg msg) {
+        return isLargePayload(msg, 2);
+    }
+
+    public static boolean isLargePayload(OmniBufAllTypesSubMsg msg, int depthLeft) {
+        if (msg == null || depthLeft < 0) {
+            return false;
+        }
+        if ((msg.label == null ? 0 : msg.label.length()) > 16_383) {
+            return true;
+        }
+        return false;
+    }
+
     public static void encode(OmniBufEncoder enc, OmniBufAllTypesSubMsg msg, boolean deterministic) {
-        enc.writeUint32(1, msg.id);
-        enc.writeString(2, msg.label);
-        enc.writeBool(3, msg.flag);
-        enc.writeSint(4, msg.score);
+        {
+            byte[] dst = enc.ensureFree(10);
+            int p = enc.rawPosition();
+            dst[p++] = (byte) 0x21;
+            p = PrefixVarint.write(dst, p, Integer.toUnsignedLong(msg.id));
+            enc.setRawPosition(p);
+        }
+        enc.writeString1BTag((byte) 0x55, msg.label);
+        {
+            byte[] dst = enc.ensureFree(11);
+            int p = enc.rawPosition();
+            dst[p++] = msg.flag ? (byte) 0x67 : (byte) 0x65;
+            dst[p++] = (byte) 0x83;
+            p = PrefixVarint.write(dst, p, PrefixVarint.encodeZigZag64(msg.score));
+            enc.setRawPosition(p);
+        }
     }
 
     public static OmniBufAllTypesSubMsg unmarshal(byte[] data) {

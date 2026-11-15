@@ -113,12 +113,12 @@ Measured on Apple M1 Pro (`darwin-arm64`, OpenJDK 21.0.13) using the canonical 1
 | Category | OmniBuf (Generated) | OmniBuf (@OmniBufField) | Protobuf (protobuf-java) | FlatBuffers | JSON (Jackson) | MessagePack (Jackson) |
 | :--- | ---: | ---: | ---: | ---: | ---: | ---: |
 | **Wire Size** | **366 B** | **366 B** | 341 B | 600 B | 803 B | 626 B |
-| **Full Message Encode Speed** | **343 ns/op** | 627 ns/op | 347 ns/op | 1,030 ns/op | 1,784 ns/op | 2,508 ns/op |
-| **Full Message Decode Speed** | 1,110 ns/op | 1,114 ns/op | 1,578 ns/op | **1,034 ns/op** | 3,087 ns/op | 4,614 ns/op |
-| **Read a Single Nested Field** | 106 ns/op | n/a | 1,085 ns/op | **23 ns/op** | 2,569 ns/op | 4,151 ns/op |
-| **Selective Single-Field Mutation** | **314 ns/op** | n/a | 1,499 ns/op | 1,479 ns/op | 4,443 ns/op | 6,832 ns/op |
-| **Large Embedded Message Encode** | 8,634 ns/op | 8,990 ns/op | **4,569 ns/op** | 77,469 ns/op | 64,010 ns/op | 118,690 ns/op |
-| **Embedded Message Growth** | **4,774 ns/op** | n/a | 25,025 ns/op | 46,960 ns/op | 51,229 ns/op | 90,798 ns/op |
+| **Full Message Encode Speed** | **315 ns/op** | 662 ns/op | 364 ns/op | 1,021 ns/op | 1,559 ns/op | 2,401 ns/op |
+| **Full Message Decode Speed** | **1,045 ns/op** | 1,056 ns/op | 1,520 ns/op | 1,061 ns/op | 2,950 ns/op | 4,346 ns/op |
+| **Read a Single Nested Field** | 127 ns/op | n/a | 1,036 ns/op | **24 ns/op** | 2,607 ns/op | 3,991 ns/op |
+| **Selective Single-Field Mutation** | **294 ns/op** | n/a | 1,454 ns/op | 1,453 ns/op | 4,166 ns/op | 6,453 ns/op |
+| **Large Embedded Message Encode** | 5,044 ns/op | 5,211 ns/op | **4,384 ns/op** | 77,382 ns/op | 62,896 ns/op | 116,427 ns/op |
+| **Embedded Message Growth** | **3,020 ns/op** | n/a | 24,464 ns/op | 46,102 ns/op | 48,786 ns/op | 87,759 ns/op |
 
 `BenchmarkMain` evaluates six categories across `OmniBuf (Generated)`, `OmniBuf (@OmniBufField)`, `OmniBuf (Protobuf)`, `Protobuf (protobuf-java)`, `FlatBuffers`, `MessagePack (Jackson)`, and `JSON (Jackson)`, adding `Large Embedded Message Encode` and `Embedded Message Growth` stress workloads. Run `just bench --smoke` for a fast parity check across all six categories.
 
@@ -126,7 +126,7 @@ Measured on Apple M1 Pro (`darwin-arm64`, OpenJDK 21.0.13) using the canonical 1
 
 ```bash
 just proto        # Lint schemas and regenerate src/main/gen via buf
-just build        # Compile and package target/omnibuf-java-0.1.0.jar and shaded protoc-gen JAR
+just build        # Compile and package runtime JAR and shaded protoc-gen JAR in target/
 just test         # Run JUnit 5 test suite
 just conformance  # Run 758-case cross-language conformance runner
 just bench        # Run PeerUpdate benchmarks and write testdata/benchmarks.json

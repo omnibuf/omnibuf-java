@@ -22,6 +22,9 @@ public final class OmniBufDecoder {
 
     public record MapHeader(int keyWireType, int valWireType, int count, int payloadStart, int payloadEnd) {}
 
+    final boolean isPooledSlot;
+    boolean pooledInUse;
+
     private byte[] buf;
     private int pos;
     private int limit;
@@ -30,6 +33,11 @@ public final class OmniBufDecoder {
     private int maxNestingDepth;
 
     public OmniBufDecoder() {
+        this(false);
+    }
+
+    OmniBufDecoder(boolean isPooledSlot) {
+        this.isPooledSlot = isPooledSlot;
         this.buf = EMPTY_BYTES;
         this.pos = 0;
         this.limit = 0;
@@ -47,6 +55,7 @@ public final class OmniBufDecoder {
     }
 
     public OmniBufDecoder(byte[] buf, int offset, int length, UnmarshalOptions options) {
+        this.isPooledSlot = false;
         reset(buf, offset, length, options);
     }
 
@@ -452,7 +461,7 @@ public final class OmniBufDecoder {
                 int end = start + len;
                 if (end <= lim) {
                     this.pos = end;
-                    return len == 0 ? "" : Utf8Validator.decodeStrict(buf, start, len);
+                    return len == 0 ? "" : Utf8Validator.decodeStrictUnchecked(buf, start, len);
                 }
             }
         }
@@ -465,7 +474,225 @@ public final class OmniBufDecoder {
         int len = this.limit - start;
         this.pos = this.limit;
         this.limit = savedLimit;
-        return len == 0 ? "" : Utf8Validator.decodeStrict(buf, start, len);
+        return len == 0 ? "" : Utf8Validator.decodeStrictUnchecked(buf, start, len);
+    }
+
+    public void readUint32Into(IntArrayList dst, int count) {
+        if (count <= 0) {
+            return;
+        }
+        dst.ensureAdditional(count);
+        int[] out = dst.rawArray();
+        int outIdx = dst.size();
+        byte[] b = this.buf;
+        int p = this.pos;
+        int lim = this.limit;
+        for (int i = 0; i < count; i++) {
+            if (p < lim) {
+                int b0 = b[p] & 0xFF;
+                if ((b0 & 1) != 0) {
+                    out[outIdx + i] = b0 >>> 1;
+                    p += 1;
+                    continue;
+                }
+                if ((b0 & 2) != 0 && p + 2 <= lim) {
+                    out[outIdx + i] = Short.toUnsignedInt(PrefixVarint.getShortLE(b, p)) >>> 2;
+                    p += 2;
+                    continue;
+                }
+                if ((b0 & 4) != 0 && p + 4 <= lim) {
+                    out[outIdx + i] = PrefixVarint.getIntLE(b, p) >>> 3;
+                    p += 4;
+                    continue;
+                }
+                if (b0 == 0 && p + 9 <= lim) {
+                    out[outIdx + i] = (int) PrefixVarint.getLongLE(b, p + 1);
+                    p += 9;
+                    continue;
+                }
+            }
+            this.pos = p;
+            out[outIdx + i] = (int) readVarint();
+            p = this.pos;
+        }
+        this.pos = p;
+        dst.setSizeUnchecked(outIdx + count);
+    }
+
+    public void readSint32Into(IntArrayList dst, int count) {
+        if (count <= 0) {
+            return;
+        }
+        dst.ensureAdditional(count);
+        int[] out = dst.rawArray();
+        int outIdx = dst.size();
+        byte[] b = this.buf;
+        int p = this.pos;
+        int lim = this.limit;
+        for (int i = 0; i < count; i++) {
+            long raw;
+            if (p < lim) {
+                int b0 = b[p] & 0xFF;
+                if ((b0 & 1) != 0) {
+                    raw = b0 >>> 1;
+                    p += 1;
+                    out[outIdx + i] = PrefixVarint.decodeZigZag32(raw);
+                    continue;
+                }
+                if ((b0 & 2) != 0 && p + 2 <= lim) {
+                    raw = Short.toUnsignedLong(PrefixVarint.getShortLE(b, p)) >>> 2;
+                    p += 2;
+                    out[outIdx + i] = PrefixVarint.decodeZigZag32(raw);
+                    continue;
+                }
+                if ((b0 & 4) != 0 && p + 4 <= lim) {
+                    raw = Integer.toUnsignedLong(PrefixVarint.getIntLE(b, p)) >>> 3;
+                    p += 4;
+                    out[outIdx + i] = PrefixVarint.decodeZigZag32(raw);
+                    continue;
+                }
+                if (b0 == 0 && p + 9 <= lim) {
+                    raw = PrefixVarint.getLongLE(b, p + 1);
+                    p += 9;
+                    out[outIdx + i] = PrefixVarint.decodeZigZag32(raw);
+                    continue;
+                }
+            }
+            this.pos = p;
+            out[outIdx + i] = PrefixVarint.decodeZigZag32(readVarint());
+            p = this.pos;
+        }
+        this.pos = p;
+        dst.setSizeUnchecked(outIdx + count);
+    }
+
+    public void readFixed32Into(IntArrayList dst, int count) {
+        if (count <= 0) {
+            return;
+        }
+        if ((long) count * 4L > (long) (this.limit - this.pos)) {
+            throw new OmniBufException("omnibuf: truncated fixed32 array");
+        }
+        dst.ensureAdditional(count);
+        int[] out = dst.rawArray();
+        int outIdx = dst.size();
+        byte[] b = this.buf;
+        int p = this.pos;
+        for (int i = 0; i < count; i++) {
+            out[outIdx + i] = PrefixVarint.getIntLE(b, p);
+            p += 4;
+        }
+        this.pos = p;
+        dst.setSizeUnchecked(outIdx + count);
+    }
+
+    public void readUint64Into(LongArrayList dst, int count) {
+        if (count <= 0) {
+            return;
+        }
+        dst.ensureAdditional(count);
+        long[] out = dst.rawArray();
+        int outIdx = dst.size();
+        byte[] b = this.buf;
+        int p = this.pos;
+        int lim = this.limit;
+        for (int i = 0; i < count; i++) {
+            if (p < lim) {
+                int b0 = b[p] & 0xFF;
+                if ((b0 & 1) != 0) {
+                    out[outIdx + i] = b0 >>> 1;
+                    p += 1;
+                    continue;
+                }
+                if ((b0 & 2) != 0 && p + 2 <= lim) {
+                    out[outIdx + i] = Short.toUnsignedLong(PrefixVarint.getShortLE(b, p)) >>> 2;
+                    p += 2;
+                    continue;
+                }
+                if ((b0 & 4) != 0 && p + 4 <= lim) {
+                    out[outIdx + i] = Integer.toUnsignedLong(PrefixVarint.getIntLE(b, p)) >>> 3;
+                    p += 4;
+                    continue;
+                }
+                if (b0 == 0 && p + 9 <= lim) {
+                    out[outIdx + i] = PrefixVarint.getLongLE(b, p + 1);
+                    p += 9;
+                    continue;
+                }
+            }
+            this.pos = p;
+            out[outIdx + i] = readVarint();
+            p = this.pos;
+        }
+        this.pos = p;
+        dst.setSizeUnchecked(outIdx + count);
+    }
+
+    public void readSint64Into(LongArrayList dst, int count) {
+        if (count <= 0) {
+            return;
+        }
+        dst.ensureAdditional(count);
+        long[] out = dst.rawArray();
+        int outIdx = dst.size();
+        byte[] b = this.buf;
+        int p = this.pos;
+        int lim = this.limit;
+        for (int i = 0; i < count; i++) {
+            long raw;
+            if (p < lim) {
+                int b0 = b[p] & 0xFF;
+                if ((b0 & 1) != 0) {
+                    raw = b0 >>> 1;
+                    p += 1;
+                    out[outIdx + i] = PrefixVarint.decodeZigZag64(raw);
+                    continue;
+                }
+                if ((b0 & 2) != 0 && p + 2 <= lim) {
+                    raw = Short.toUnsignedLong(PrefixVarint.getShortLE(b, p)) >>> 2;
+                    p += 2;
+                    out[outIdx + i] = PrefixVarint.decodeZigZag64(raw);
+                    continue;
+                }
+                if ((b0 & 4) != 0 && p + 4 <= lim) {
+                    raw = Integer.toUnsignedLong(PrefixVarint.getIntLE(b, p)) >>> 3;
+                    p += 4;
+                    out[outIdx + i] = PrefixVarint.decodeZigZag64(raw);
+                    continue;
+                }
+                if (b0 == 0 && p + 9 <= lim) {
+                    raw = PrefixVarint.getLongLE(b, p + 1);
+                    p += 9;
+                    out[outIdx + i] = PrefixVarint.decodeZigZag64(raw);
+                    continue;
+                }
+            }
+            this.pos = p;
+            out[outIdx + i] = PrefixVarint.decodeZigZag64(readVarint());
+            p = this.pos;
+        }
+        this.pos = p;
+        dst.setSizeUnchecked(outIdx + count);
+    }
+
+    public void readFixed64Into(LongArrayList dst, int count) {
+        if (count <= 0) {
+            return;
+        }
+        if ((long) count * 8L > (long) (this.limit - this.pos)) {
+            throw new OmniBufException("omnibuf: truncated fixed64 array");
+        }
+        dst.ensureAdditional(count);
+        long[] out = dst.rawArray();
+        int outIdx = dst.size();
+        byte[] b = this.buf;
+        int p = this.pos;
+        for (int i = 0; i < count; i++) {
+            out[outIdx + i] = PrefixVarint.getLongLE(b, p);
+            p += 8;
+        }
+        this.pos = p;
+        dst.setSizeUnchecked(outIdx + count);
     }
 
     public byte[] readBytes() {

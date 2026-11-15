@@ -153,22 +153,22 @@ public final class OpaqueConformanceResponse {
     private void writeDirtyField(OmniBufEncoder enc, int fieldNumber) {
         switch (fieldNumber) {
             case 1 -> {
-                enc.writeString(1, this.dirty_parseError);
+                enc.writeString1BTag((byte) 0x35, this.dirty_parseError);
             }
             case 2 -> {
-                enc.writeString(2, this.dirty_serializeError);
+                enc.writeString1BTag((byte) 0x55, this.dirty_serializeError);
             }
             case 3 -> {
-                enc.writeString(3, this.dirty_runtimeError);
+                enc.writeString1BTag((byte) 0x75, this.dirty_runtimeError);
             }
             case 4 -> {
-                enc.writeString(4, this.dirty_skipped);
+                enc.writeString1BTag((byte) 0x95, this.dirty_skipped);
             }
             case 5 -> {
                 enc.writeBytes(5, this.dirty_omnibufPayload);
             }
             case 6 -> {
-                enc.writeString(6, this.dirty_jsonPayload);
+                enc.writeString1BTag((byte) 0xd5, this.dirty_jsonPayload);
             }
             default -> {}
         }

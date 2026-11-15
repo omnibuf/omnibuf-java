@@ -252,7 +252,7 @@ public final class OpaquePeerUpdate {
                 enc.writeUint32(1, this.dirty_asn);
             }
             case 2 -> {
-                enc.writeString(2, this.dirty_routerId);
+                enc.writeString1BTag((byte) 0x55, this.dirty_routerId);
             }
             case 3 -> {
                 enc.writeBool(3, this.dirty_active);
@@ -276,7 +276,7 @@ public final class OpaquePeerUpdate {
                 {
                     com.omnibuf.pb.bench.OmniBufLocation sub9 = this.dirty_location;
                     if (sub9 != null) {
-                        int subPos = enc.beginSubMsgFast(9);
+                        int subPos = enc.beginSubMsgFast(9, com.omnibuf.pb.bench.LocationOmniBuf.isLargePayload(sub9));
                         com.omnibuf.pb.bench.LocationOmniBuf.encode(enc, sub9, deterministic);
                         enc.endContainerAt(subPos);
                     }
@@ -286,10 +286,11 @@ public final class OpaquePeerUpdate {
                 {
                     List<com.omnibuf.pb.bench.OmniBufNeighbor> list10 = this.dirty_neighbors;
                     int n = list10 == null ? 0 : list10.size();
-                    int arrPos = enc.beginTypedArrayFast(10, WireType.WIRE_SUB_MSG, n);
+                    boolean largeArr = n > 0 && com.omnibuf.pb.bench.NeighborOmniBuf.isLargePayload(list10.get(0));
+                    int arrPos = enc.beginTypedArrayFast(10, WireType.WIRE_SUB_MSG, n, largeArr);
                     for (int i = 0; i < n; i++) {
-                        int elemPos = enc.beginInlineSubMsgFast();
                         com.omnibuf.pb.bench.OmniBufNeighbor elem = list10.get(i);
+                        int elemPos = enc.beginInlineSubMsgFast(com.omnibuf.pb.bench.NeighborOmniBuf.isLargePayload(elem));
                         if (elem != null) {
                             com.omnibuf.pb.bench.NeighborOmniBuf.encode(enc, elem, deterministic);
                         }

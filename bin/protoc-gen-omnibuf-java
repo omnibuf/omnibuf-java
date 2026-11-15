@@ -2,7 +2,8 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-PLUGIN_JAR="${ROOT_DIR}/target/omnibuf-java-0.1.0-protoc-gen.jar"
+VERSION="$(awk -F'[<>]' '/<artifactId>omnibuf-java<\/artifactId>/{found=1; next} found && /<version>/{print $3; exit}' "${ROOT_DIR}/pom.xml")"
+PLUGIN_JAR="${ROOT_DIR}/target/omnibuf-java-${VERSION}-protoc-gen.jar"
 if [[ -f "${PLUGIN_JAR}" ]]; then
   exec java -jar "${PLUGIN_JAR}" "$@"
 fi

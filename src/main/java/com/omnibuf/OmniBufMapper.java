@@ -4,6 +4,8 @@ import com.omnibuf.annotation.OmniBufField;
 import com.omnibuf.annotation.OmniBufMessage;
 import com.omnibuf.annotation.WireKind;
 import com.omnibuf.wire.CodecPool;
+import com.omnibuf.wire.IntArrayList;
+import com.omnibuf.wire.LongArrayList;
 import com.omnibuf.wire.OmniBufDecoder;
 import com.omnibuf.wire.OmniBufEncoder;
 import com.omnibuf.wire.PrefixVarint;
@@ -222,6 +224,9 @@ public final class OmniBufMapper {
         final Class<?> mapKeyClass;
         final Class<?> elemClass;
         final Object[] enumConstants;
+        final byte tag1B;
+        final short tag2B;
+        final boolean canUsePrimitiveList;
         ClassCodec<?> subCodec;
         final AccessorHandles handles;
 
@@ -250,6 +255,14 @@ public final class OmniBufMapper {
             this.mapKeyClass = mapKeyClass;
             this.elemClass = elemClass;
             this.enumConstants = rawType.isEnum() ? rawType.getEnumConstants() : null;
+            this.tag1B = (fieldNumber > 0 && fieldNumber < 8)
+                ? (byte) ((((fieldNumber << 4) | wireType) << 1) | 1)
+                : 0;
+            this.tag2B = (fieldNumber >= 8 && fieldNumber < 1024)
+                ? (short) ((((fieldNumber << 4) | wireType) << 2) | 2)
+                : 0;
+            this.canUsePrimitiveList = category == FieldCategory.LIST
+                && rawType.isAssignableFrom(IntArrayList.class);
             this.handles = handles;
         }
 
@@ -598,6 +611,7 @@ public final class OmniBufMapper {
         boolean hasCollectionComponents;
         boolean cleanFreshConstructor;
         FieldDescriptorSlot[] orderedFields;
+        FieldDescriptorSlot[] largeCandidateSlots;
         FieldDescriptorSlot[] directByNum;
         Map<Integer, FieldDescriptorSlot> overflowByNum;
         volatile SchemaMeta cachedMeta;
@@ -809,6 +823,48 @@ public final class OmniBufMapper {
             }
         }
 
+        boolean isLargeInstance(Object inst, int depthLeft) {
+            if (inst == null || depthLeft < 0 || largeCandidateSlots.length == 0) {
+                return false;
+            }
+            for (FieldDescriptorSlot s : largeCandidateSlots) {
+                switch (s.category) {
+                    case STRING_SCALAR -> {
+                        String str = (String) s.readObject(inst);
+                        if (str != null && str.length() > 16_383) {
+                            return true;
+                        }
+                    }
+                    case BYTES_SCALAR -> {
+                        byte[] b = (byte[]) s.readObject(inst);
+                        if (b != null && b.length > 16_383) {
+                            return true;
+                        }
+                    }
+                    case SUB_MSG -> {
+                        if (depthLeft > 0) {
+                            Object sub = s.readObject(inst);
+                            if (sub != null && s.subCodec.isLargeInstance(sub, depthLeft - 1)) {
+                                return true;
+                            }
+                        }
+                    }
+                    case LIST -> {
+                        if (depthLeft > 0) {
+                            List<?> list = (List<?>) s.readObject(inst);
+                            if (list != null
+                                    && !list.isEmpty()
+                                    && s.subCodec.isLargeInstance(list.get(0), depthLeft - 1)) {
+                                return true;
+                            }
+                        }
+                    }
+                    default -> {}
+                }
+            }
+            return false;
+        }
+
         @SuppressWarnings("unchecked")
         private void encodeField(
                 OmniBufEncoder enc, Object instance, FieldDescriptorSlot slot, boolean deterministic) {
@@ -839,7 +895,13 @@ public final class OmniBufMapper {
                 case DOUBLE_SCALAR -> enc.writeFloat64(fnum, slot.readDouble(instance));
                 case STRING_SCALAR -> {
                     String s = (String) slot.readObject(instance);
-                    enc.writeString(fnum, s == null ? "" : s);
+                    if (fnum < 8) {
+                        enc.writeString1BTag(slot.tag1B, s);
+                    } else if (fnum < 1024) {
+                        enc.writeString2BTag(slot.tag2B, s);
+                    } else {
+                        enc.writeString(fnum, s == null ? "" : s);
+                    }
                 }
                 case BYTES_SCALAR -> {
                     byte[] b = (byte[]) slot.readObject(instance);
@@ -874,7 +936,7 @@ public final class OmniBufMapper {
                 case SUB_MSG -> {
                     Object sub = slot.readObject(instance);
                     if (sub != null) {
-                        int subPos = enc.beginSubMsgFast(fnum);
+                        int subPos = enc.beginSubMsgFast(fnum, slot.subCodec.isLargeInstance(sub, 1));
                         slot.subCodec.encode(enc, sub, deterministic);
                         enc.endContainerAt(subPos);
                     }
@@ -883,10 +945,11 @@ public final class OmniBufMapper {
                     List<Object> list = (List<Object>) slot.readObject(instance);
                     if (slot.elemWireType == WireType.WIRE_SUB_MSG) {
                         int n = list == null ? 0 : list.size();
-                        int arrPos = enc.beginTypedArrayFast(fnum, WireType.WIRE_SUB_MSG, n);
+                        boolean largeArr = n > 0 && slot.subCodec.isLargeInstance(list.get(0), 1);
+                        int arrPos = enc.beginTypedArrayFast(fnum, WireType.WIRE_SUB_MSG, n, largeArr);
                         for (int i = 0; i < n; i++) {
-                            int elemPos = enc.beginInlineSubMsgFast();
                             Object elem = list.get(i);
+                            int elemPos = enc.beginInlineSubMsgFast(slot.subCodec.isLargeInstance(elem, 1));
                             if (elem != null) {
                                 slot.subCodec.encode(enc, elem, deterministic);
                             }
@@ -1356,6 +1419,7 @@ public final class OmniBufMapper {
         dec.endContainer(arrLimit);
     }
 
+    @SuppressWarnings("unchecked")
     private static List<Object> decodeListInto(
             OmniBufDecoder dec, FieldDescriptorSlot slot, List<Object> target, int depth) {
         long arrState = dec.beginArray(slot.elemWireType, depth);
@@ -1368,6 +1432,59 @@ public final class OmniBufMapper {
         if ((long) prevSize + count > dec.maxCollectionElements()) {
             throw new OmniBufException("omnibuf: accumulated WireArray count exceeds maxCollectionElements");
         }
+        int elemWT = slot.elemWireType;
+        if (slot.canUsePrimitiveList) {
+            if (slot.elemClass == Integer.class
+                    && (elemWT == WireType.WIRE_UINT
+                        || elemWT == WireType.WIRE_SINT
+                        || elemWT == WireType.WIRE_FIXED32
+                        || elemWT == WireType.WIRE_SFIXED32)) {
+                IntArrayList il;
+                if ((Object) target instanceof IntArrayList existing) {
+                    il = existing;
+                } else if (prevSize == 0) {
+                    il = new IntArrayList(Math.min(count, 4096));
+                } else {
+                    il = new IntArrayList(prevSize + Math.min(count, 4096));
+                    for (int i = 0; i < prevSize; i++) {
+                        Object v = target.get(i);
+                        il.addInt(v instanceof Number nv ? nv.intValue() : 0);
+                    }
+                }
+                switch (elemWT) {
+                    case WireType.WIRE_UINT -> dec.readUint32Into(il, count);
+                    case WireType.WIRE_SINT -> dec.readSint32Into(il, count);
+                    default -> dec.readFixed32Into(il, count);
+                }
+                dec.endContainer(arrLimit);
+                return (List<Object>) (List<?>) il;
+            }
+            if (slot.elemClass == Long.class
+                    && (elemWT == WireType.WIRE_UINT
+                        || elemWT == WireType.WIRE_SINT
+                        || elemWT == WireType.WIRE_FIXED64
+                        || elemWT == WireType.WIRE_SFIXED64)) {
+                LongArrayList ll;
+                if ((Object) target instanceof LongArrayList existing) {
+                    ll = existing;
+                } else if (prevSize == 0) {
+                    ll = new LongArrayList(Math.min(count, 4096));
+                } else {
+                    ll = new LongArrayList(prevSize + Math.min(count, 4096));
+                    for (int i = 0; i < prevSize; i++) {
+                        Object v = target.get(i);
+                        ll.addLong(v instanceof Number nv ? nv.longValue() : 0L);
+                    }
+                }
+                switch (elemWT) {
+                    case WireType.WIRE_UINT -> dec.readUint64Into(ll, count);
+                    case WireType.WIRE_SINT -> dec.readSint64Into(ll, count);
+                    default -> dec.readFixed64Into(ll, count);
+                }
+                dec.endContainer(arrLimit);
+                return (List<Object>) (List<?>) ll;
+            }
+        }
         List<Object> list = target;
         if (list == null) {
             list = new ArrayList<>(Math.min(count, 4096));
@@ -1378,14 +1495,9 @@ public final class OmniBufMapper {
         } else if (list.isEmpty() && count > 10 && count <= 4096) {
             ((ArrayList<?>) list).ensureCapacity(count);
         }
-        int elemWT = slot.elemWireType;
         if (elemWT == WireType.WIRE_STRING) {
             for (int i = 0; i < count; i++) {
                 list.add(dec.readString());
-            }
-        } else if (elemWT == WireType.WIRE_UINT && slot.elemClass == Integer.class) {
-            for (int i = 0; i < count; i++) {
-                list.add(dec.readUint32());
             }
         } else if (elemWT == WireType.WIRE_SUB_MSG) {
             ClassCodec<?> subCodec = slot.subCodec;
@@ -1584,6 +1696,16 @@ public final class OmniBufMapper {
             }
 
             codec.orderedFields = slots.toArray(FieldDescriptorSlot[]::new);
+            List<FieldDescriptorSlot> largeCands = new ArrayList<>();
+            for (FieldDescriptorSlot slot : codec.orderedFields) {
+                if (slot.category == FieldCategory.STRING_SCALAR
+                        || slot.category == FieldCategory.BYTES_SCALAR
+                        || slot.category == FieldCategory.SUB_MSG
+                        || (slot.category == FieldCategory.LIST && slot.elemWireType == WireType.WIRE_SUB_MSG)) {
+                    largeCands.add(slot);
+                }
+            }
+            codec.largeCandidateSlots = largeCands.toArray(FieldDescriptorSlot[]::new);
             codec.directByNum = new FieldDescriptorSlot[MAX_DIRECT_FIELD_SLOT + 1];
             for (FieldDescriptorSlot slot : codec.orderedFields) {
                 if (slot.fieldNumber <= MAX_DIRECT_FIELD_SLOT) {

@@ -5,24 +5,29 @@ import com.omnibuf.UnmarshalOptions;
 /**
  * Re-entrant thread-local pool for {@link OmniBufEncoder} and {@link OmniBufDecoder} instances.
  *
- * <p>Uses {@code get() + set(null)} on checkout and {@code set(instance)} on release so nested or
- * re-entrant codec invocations on the same thread never corrupt an active buffer or cursor.
- * Oversized encoder buffers exceeding {@link #MAX_POOLED_ENCODER_CAPACITY} are trimmed on release.
+ * <p>Uses a lightweight per-thread {@link Slot} with {@code pooledInUse} flags on the pooled
+ * instances so top-level checkout requires a single {@link ThreadLocal#get()} with zero
+ * {@link ThreadLocal#set(Object)} table mutations, and release requires zero thread-local lookups.
+ * Re-entrant calls on the same thread transparently allocate a temporary non-pooled instance.
  */
 public final class CodecPool {
 
     public static final int INITIAL_ENCODER_CAPACITY = 512;
     public static final int MAX_POOLED_ENCODER_CAPACITY = 65_536;
 
-    private static final ThreadLocal<OmniBufEncoder> ENCODER_SLOT = new ThreadLocal<>();
-    private static final ThreadLocal<OmniBufDecoder> DECODER_SLOT = new ThreadLocal<>();
+    private static final class Slot {
+        final OmniBufEncoder encoder = new OmniBufEncoder(INITIAL_ENCODER_CAPACITY, true);
+        final OmniBufDecoder decoder = new OmniBufDecoder(true);
+    }
+
+    private static final ThreadLocal<Slot> SLOT = ThreadLocal.withInitial(Slot::new);
 
     private CodecPool() {}
 
     public static OmniBufEncoder acquireEncoder() {
-        OmniBufEncoder enc = ENCODER_SLOT.get();
-        if (enc != null) {
-            ENCODER_SLOT.set(null);
+        OmniBufEncoder enc = SLOT.get().encoder;
+        if (!enc.pooledInUse) {
+            enc.pooledInUse = true;
             enc.reset();
             return enc;
         }
@@ -30,9 +35,9 @@ public final class CodecPool {
     }
 
     public static void releaseEncoder(OmniBufEncoder enc) {
-        if (enc != null) {
+        if (enc != null && enc.isPooledSlot) {
             enc.resetAndTrim(MAX_POOLED_ENCODER_CAPACITY, INITIAL_ENCODER_CAPACITY);
-            ENCODER_SLOT.set(enc);
+            enc.pooledInUse = false;
         }
     }
 
@@ -42,9 +47,11 @@ public final class CodecPool {
 
     public static OmniBufDecoder acquireDecoder(
             byte[] buf, int offset, int length, UnmarshalOptions options) {
-        OmniBufDecoder dec = DECODER_SLOT.get();
-        if (dec != null) {
-            DECODER_SLOT.set(null);
+        OmniBufDecoder dec = SLOT.get().decoder;
+        boolean pooled = false;
+        if (!dec.pooledInUse) {
+            dec.pooledInUse = true;
+            pooled = true;
         } else {
             dec = new OmniBufDecoder();
         }
@@ -53,15 +60,17 @@ public final class CodecPool {
             return dec;
         } catch (RuntimeException e) {
             dec.clearBuffer();
-            DECODER_SLOT.set(dec);
+            if (pooled) {
+                dec.pooledInUse = false;
+            }
             throw e;
         }
     }
 
     public static void releaseDecoder(OmniBufDecoder dec) {
-        if (dec != null) {
+        if (dec != null && dec.isPooledSlot) {
             dec.clearBuffer();
-            DECODER_SLOT.set(dec);
+            dec.pooledInUse = false;
         }
     }
 }

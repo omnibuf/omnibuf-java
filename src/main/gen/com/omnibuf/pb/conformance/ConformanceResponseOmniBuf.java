@@ -122,13 +122,32 @@ public final class ConformanceResponseOmniBuf {
         }
     }
 
+    public static boolean isLargePayload(OmniBufConformanceResponse msg) {
+        return isLargePayload(msg, 2);
+    }
+
+    public static boolean isLargePayload(OmniBufConformanceResponse msg, int depthLeft) {
+        if (msg == null || depthLeft < 0) {
+            return false;
+        }
+        if (((msg.parseError == null ? 0 : msg.parseError.length())
+                | (msg.serializeError == null ? 0 : msg.serializeError.length())
+                | (msg.runtimeError == null ? 0 : msg.runtimeError.length())
+                | (msg.skipped == null ? 0 : msg.skipped.length())
+                | (msg.omnibufPayload == null ? 0 : msg.omnibufPayload.length)
+                | (msg.jsonPayload == null ? 0 : msg.jsonPayload.length())) > 16_383) {
+            return true;
+        }
+        return false;
+    }
+
     public static void encode(OmniBufEncoder enc, OmniBufConformanceResponse msg, boolean deterministic) {
-        enc.writeString(1, msg.parseError);
-        enc.writeString(2, msg.serializeError);
-        enc.writeString(3, msg.runtimeError);
-        enc.writeString(4, msg.skipped);
+        enc.writeString1BTag((byte) 0x35, msg.parseError);
+        enc.writeString1BTag((byte) 0x55, msg.serializeError);
+        enc.writeString1BTag((byte) 0x75, msg.runtimeError);
+        enc.writeString1BTag((byte) 0x95, msg.skipped);
         enc.writeBytes(5, msg.omnibufPayload);
-        enc.writeString(6, msg.jsonPayload);
+        enc.writeString1BTag((byte) 0xd5, msg.jsonPayload);
     }
 
     public static OmniBufConformanceResponse unmarshal(byte[] data) {

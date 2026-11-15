@@ -10,6 +10,7 @@ import com.omnibuf.UnmarshalOptions;
 import com.omnibuf.wire.CodecPool;
 import com.omnibuf.wire.OmniBufDecoder;
 import com.omnibuf.wire.OmniBufEncoder;
+import com.omnibuf.wire.PrefixVarint;
 import com.omnibuf.wire.WireType;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
@@ -122,13 +123,39 @@ public final class LocationOmniBuf {
         }
     }
 
+    public static boolean isLargePayload(OmniBufLocation msg) {
+        return isLargePayload(msg, 2);
+    }
+
+    public static boolean isLargePayload(OmniBufLocation msg, int depthLeft) {
+        if (msg == null || depthLeft < 0) {
+            return false;
+        }
+        if (((msg.region == null ? 0 : msg.region.length())
+                | (msg.datacenter == null ? 0 : msg.datacenter.length())
+                | (msg.city == null ? 0 : msg.city.length())) > 16_383) {
+            return true;
+        }
+        return false;
+    }
+
     public static void encode(OmniBufEncoder enc, OmniBufLocation msg, boolean deterministic) {
-        enc.writeString(1, msg.region);
-        enc.writeString(2, msg.datacenter);
-        enc.writeString(3, msg.city);
-        enc.writeUint32(4, msg.rack);
-        enc.writeFloat32(5, msg.latitude);
-        enc.writeFloat32(6, msg.longitude);
+        enc.writeString1BTag((byte) 0x35, msg.region);
+        enc.writeString1BTag((byte) 0x55, msg.datacenter);
+        enc.writeString1BTag((byte) 0x75, msg.city);
+        {
+            byte[] dst = enc.ensureFree(20);
+            int p = enc.rawPosition();
+            dst[p++] = (byte) 0x81;
+            p = PrefixVarint.write(dst, p, Integer.toUnsignedLong(msg.rack));
+            dst[p++] = (byte) 0xb1;
+            PrefixVarint.setIntLE(dst, p, Float.floatToRawIntBits(msg.latitude));
+            p += 4;
+            dst[p++] = (byte) 0xd1;
+            PrefixVarint.setIntLE(dst, p, Float.floatToRawIntBits(msg.longitude));
+            p += 4;
+            enc.setRawPosition(p);
+        }
     }
 
     public static OmniBufLocation unmarshal(byte[] data) {

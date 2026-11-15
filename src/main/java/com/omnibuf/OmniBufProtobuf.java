@@ -296,10 +296,15 @@ public final class OmniBufProtobuf {
                 List<Object> list = (List<Object>) val;
                 int count = list.size();
                 if (fd.getType() == FieldDescriptor.Type.MESSAGE) {
-                    int arrPos = enc.beginTypedArrayFast(fnum, WireType.WIRE_SUB_MSG, count);
+                    boolean largeArr = count > 0
+                        && list.get(0) instanceof Message firstMsg
+                        && firstMsg.getSerializedSize() > 16_383;
+                    int arrPos = enc.beginTypedArrayFast(fnum, WireType.WIRE_SUB_MSG, count, largeArr);
                     for (int j = 0; j < count; j++) {
-                        int elemPos = enc.beginInlineSubMsgFast();
-                        if (list.get(j) instanceof MessageOrBuilder sub) {
+                        Object rawElem = list.get(j);
+                        boolean largeElem = rawElem instanceof Message em && em.getSerializedSize() > 16_383;
+                        int elemPos = enc.beginInlineSubMsgFast(largeElem);
+                        if (rawElem instanceof MessageOrBuilder sub) {
                             encodeMessage(enc, sub, deterministic);
                         }
                         enc.endContainerAt(elemPos);
@@ -341,7 +346,8 @@ public final class OmniBufProtobuf {
             case BYTES -> enc.writeBytes(fnum, val instanceof ByteString bs ? bs.toByteArray() : EMPTY_BYTES);
             case MESSAGE -> {
                 if (val instanceof MessageOrBuilder sub) {
-                    int subPos = enc.beginSubMsgFast(fnum);
+                    boolean largeSub = sub instanceof Message sm && sm.getSerializedSize() > 16_383;
+                    int subPos = enc.beginSubMsgFast(fnum, largeSub);
                     encodeMessage(enc, sub, deterministic);
                     enc.endContainerAt(subPos);
                 }

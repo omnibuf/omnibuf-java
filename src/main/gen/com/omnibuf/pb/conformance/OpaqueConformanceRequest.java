@@ -195,10 +195,10 @@ public final class OpaqueConformanceRequest {
     private void writeDirtyField(OmniBufEncoder enc, int fieldNumber) {
         switch (fieldNumber) {
             case 1 -> {
-                enc.writeString(1, this.dirty_testName);
+                enc.writeString1BTag((byte) 0x35, this.dirty_testName);
             }
             case 2 -> {
-                enc.writeString(2, this.dirty_messageType);
+                enc.writeString1BTag((byte) 0x55, this.dirty_messageType);
             }
             case 3 -> {
                 enc.writeSint32(3, this.dirty_tier);
@@ -210,7 +210,7 @@ public final class OpaqueConformanceRequest {
                 enc.writeBytes(5, this.dirty_omnibufPayload);
             }
             case 6 -> {
-                enc.writeString(6, this.dirty_jsonPayload);
+                enc.writeString1BTag((byte) 0xd5, this.dirty_jsonPayload);
             }
             case 7 -> {
                 enc.writeBool(7, this.dirty_selfDescribing);

@@ -10,6 +10,7 @@ import com.omnibuf.UnmarshalOptions;
 import com.omnibuf.wire.CodecPool;
 import com.omnibuf.wire.OmniBufDecoder;
 import com.omnibuf.wire.OmniBufEncoder;
+import com.omnibuf.wire.PrefixVarint;
 import com.omnibuf.wire.WireType;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
@@ -172,18 +173,51 @@ public final class TestAllTypesOmniBuf {
         }
     }
 
+    public static boolean isLargePayload(OmniBufTestAllTypes msg) {
+        return isLargePayload(msg, 2);
+    }
+
+    public static boolean isLargePayload(OmniBufTestAllTypes msg, int depthLeft) {
+        if (msg == null || depthLeft < 0) {
+            return false;
+        }
+        if (((msg.f6String == null ? 0 : msg.f6String.length())
+                | (msg.f7Bytes == null ? 0 : msg.f7Bytes.length)
+                | (msg.f20OverflowStr == null ? 0 : msg.f20OverflowStr.length())) > 16_383) {
+            return true;
+        }
+        if (depthLeft > 0) {
+            if (msg.f8SubMsg != null && com.omnibuf.pb.conformance.AllTypesSubMsgOmniBuf.isLargePayload(msg.f8SubMsg, depthLeft - 1)) {
+                return true;
+            }
+            if (msg.f11SubMsgArr != null && !msg.f11SubMsgArr.isEmpty() && com.omnibuf.pb.conformance.AllTypesSubMsgOmniBuf.isLargePayload(msg.f11SubMsgArr.get(0), depthLeft - 1)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
     public static void encode(OmniBufEncoder enc, OmniBufTestAllTypes msg, boolean deterministic) {
-        enc.writeUint32(1, msg.f1Uint32);
-        enc.writeUint(2, msg.f2Uint64);
-        enc.writeSint32(3, msg.f3Sint32);
-        enc.writeSint(4, msg.f4Sint64);
-        enc.writeBool(5, msg.f5Bool);
-        enc.writeString(6, msg.f6String);
+        {
+            byte[] dst = enc.ensureFree(41);
+            int p = enc.rawPosition();
+            dst[p++] = (byte) 0x21;
+            p = PrefixVarint.write(dst, p, Integer.toUnsignedLong(msg.f1Uint32));
+            dst[p++] = (byte) 0x41;
+            p = PrefixVarint.write(dst, p, msg.f2Uint64);
+            dst[p++] = (byte) 0x63;
+            p = PrefixVarint.write(dst, p, PrefixVarint.encodeZigZag32(msg.f3Sint32));
+            dst[p++] = (byte) 0x83;
+            p = PrefixVarint.write(dst, p, PrefixVarint.encodeZigZag64(msg.f4Sint64));
+            dst[p++] = msg.f5Bool ? (byte) 0xa7 : (byte) 0xa5;
+            enc.setRawPosition(p);
+        }
+        enc.writeString1BTag((byte) 0xd5, msg.f6String);
         enc.writeBytes(7, msg.f7Bytes);
         {
             com.omnibuf.pb.conformance.OmniBufAllTypesSubMsg sub8 = msg.f8SubMsg;
             if (sub8 != null) {
-                int subPos = enc.beginSubMsgFast(8);
+                int subPos = enc.beginSubMsgFast(8, com.omnibuf.pb.conformance.AllTypesSubMsgOmniBuf.isLargePayload(sub8));
                 com.omnibuf.pb.conformance.AllTypesSubMsgOmniBuf.encode(enc, sub8, deterministic);
                 enc.endContainerAt(subPos);
             }
@@ -193,10 +227,11 @@ public final class TestAllTypesOmniBuf {
         {
             List<com.omnibuf.pb.conformance.OmniBufAllTypesSubMsg> list11 = msg.f11SubMsgArr;
             int n = list11 == null ? 0 : list11.size();
-            int arrPos = enc.beginTypedArrayFast(11, WireType.WIRE_SUB_MSG, n);
+            boolean largeArr = n > 0 && com.omnibuf.pb.conformance.AllTypesSubMsgOmniBuf.isLargePayload(list11.get(0));
+            int arrPos = enc.beginTypedArrayFast(11, WireType.WIRE_SUB_MSG, n, largeArr);
             for (int i = 0; i < n; i++) {
-                int elemPos = enc.beginInlineSubMsgFast();
                 com.omnibuf.pb.conformance.OmniBufAllTypesSubMsg elem = list11.get(i);
+                int elemPos = enc.beginInlineSubMsgFast(com.omnibuf.pb.conformance.AllTypesSubMsgOmniBuf.isLargePayload(elem));
                 if (elem != null) {
                     com.omnibuf.pb.conformance.AllTypesSubMsgOmniBuf.encode(enc, elem, deterministic);
                 }
@@ -205,11 +240,28 @@ public final class TestAllTypesOmniBuf {
             enc.endContainerAt(arrPos);
         }
         enc.writeMapStringUint64(12, msg.f12MapStrUint, deterministic);
-        enc.writeFloat32(13, msg.f13Float32);
-        enc.writeFloat64(14, msg.f14Float64);
-        enc.writeFixed32(15, msg.f15Fixed32);
-        enc.writeFixed64(16, msg.f16Fixed64);
-        enc.writeString(20, msg.f20OverflowStr);
+        {
+            byte[] dst = enc.ensureFree(32);
+            int p = enc.rawPosition();
+            PrefixVarint.setShortLE(dst, p, (short) 0x362);
+            p += 2;
+            PrefixVarint.setIntLE(dst, p, Float.floatToRawIntBits(msg.f13Float32));
+            p += 4;
+            PrefixVarint.setShortLE(dst, p, (short) 0x3a6);
+            p += 2;
+            PrefixVarint.setLongLE(dst, p, Double.doubleToRawLongBits(msg.f14Float64));
+            p += 8;
+            PrefixVarint.setShortLE(dst, p, (short) 0x3d2);
+            p += 2;
+            PrefixVarint.setIntLE(dst, p, msg.f15Fixed32);
+            p += 4;
+            PrefixVarint.setShortLE(dst, p, (short) 0x416);
+            p += 2;
+            PrefixVarint.setLongLE(dst, p, msg.f16Fixed64);
+            p += 8;
+            enc.setRawPosition(p);
+        }
+        enc.writeString2BTag((short) 0x52a, msg.f20OverflowStr);
     }
 
     public static OmniBufTestAllTypes unmarshal(byte[] data) {
@@ -364,9 +416,7 @@ public final class TestAllTypesOmniBuf {
                             if ((long) list.size() + count > dec.maxCollectionElements()) {
                                 throw new OmniBufException("omnibuf: accumulated WireArray count exceeds maxCollectionElements");
                             }
-                            for (int i = 0; i < count; i++) {
-                                list.add(dec.readUint32());
-                            }
+                            dec.readUint32Into(list, count);
                             dec.endContainer(arrLimit);
                         }
                     }
@@ -402,7 +452,7 @@ public final class TestAllTypesOmniBuf {
                         if (mapState >= 0L) {
                             int count = (int) mapState;
                             int mapLimit = (int) (mapState >>> 32);
-                            Map<String, Long> map = target.ensureF12MapStrUint(count);
+                            var map = target.ensureF12MapStrUint(count);
                             int maxElems = dec.maxCollectionElements();
                             for (int i = 0; i < count; i++) {
                                 String k = dec.readString();
