@@ -139,3 +139,11 @@ just ci           # Run lint, build, test, and conformance
 ## License
 
 MIT
+
+## Reflection and modules
+
+The annotated mapper accesses constructors and annotated fields through private
+method-handle lookup and reflection. Named Java modules must open the message
+package to the OmniBuf module. Generated codecs avoid this reflective access
+requirement. Treat message classes as trusted application code: their
+constructors and accessors can execute during serialization.
