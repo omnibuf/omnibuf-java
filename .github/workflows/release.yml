@@ -1,0 +1,84 @@
+name: Release & Publish to Maven Central
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    name: Build, Verify, Sign & Publish to Maven Central
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Install tools via mise
+        uses: jdx/mise-action@v5
+        with:
+          install: true
+
+      - name: Install conformance-runner
+        run: |
+          mise use -g go@1.27
+          GOBIN="$HOME/.local/bin" mise exec -- go install github.com/omnibuf/omnibuf-go/cmd/conformance-runner@71dad83aadd7dc65401d662521d34cfaeb1011ab
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Sync pom.xml version with release tag
+        run: |
+          RAW_TAG="${GITHUB_REF_NAME:-}"
+          VERSION="${RAW_TAG#v}"
+          if [[ -n "$VERSION" && "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+ ]]; then
+            mvn -B versions:set -DnewVersion="${VERSION}" -DgenerateBackupPoms=false
+          fi
+
+      - name: Run full CI suite
+        run: just ci
+
+      - name: Configure GPG signing key and Maven Central credentials
+        env:
+          MAVEN_CENTRAL_USERNAME: ${{ secrets.MAVEN_CENTRAL_USERNAME }}
+          MAVEN_CENTRAL_TOKEN: ${{ secrets.MAVEN_CENTRAL_TOKEN }}
+          MAVEN_GPG_PRIVATE_KEY: ${{ secrets.MAVEN_GPG_PRIVATE_KEY }}
+          MAVEN_GPG_PASSPHRASE: ${{ secrets.MAVEN_GPG_PASSPHRASE }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$HOME/.gnupg" "$HOME/.m2"
+          chmod 700 "$HOME/.gnupg"
+          printf "allow-loopback-pinentry\n" >> "$HOME/.gnupg/gpg-agent.conf"
+          gpgconf --kill gpg-agent || true
+          printf "%s\n" "$MAVEN_GPG_PRIVATE_KEY" | gpg --batch --import
+          FPR=$(gpg --list-secret-keys --with-colons | awk -F: '/^fpr:/ {print $10; exit}')
+          echo "GPG_KEY_FPR=${FPR}" >> "$GITHUB_ENV"
+
+          python3 - <<'PY'
+          import html, os, pathlib
+          u = html.escape(os.environ["MAVEN_CENTRAL_USERNAME"])
+          p = html.escape(os.environ["MAVEN_CENTRAL_TOKEN"])
+          settings = f"""<settings xmlns="http://maven.apache.org/SETTINGS/1.0.0">
+            <servers>
+              <server>
+                <id>central</id>
+                <username>{u}</username>
+                <password>{p}</password>
+              </server>
+            </servers>
+          </settings>
+          """
+          dst = pathlib.Path.home() / ".m2" / "settings.xml"
+          dst.write_text(settings)
+          dst.chmod(0o600)
+          PY
+
+      - name: Deploy signed artifacts to Sonatype Central Portal
+        env:
+          MAVEN_GPG_PASSPHRASE: ${{ secrets.MAVEN_GPG_PASSPHRASE }}
+        run: |
+          mvn -B -Prelease deploy -DskipTests -Dgpg.keyname="${GPG_KEY_FPR}"
