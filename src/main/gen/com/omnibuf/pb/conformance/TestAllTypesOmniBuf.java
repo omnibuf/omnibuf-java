@@ -4,12 +4,9 @@
 package com.omnibuf.pb.conformance;
 
 import com.omnibuf.MarshalOptions;
-import com.omnibuf.OmniBufException;
 import com.omnibuf.SchemaMeta;
 import com.omnibuf.UnmarshalOptions;
 import com.omnibuf.wire.CodecPool;
-import com.omnibuf.wire.OmniBufDecoder;
-import com.omnibuf.wire.OmniBufEncoder;
 import com.omnibuf.wire.PrefixVarint;
 import com.omnibuf.wire.WireType;
 import java.util.HashSet;
@@ -149,10 +146,10 @@ public final class TestAllTypesOmniBuf {
 
     public static byte[] marshal(OmniBufTestAllTypes msg, MarshalOptions options) {
         if (msg == null) {
-            throw new OmniBufException("omnibuf: cannot marshal null TestAllTypes");
+            throw new com.omnibuf.OmniBufException("omnibuf: cannot marshal null TestAllTypes");
         }
         MarshalOptions opts = options == null ? MarshalOptions.DEFAULT : options;
-        OmniBufEncoder enc = CodecPool.acquireEncoder();
+        com.omnibuf.wire.OmniBufEncoder enc = CodecPool.acquireEncoder();
         try {
             if (opts.selfDescribing()) {
                 if (isCyclicSchema()) {
@@ -190,14 +187,18 @@ public final class TestAllTypesOmniBuf {
             if (msg.f8SubMsg != null && com.omnibuf.pb.conformance.AllTypesSubMsgOmniBuf.isLargePayload(msg.f8SubMsg, depthLeft - 1)) {
                 return true;
             }
-            if (msg.f11SubMsgArr != null && !msg.f11SubMsgArr.isEmpty() && com.omnibuf.pb.conformance.AllTypesSubMsgOmniBuf.isLargePayload(msg.f11SubMsgArr.get(0), depthLeft - 1)) {
-                return true;
+            if (msg.f11SubMsgArr != null) {
+                for (int i = 0, n = msg.f11SubMsgArr.size(); i < n; i++) {
+                    if (com.omnibuf.pb.conformance.AllTypesSubMsgOmniBuf.isLargePayload(msg.f11SubMsgArr.get(i), depthLeft - 1)) {
+                        return true;
+                    }
+                }
             }
         }
         return false;
     }
 
-    public static void encode(OmniBufEncoder enc, OmniBufTestAllTypes msg, boolean deterministic) {
+    public static void encode(com.omnibuf.wire.OmniBufEncoder enc, OmniBufTestAllTypes msg, boolean deterministic) {
         {
             byte[] dst = enc.ensureFree(41);
             int p = enc.rawPosition();
@@ -227,7 +228,13 @@ public final class TestAllTypesOmniBuf {
         {
             List<com.omnibuf.pb.conformance.OmniBufAllTypesSubMsg> list11 = msg.f11SubMsgArr;
             int n = list11 == null ? 0 : list11.size();
-            boolean largeArr = n > 0 && com.omnibuf.pb.conformance.AllTypesSubMsgOmniBuf.isLargePayload(list11.get(0));
+            boolean largeArr = false;
+            for (int i = 0; i < n; i++) {
+                if (com.omnibuf.pb.conformance.AllTypesSubMsgOmniBuf.isLargePayload(list11.get(i))) {
+                    largeArr = true;
+                    break;
+                }
+            }
             int arrPos = enc.beginTypedArrayFast(11, WireType.WIRE_SUB_MSG, n, largeArr);
             for (int i = 0; i < n; i++) {
                 com.omnibuf.pb.conformance.OmniBufAllTypesSubMsg elem = list11.get(i);
@@ -270,9 +277,9 @@ public final class TestAllTypesOmniBuf {
 
     public static OmniBufTestAllTypes unmarshal(byte[] data, UnmarshalOptions options) {
         if (data == null) {
-            throw new OmniBufException("omnibuf: null packet buffer");
+            throw new com.omnibuf.OmniBufException("omnibuf: null packet buffer");
         }
-        OmniBufDecoder dec = CodecPool.acquireDecoder(data, 0, data.length, options);
+        com.omnibuf.wire.OmniBufDecoder dec = CodecPool.acquireDecoder(data, 0, data.length, options);
         try {
             OmniBufTestAllTypes out = new OmniBufTestAllTypes();
             decodeFrom(dec, out, 0);
@@ -288,12 +295,12 @@ public final class TestAllTypesOmniBuf {
 
     public static void unmarshal(byte[] data, OmniBufTestAllTypes target, UnmarshalOptions options) {
         if (data == null) {
-            throw new OmniBufException("omnibuf: null packet buffer");
+            throw new com.omnibuf.OmniBufException("omnibuf: null packet buffer");
         }
         if (target == null) {
-            throw new OmniBufException("omnibuf: null target instance");
+            throw new com.omnibuf.OmniBufException("omnibuf: null target instance");
         }
-        OmniBufDecoder dec = CodecPool.acquireDecoder(data, 0, data.length, options);
+        com.omnibuf.wire.OmniBufDecoder dec = CodecPool.acquireDecoder(data, 0, data.length, options);
         try {
             target.reset();
             decodeFrom(dec, target, 0);
@@ -304,7 +311,7 @@ public final class TestAllTypesOmniBuf {
 
     public static void decodeInto(
             byte[] data, int offset, int length, OmniBufTestAllTypes target, int depth) {
-        OmniBufDecoder dec = CodecPool.acquireDecoder(data, offset, length);
+        com.omnibuf.wire.OmniBufDecoder dec = CodecPool.acquireDecoder(data, offset, length);
         try {
             decodeFrom(dec, target, depth);
         } finally {
@@ -312,9 +319,9 @@ public final class TestAllTypesOmniBuf {
         }
     }
 
-    public static void decodeFrom(OmniBufDecoder dec, OmniBufTestAllTypes target, int depth) {
+    public static void decodeFrom(com.omnibuf.wire.OmniBufDecoder dec, OmniBufTestAllTypes target, int depth) {
         if (depth > dec.maxNestingDepth()) {
-            throw new OmniBufException("omnibuf: nesting depth exceeds MaxNestingDepth");
+            throw new com.omnibuf.OmniBufException("omnibuf: nesting depth exceeds MaxNestingDepth");
         }
         while (dec.hasRemaining()) {
             long tag = dec.readTag();
@@ -395,7 +402,7 @@ public final class TestAllTypesOmniBuf {
                             int arrLimit = (int) (arrState >>> 32);
                             var list = target.ensureF9StringArr(count);
                             if ((long) list.size() + count > dec.maxCollectionElements()) {
-                                throw new OmniBufException("omnibuf: accumulated WireArray count exceeds maxCollectionElements");
+                                throw new com.omnibuf.OmniBufException("omnibuf: accumulated WireArray count exceeds maxCollectionElements");
                             }
                             for (int i = 0; i < count; i++) {
                                 list.add(dec.readString());
@@ -414,7 +421,7 @@ public final class TestAllTypesOmniBuf {
                             int arrLimit = (int) (arrState >>> 32);
                             var list = target.ensureF10Uint32Arr(count);
                             if ((long) list.size() + count > dec.maxCollectionElements()) {
-                                throw new OmniBufException("omnibuf: accumulated WireArray count exceeds maxCollectionElements");
+                                throw new com.omnibuf.OmniBufException("omnibuf: accumulated WireArray count exceeds maxCollectionElements");
                             }
                             dec.readUint32Into(list, count);
                             dec.endContainer(arrLimit);
@@ -431,7 +438,7 @@ public final class TestAllTypesOmniBuf {
                             int arrLimit = (int) (arrState >>> 32);
                             var list = target.ensureF11SubMsgArr(count);
                             if ((long) list.size() + count > dec.maxCollectionElements()) {
-                                throw new OmniBufException("omnibuf: accumulated WireArray count exceeds maxCollectionElements");
+                                throw new com.omnibuf.OmniBufException("omnibuf: accumulated WireArray count exceeds maxCollectionElements");
                             }
                             for (int i = 0; i < count; i++) {
                                 int elemLimit = dec.readLengthPrefixedLimit(0);
@@ -458,7 +465,7 @@ public final class TestAllTypesOmniBuf {
                                 String k = dec.readString();
                                 Long v = dec.readUint64();
                                 if (!map.containsKey(k) && map.size() >= maxElems) {
-                                    throw new OmniBufException("omnibuf: accumulated WireMap count exceeds maxCollectionElements");
+                                    throw new com.omnibuf.OmniBufException("omnibuf: accumulated WireMap count exceeds maxCollectionElements");
                                 }
                                 map.put(k, v);
                             }

@@ -27,7 +27,10 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.SortedMap;
+import java.util.TreeMap;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.ConcurrentMap;
 
 /**
  * High-performance exact-{@link MethodHandle} codec for Java classes and Java 21 {@code record}
@@ -227,6 +230,9 @@ public final class OmniBufMapper {
         final byte tag1B;
         final short tag2B;
         final boolean canUsePrimitiveList;
+        final boolean canUseArrayList;
+        final boolean canUseLinkedHashMap;
+        final MethodHandle customCollectionCtor;
         ClassCodec<?> subCodec;
         final AccessorHandles handles;
 
@@ -263,7 +269,74 @@ public final class OmniBufMapper {
                 : 0;
             this.canUsePrimitiveList = category == FieldCategory.LIST
                 && rawType.isAssignableFrom(IntArrayList.class);
+            this.canUseArrayList = category == FieldCategory.LIST
+                && rawType.isAssignableFrom(ArrayList.class);
+            this.canUseLinkedHashMap = category == FieldCategory.MAP
+                && rawType.isAssignableFrom(LinkedHashMap.class);
+            if (category == FieldCategory.LIST && !this.canUseArrayList) {
+                this.customCollectionCtor = resolveCustomCollectionCtor(rawType, schemaName);
+            } else if (category == FieldCategory.MAP && !this.canUseLinkedHashMap) {
+                this.customCollectionCtor = resolveCustomCollectionCtor(rawType, schemaName);
+            } else {
+                this.customCollectionCtor = null;
+            }
             this.handles = handles;
+        }
+
+        private static MethodHandle resolveCustomCollectionCtor(Class<?> rawType, String schemaName) {
+            try {
+                Class<?> impl = rawType;
+                if (rawType.isInterface() || Modifier.isAbstract(rawType.getModifiers())) {
+                    if (rawType.isAssignableFrom(TreeMap.class) && SortedMap.class.isAssignableFrom(rawType)) {
+                        impl = TreeMap.class;
+                    } else if (rawType.isAssignableFrom(ConcurrentHashMap.class)
+                            && ConcurrentMap.class.isAssignableFrom(rawType)) {
+                        impl = ConcurrentHashMap.class;
+                    } else {
+                        throw new OmniBufException(
+                            "omnibuf: cannot instantiate abstract collection type "
+                                + rawType.getName() + " on field " + schemaName
+                        );
+                    }
+                }
+                Constructor<?> ctor = impl.getDeclaredConstructor();
+                ctor.setAccessible(true);
+                return MethodHandles.lookup()
+                    .unreflectConstructor(ctor)
+                    .asType(MethodType.methodType(Object.class));
+            } catch (OmniBufException e) {
+                throw e;
+            } catch (Throwable t) {
+                throw new OmniBufException(
+                    "omnibuf: collection type " + rawType.getName()
+                        + " on field " + schemaName + " requires an accessible no-arg constructor",
+                    t
+                );
+            }
+        }
+
+        @SuppressWarnings("unchecked")
+        List<Object> newList(int capHint) {
+            if (canUseArrayList) {
+                return new ArrayList<>(capHint);
+            }
+            try {
+                return (List<Object>) (Object) customCollectionCtor.invokeExact();
+            } catch (Throwable t) {
+                throw new OmniBufException("omnibuf: failed instantiating List field " + schemaName, t);
+            }
+        }
+
+        @SuppressWarnings("unchecked")
+        Map<Object, Object> newMap(int capHint) {
+            if (canUseLinkedHashMap) {
+                return new LinkedHashMap<>(Math.max(4, capHint + (capHint >>> 1) + 1));
+            }
+            try {
+                return (Map<Object, Object>) (Object) customCollectionCtor.invokeExact();
+            } catch (Throwable t) {
+                throw new OmniBufException("omnibuf: failed instantiating Map field " + schemaName, t);
+            }
         }
 
         Object readObject(Object instance) {
@@ -464,9 +537,13 @@ public final class OmniBufMapper {
                 FieldDescriptorSlot slot = codec.recordComponentsByIndex[i];
                 Object val = slot.readObject(existingRecord);
                 if (slot.category == FieldCategory.LIST && val instanceof List<?> prevList) {
-                    this.args[i] = new ArrayList<Object>(prevList);
+                    List<Object> cp = slot.newList(prevList.size());
+                    cp.addAll(prevList);
+                    this.args[i] = cp;
                 } else if (slot.category == FieldCategory.MAP && val instanceof Map<?, ?> prevMap) {
-                    this.args[i] = new LinkedHashMap<Object, Object>(prevMap);
+                    Map<Object, Object> cp = slot.newMap(prevMap.size());
+                    cp.putAll(prevMap);
+                    this.args[i] = cp;
                 } else {
                     this.args[i] = val;
                 }
@@ -766,11 +843,11 @@ public final class OmniBufMapper {
             if (hasCollectionComponents) {
                 for (int i = 0; i < recordComponentsByIndex.length; i++) {
                     if (args[i] == null) {
-                        FieldCategory cat = recordComponentsByIndex[i].category;
-                        if (cat == FieldCategory.LIST) {
-                            args[i] = new ArrayList<>(0);
-                        } else if (cat == FieldCategory.MAP) {
-                            args[i] = new LinkedHashMap<>(4);
+                        FieldDescriptorSlot compSlot = recordComponentsByIndex[i];
+                        if (compSlot.category == FieldCategory.LIST) {
+                            args[i] = compSlot.newList(0);
+                        } else if (compSlot.category == FieldCategory.MAP) {
+                            args[i] = compSlot.newMap(4);
                         }
                     }
                 }
@@ -810,8 +887,8 @@ public final class OmniBufMapper {
                     case ENUM_SCALAR -> slot.writeObject(target, slot.defaultEnumValue());
                     case INT_ARRAY -> slot.writeObject(target, EMPTY_INTS);
                     case LONG_ARRAY -> slot.writeObject(target, EMPTY_LONGS);
-                    case LIST -> slot.writeObject(target, new ArrayList<>());
-                    case MAP -> slot.writeObject(target, new LinkedHashMap<>());
+                    case LIST -> slot.writeObject(target, slot.newList(0));
+                    case MAP -> slot.writeObject(target, slot.newMap(4));
                     case SUB_MSG -> slot.writeObject(target, null);
                 }
             }
@@ -1424,7 +1501,7 @@ public final class OmniBufMapper {
             OmniBufDecoder dec, FieldDescriptorSlot slot, List<Object> target, int depth) {
         long arrState = dec.beginArray(slot.elemWireType, depth);
         if (arrState < 0L) {
-            return target == null ? new ArrayList<>(0) : target;
+            return target == null ? slot.newList(0) : target;
         }
         int count = (int) arrState;
         int arrLimit = (int) (arrState >>> 32);
@@ -1487,13 +1564,17 @@ public final class OmniBufMapper {
         }
         List<Object> list = target;
         if (list == null) {
-            list = new ArrayList<>(Math.min(count, 4096));
-        } else if (!(list instanceof ArrayList<?>)) {
+            list = slot.newList(Math.min(count, 4096));
+        } else if (slot.canUseArrayList && !(list instanceof ArrayList<?>)) {
             ArrayList<Object> copy = new ArrayList<>(prevSize + Math.min(count, 4096));
             copy.addAll(list);
             list = copy;
-        } else if (list.isEmpty() && count > 10 && count <= 4096) {
-            ((ArrayList<?>) list).ensureCapacity(count);
+        } else if (!slot.rawType.isInstance(list)) {
+            List<Object> copy = slot.newList(prevSize + Math.min(count, 4096));
+            copy.addAll(list);
+            list = copy;
+        } else if (list instanceof ArrayList<?> al && al.isEmpty() && count > 10 && count <= 4096) {
+            al.ensureCapacity(count);
         }
         if (elemWT == WireType.WIRE_STRING) {
             for (int i = 0; i < count; i++) {
@@ -1519,14 +1600,22 @@ public final class OmniBufMapper {
             OmniBufDecoder dec, FieldDescriptorSlot slot, Map<Object, Object> target, int depth) {
         long mapState = dec.beginMap(slot.mapKeyWireType, slot.mapValWireType, depth);
         if (mapState < 0L) {
-            return target == null ? new LinkedHashMap<>(4) : target;
+            return target == null ? slot.newMap(4) : target;
         }
         int count = (int) mapState;
         int mapLimit = (int) (mapState >>> 32);
         int capHint = Math.min(count, 4096);
-        Map<Object, Object> map = target != null
-            ? target
-            : new LinkedHashMap<>(Math.max(4, capHint + (capHint >>> 1) + 1));
+        Map<Object, Object> map;
+        if (target == null) {
+            map = slot.newMap(capHint);
+        } else if (slot.canUseLinkedHashMap && !(target instanceof HashMap<?, ?>)) {
+            map = new LinkedHashMap<>(target);
+        } else if (!slot.rawType.isInstance(target)) {
+            map = slot.newMap(capHint);
+            map.putAll(target);
+        } else {
+            map = target;
+        }
         Class<?> keyClass = slot.mapKeyClass;
         Class<?> valClass = slot.elemClass;
         int maxElems = dec.maxCollectionElements();
@@ -1800,12 +1889,22 @@ public final class OmniBufMapper {
                     }
                 }
                 case LIST -> {
-                    if (!(slot.readObject(probe) instanceof ArrayList<?> al) || !al.isEmpty()) {
+                    Object o = slot.readObject(probe);
+                    if (slot.canUseArrayList) {
+                        if (!(o instanceof ArrayList<?> al) || !al.isEmpty()) {
+                            return false;
+                        }
+                    } else if (!slot.rawType.isInstance(o) || !((List<?>) o).isEmpty()) {
                         return false;
                     }
                 }
                 case MAP -> {
-                    if (!(slot.readObject(probe) instanceof LinkedHashMap<?, ?> lhm) || !lhm.isEmpty()) {
+                    Object o = slot.readObject(probe);
+                    if (slot.canUseLinkedHashMap) {
+                        if (!(o instanceof LinkedHashMap<?, ?> lhm) || !lhm.isEmpty()) {
+                            return false;
+                        }
+                    } else if (!slot.rawType.isInstance(o) || !((Map<?, ?>) o).isEmpty()) {
                         return false;
                     }
                 }

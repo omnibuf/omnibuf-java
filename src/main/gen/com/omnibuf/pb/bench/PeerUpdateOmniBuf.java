@@ -4,12 +4,9 @@
 package com.omnibuf.pb.bench;
 
 import com.omnibuf.MarshalOptions;
-import com.omnibuf.OmniBufException;
 import com.omnibuf.SchemaMeta;
 import com.omnibuf.UnmarshalOptions;
 import com.omnibuf.wire.CodecPool;
-import com.omnibuf.wire.OmniBufDecoder;
-import com.omnibuf.wire.OmniBufEncoder;
 import com.omnibuf.wire.PrefixVarint;
 import com.omnibuf.wire.WireType;
 import java.util.HashSet;
@@ -137,10 +134,10 @@ public final class PeerUpdateOmniBuf {
 
     public static byte[] marshal(OmniBufPeerUpdate msg, MarshalOptions options) {
         if (msg == null) {
-            throw new OmniBufException("omnibuf: cannot marshal null PeerUpdate");
+            throw new com.omnibuf.OmniBufException("omnibuf: cannot marshal null PeerUpdate");
         }
         MarshalOptions opts = options == null ? MarshalOptions.DEFAULT : options;
-        OmniBufEncoder enc = CodecPool.acquireEncoder();
+        com.omnibuf.wire.OmniBufEncoder enc = CodecPool.acquireEncoder();
         try {
             if (opts.selfDescribing()) {
                 if (isCyclicSchema()) {
@@ -176,14 +173,18 @@ public final class PeerUpdateOmniBuf {
             if (msg.location != null && com.omnibuf.pb.bench.LocationOmniBuf.isLargePayload(msg.location, depthLeft - 1)) {
                 return true;
             }
-            if (msg.neighbors != null && !msg.neighbors.isEmpty() && com.omnibuf.pb.bench.NeighborOmniBuf.isLargePayload(msg.neighbors.get(0), depthLeft - 1)) {
-                return true;
+            if (msg.neighbors != null) {
+                for (int i = 0, n = msg.neighbors.size(); i < n; i++) {
+                    if (com.omnibuf.pb.bench.NeighborOmniBuf.isLargePayload(msg.neighbors.get(i), depthLeft - 1)) {
+                        return true;
+                    }
+                }
             }
         }
         return false;
     }
 
-    public static void encode(OmniBufEncoder enc, OmniBufPeerUpdate msg, boolean deterministic) {
+    public static void encode(com.omnibuf.wire.OmniBufEncoder enc, OmniBufPeerUpdate msg, boolean deterministic) {
         {
             byte[] dst = enc.ensureFree(10);
             int p = enc.rawPosition();
@@ -218,7 +219,13 @@ public final class PeerUpdateOmniBuf {
         {
             List<com.omnibuf.pb.bench.OmniBufNeighbor> list10 = msg.neighbors;
             int n = list10 == null ? 0 : list10.size();
-            boolean largeArr = n > 0 && com.omnibuf.pb.bench.NeighborOmniBuf.isLargePayload(list10.get(0));
+            boolean largeArr = false;
+            for (int i = 0; i < n; i++) {
+                if (com.omnibuf.pb.bench.NeighborOmniBuf.isLargePayload(list10.get(i))) {
+                    largeArr = true;
+                    break;
+                }
+            }
             int arrPos = enc.beginTypedArrayFast(10, WireType.WIRE_SUB_MSG, n, largeArr);
             for (int i = 0; i < n; i++) {
                 com.omnibuf.pb.bench.OmniBufNeighbor elem = list10.get(i);
@@ -246,9 +253,9 @@ public final class PeerUpdateOmniBuf {
 
     public static OmniBufPeerUpdate unmarshal(byte[] data, UnmarshalOptions options) {
         if (data == null) {
-            throw new OmniBufException("omnibuf: null packet buffer");
+            throw new com.omnibuf.OmniBufException("omnibuf: null packet buffer");
         }
-        OmniBufDecoder dec = CodecPool.acquireDecoder(data, 0, data.length, options);
+        com.omnibuf.wire.OmniBufDecoder dec = CodecPool.acquireDecoder(data, 0, data.length, options);
         try {
             OmniBufPeerUpdate out = new OmniBufPeerUpdate();
             decodeFrom(dec, out, 0);
@@ -264,12 +271,12 @@ public final class PeerUpdateOmniBuf {
 
     public static void unmarshal(byte[] data, OmniBufPeerUpdate target, UnmarshalOptions options) {
         if (data == null) {
-            throw new OmniBufException("omnibuf: null packet buffer");
+            throw new com.omnibuf.OmniBufException("omnibuf: null packet buffer");
         }
         if (target == null) {
-            throw new OmniBufException("omnibuf: null target instance");
+            throw new com.omnibuf.OmniBufException("omnibuf: null target instance");
         }
-        OmniBufDecoder dec = CodecPool.acquireDecoder(data, 0, data.length, options);
+        com.omnibuf.wire.OmniBufDecoder dec = CodecPool.acquireDecoder(data, 0, data.length, options);
         try {
             target.reset();
             decodeFrom(dec, target, 0);
@@ -280,7 +287,7 @@ public final class PeerUpdateOmniBuf {
 
     public static void decodeInto(
             byte[] data, int offset, int length, OmniBufPeerUpdate target, int depth) {
-        OmniBufDecoder dec = CodecPool.acquireDecoder(data, offset, length);
+        com.omnibuf.wire.OmniBufDecoder dec = CodecPool.acquireDecoder(data, offset, length);
         try {
             decodeFrom(dec, target, depth);
         } finally {
@@ -288,9 +295,9 @@ public final class PeerUpdateOmniBuf {
         }
     }
 
-    public static void decodeFrom(OmniBufDecoder dec, OmniBufPeerUpdate target, int depth) {
+    public static void decodeFrom(com.omnibuf.wire.OmniBufDecoder dec, OmniBufPeerUpdate target, int depth) {
         if (depth > dec.maxNestingDepth()) {
-            throw new OmniBufException("omnibuf: nesting depth exceeds MaxNestingDepth");
+            throw new com.omnibuf.OmniBufException("omnibuf: nesting depth exceeds MaxNestingDepth");
         }
         while (dec.hasRemaining()) {
             long tag = dec.readTag();
@@ -350,7 +357,7 @@ public final class PeerUpdateOmniBuf {
                             int arrLimit = (int) (arrState >>> 32);
                             var list = target.ensureTags(count);
                             if ((long) list.size() + count > dec.maxCollectionElements()) {
-                                throw new OmniBufException("omnibuf: accumulated WireArray count exceeds maxCollectionElements");
+                                throw new com.omnibuf.OmniBufException("omnibuf: accumulated WireArray count exceeds maxCollectionElements");
                             }
                             for (int i = 0; i < count; i++) {
                                 list.add(dec.readString());
@@ -369,7 +376,7 @@ public final class PeerUpdateOmniBuf {
                             int arrLimit = (int) (arrState >>> 32);
                             var list = target.ensurePrefixes(count);
                             if ((long) list.size() + count > dec.maxCollectionElements()) {
-                                throw new OmniBufException("omnibuf: accumulated WireArray count exceeds maxCollectionElements");
+                                throw new com.omnibuf.OmniBufException("omnibuf: accumulated WireArray count exceeds maxCollectionElements");
                             }
                             dec.readUint32Into(list, count);
                             dec.endContainer(arrLimit);
@@ -400,7 +407,7 @@ public final class PeerUpdateOmniBuf {
                             int arrLimit = (int) (arrState >>> 32);
                             var list = target.ensureNeighbors(count);
                             if ((long) list.size() + count > dec.maxCollectionElements()) {
-                                throw new OmniBufException("omnibuf: accumulated WireArray count exceeds maxCollectionElements");
+                                throw new com.omnibuf.OmniBufException("omnibuf: accumulated WireArray count exceeds maxCollectionElements");
                             }
                             for (int i = 0; i < count; i++) {
                                 int elemLimit = dec.readLengthPrefixedLimit(0);

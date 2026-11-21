@@ -83,6 +83,12 @@ public final class OmniBufProtobuf {
         } finally {
             CodecPool.releaseDecoder(dec);
         }
+        if (!builder.isInitialized()) {
+            throw new OmniBufException(
+                "omnibuf: protobuf message missing required fields: "
+                    + builder.findInitializationErrors()
+            );
+        }
     }
 
     public static <M extends Message> M unmarshal(byte[] data, M defaultInstance) {
@@ -461,10 +467,12 @@ public final class OmniBufProtobuf {
                 for (int i = 0; i < count; i++) {
                     Object k = readProtoElement(dec, keyFd, null, depth + 1);
                     Object v = readProtoElement(dec, valFd, sampleEntryBuilder, depth + 1);
-                    if (!acc.containsKey(k) && acc.size() >= dec.maxCollectionElements()) {
-                        throw new OmniBufException("omnibuf: accumulated WireMap count exceeds maxCollectionElements");
+                    if (v != null) {
+                        if (!acc.containsKey(k) && acc.size() >= dec.maxCollectionElements()) {
+                            throw new OmniBufException("omnibuf: accumulated WireMap count exceeds maxCollectionElements");
+                        }
+                        acc.put(k, v);
                     }
-                    acc.put(k, v);
                 }
                 dec.endContainer(mapLimit);
                 continue;
@@ -489,7 +497,9 @@ public final class OmniBufProtobuf {
                 }
                 for (int i = 0; i < count; i++) {
                     Object elem = readProtoElement(dec, fd, builder, depth + 1);
-                    builder.addRepeatedField(fd, elem);
+                    if (elem != null) {
+                        builder.addRepeatedField(fd, elem);
+                    }
                 }
                 dec.endContainer(arrLimit);
                 continue;
@@ -516,7 +526,7 @@ public final class OmniBufProtobuf {
                     : builder.newBuilderForField(fd);
                 decodeIntoBuilder(dec, subBuilder, depth + 1);
                 dec.endContainer(subLimit);
-                builder.setField(fd, subBuilder.build());
+                builder.setField(fd, subBuilder.buildPartial());
                 continue;
             }
 
@@ -526,7 +536,9 @@ public final class OmniBufProtobuf {
                 continue;
             }
             Object val = readSingularScalar(dec, fd);
-            builder.setField(fd, val);
+            if (val != null) {
+                builder.setField(fd, val);
+            }
         }
 
         if (mapAccumulators != null) {
@@ -540,7 +552,7 @@ public final class OmniBufProtobuf {
                     Message.Builder eb = builder.newBuilderForField(fd);
                     eb.setField(keyFd, kv.getKey());
                     eb.setField(valFd, kv.getValue());
-                    builder.addRepeatedField(fd, eb.build());
+                    builder.addRepeatedField(fd, eb.buildPartial());
                 }
             }
         }
@@ -552,7 +564,12 @@ public final class OmniBufProtobuf {
             case UINT64 -> dec.readUint64();
             case INT32, SINT32 -> dec.readSint32();
             case INT64, SINT64 -> dec.readSint64();
-            case ENUM -> fd.getEnumType().findValueByNumberCreatingIfUnknown(dec.readSint32());
+            case ENUM -> {
+                int rawNum = dec.readSint32();
+                yield fd.legacyEnumFieldTreatedAsClosed()
+                    ? fd.getEnumType().findValueByNumber(rawNum)
+                    : fd.getEnumType().findValueByNumberCreatingIfUnknown(rawNum);
+            }
             case FIXED32, SFIXED32 -> dec.readFixed32();
             case FLOAT -> dec.readFloat32();
             case FIXED64, SFIXED64 -> dec.readFixed64();
@@ -577,7 +594,7 @@ public final class OmniBufProtobuf {
                     : DynamicMessage.newBuilder(fd.getMessageType());
                 decodeIntoBuilder(dec, subBuilder, containerDepth + 1);
                 dec.endContainer(elemLimit);
-                yield subBuilder.build();
+                yield subBuilder.buildPartial();
             }
             default -> readSingularScalar(dec, fd);
         };

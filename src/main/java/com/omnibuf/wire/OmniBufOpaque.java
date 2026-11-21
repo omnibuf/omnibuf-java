@@ -4,6 +4,7 @@ import com.omnibuf.OmniBufException;
 import com.omnibuf.SchemaMeta;
 import com.omnibuf.UnmarshalOptions;
 import java.io.ByteArrayOutputStream;
+import java.nio.ByteBuffer;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.BitSet;
@@ -43,23 +44,31 @@ public final class OmniBufOpaque {
             }
             return Arrays.copyOfRange(buffer, offset, offset + length);
         }
+
+        public ByteBuffer asByteBuffer() {
+            return ByteBuffer.wrap(buffer, offset, length).asReadOnlyBuffer();
+        }
     }
 
     private static final byte[] EMPTY_BYTES = new byte[0];
-    private static final int MAX_PACKED_OFFSET = 0x07FF_FFFF;
+    private static final long[] EMPTY_FIELD_INDEX = new long[0];
+    private static final int MAX_PACKED_LEN = 0x07FF_FFFF;
+    private static final long LARGE_VALUE_SENTINEL = -2L;
+    private static final long MULTI_SEGMENT_SENTINEL = -3L;
 
     private OmniBufOpaque() {}
 
-    private static void checkSliceBounds(byte[] packet, int offset, int length) {
+    public static void checkSliceBounds(byte[] packet, int offset, int length) {
         if (packet == null || offset < 0 || length < 0 || length > packet.length - offset) {
             throw new OmniBufException("omnibuf: packet slice out of bounds");
         }
     }
 
     /**
-     * Zero-allocation field locator for packets up to 128 MB ({@code offset + length <= 0x07FF_FFFF}).
-     * Packs {@code (((long) valStart) << 32) | (((long) valEnd) << 4) | (wt & 0x0FL)}, or returns
-     * {@code -1L} if absent or malformed.
+     * Zero-allocation field locator for packets at any valid array offset up to {@code Integer.MAX_VALUE}.
+     * Packs {@code (((long) valStart) << 32) | (((long) valLen) << 4) | (wt & 0x0FL)} when
+     * {@code valLen <= MAX_PACKED_LEN}, returns {@link #LARGE_VALUE_SENTINEL} if the matching
+     * field's payload length exceeds {@code MAX_PACKED_LEN}, or {@code -1L} if absent or malformed.
      */
     private static long locateFieldPacked(
             byte[] packet, int offset, int length, int targetField, int wireMask) {
@@ -67,9 +76,6 @@ public final class OmniBufOpaque {
             return -1L;
         }
         int end = offset + length;
-        if (end > MAX_PACKED_OFFSET) {
-            return locateFieldPackedLarge(packet, offset, length, targetField, wireMask);
-        }
         int pos = offset;
         long found = -1L;
 
@@ -83,7 +89,7 @@ public final class OmniBufOpaque {
                 wt = tag & 0x0F;
                 pos += 1;
             } else if ((b0 & 2) != 0) {
-                if (pos + 2 > end) {
+                if (end - pos < 2) {
                     return -1L;
                 }
                 int tag = Short.toUnsignedInt(PrefixVarint.getShortLE(packet, pos)) >>> 2;
@@ -95,8 +101,8 @@ public final class OmniBufOpaque {
                 if (tagPacked < 0L) {
                     return -1L;
                 }
-                pos = (int) (tagPacked >>> 36);
-                fnum = (int) ((tagPacked >>> 4) & 0xFFFF_FFFFL);
+                pos += (int) (tagPacked >>> 33);
+                fnum = (int) ((tagPacked >>> 4) & 0x1FFF_FFFFL);
                 wt = (int) (tagPacked & 0x0FL);
             }
             if (fnum == 0) {
@@ -114,44 +120,132 @@ public final class OmniBufOpaque {
                 return -1L;
             }
             if (fnum == targetField && ((wireMask >>> wt) & 1) != 0) {
-                found = (((long) valStart) << 32) | (((long) nextPos) << 4) | (wt & 0x0FL);
+                int valLen = nextPos - valStart;
+                if (valLen <= MAX_PACKED_LEN) {
+                    found = (((long) valStart) << 32) | (((long) valLen) << 4) | (wt & 0x0FL);
+                } else {
+                    found = LARGE_VALUE_SENTINEL;
+                }
             }
             pos = nextPos;
         }
         return found;
     }
 
-    private static long locateFieldPackedLarge(
-            byte[] packet, int offset, int length, int targetField, int wireMask) {
-        LocatedField loc = locateFieldGeneral(packet, offset, length, targetField, wireMask);
-        if (!loc.found() || loc.valueEnd() > MAX_PACKED_OFFSET) {
+    /**
+     * Scans {@code packet[offset..offset+length]} once and populates a field-offset directory for
+     * field numbers {@code 1..maxField}. Malformed packets return an empty array so subsequent
+     * indexed lookups return default values without rescanning.
+     */
+    public static long[] buildFieldIndex(byte[] packet, int offset, int length, int maxField) {
+        if (maxField <= 0 || packet == null || offset < 0 || length < 0 || length > packet.length - offset) {
+            return EMPTY_FIELD_INDEX;
+        }
+        long[] index = new long[maxField + 1];
+        Arrays.fill(index, -1L);
+        int end = offset + length;
+        int pos = offset;
+
+        while (pos < end) {
+            int fnum;
+            int wt;
+            int b0 = packet[pos] & 0xFF;
+            if ((b0 & 1) != 0) {
+                int tag = b0 >>> 1;
+                fnum = tag >>> 4;
+                wt = tag & 0x0F;
+                pos += 1;
+            } else if ((b0 & 2) != 0) {
+                if (end - pos < 2) {
+                    return EMPTY_FIELD_INDEX;
+                }
+                int tag = Short.toUnsignedInt(PrefixVarint.getShortLE(packet, pos)) >>> 2;
+                fnum = tag >>> 4;
+                wt = tag & 0x0F;
+                pos += 2;
+            } else {
+                long tagPacked = decodeWideTag(packet, pos, end);
+                if (tagPacked < 0L) {
+                    return EMPTY_FIELD_INDEX;
+                }
+                pos += (int) (tagPacked >>> 33);
+                fnum = (int) ((tagPacked >>> 4) & 0x1FFF_FFFFL);
+                wt = (int) (tagPacked & 0x0FL);
+            }
+            if (fnum == 0) {
+                int nextPos = trySkipField0(packet, pos, end, wt);
+                if (nextPos < 0) {
+                    return EMPTY_FIELD_INDEX;
+                }
+                pos = nextPos;
+                continue;
+            }
+
+            int valStart = pos;
+            int nextPos = skipValidatedHeader(packet, pos, end, wt);
+            if (nextPos < 0) {
+                return EMPTY_FIELD_INDEX;
+            }
+            if (fnum <= maxField) {
+                long prev = index[fnum];
+                if (prev != -1L && (wt == WireType.WIRE_SUB_MSG || wt == WireType.WIRE_ARRAY || wt == WireType.WIRE_MAP)) {
+                    index[fnum] = MULTI_SEGMENT_SENTINEL;
+                } else {
+                    int valLen = nextPos - valStart;
+                    if (valLen <= MAX_PACKED_LEN) {
+                        index[fnum] = (((long) valStart) << 32) | (((long) valLen) << 4) | (wt & 0x0FL);
+                    } else {
+                        index[fnum] = LARGE_VALUE_SENTINEL;
+                    }
+                }
+            }
+            pos = nextPos;
+        }
+        return index;
+    }
+
+    private static long lookupIndexedPacked(
+            long[] index, byte[] packet, int offset, int length, int fieldNum, int wireMask) {
+        if (fieldNum <= 0 || fieldNum >= index.length) {
+            return fieldNum > 0 && index != EMPTY_FIELD_INDEX
+                ? locateFieldPacked(packet, offset, length, fieldNum, wireMask)
+                : -1L;
+        }
+        long packed = index[fieldNum];
+        if (packed == -1L) {
             return -1L;
         }
-        return (((long) loc.valueOffset()) << 32)
-            | (((long) loc.valueEnd()) << 4)
-            | (loc.wireType() & 0x0FL);
+        if (packed == LARGE_VALUE_SENTINEL || packed == MULTI_SEGMENT_SENTINEL) {
+            return locateFieldPacked(packet, offset, length, fieldNum, wireMask);
+        }
+        int wt = ((int) packed) & 0x0F;
+        if (((wireMask >>> wt) & 1) != 0) {
+            return packed;
+        }
+        // An earlier occurrence of fieldNum may have had a matching wire type before a mismatched override.
+        return locateFieldPacked(packet, offset, length, fieldNum, wireMask);
     }
 
     /**
      * Decodes a 4-byte or 9-byte Prefix-Varint tag at {@code packet[pos..end]} without heap
-     * allocation, returning {@code (((long) nextPos) << 36) | (fnum << 4) | wt}, or {@code -1L}
+     * allocation, returning {@code (((long) tagBytes) << 33) | (fnum << 4) | wt}, or {@code -1L}
      * on truncation, reserved marker, or {@code fnum > MAX_FIELD_NUMBER}.
      */
     private static long decodeWideTag(byte[] packet, int pos, int end) {
         int b0 = packet[pos] & 0xFF;
         long tag;
-        int nextPos;
+        int tn;
         if ((b0 & 4) != 0) {
-            nextPos = pos + 4;
-            if (nextPos > end) {
+            if (end - pos < 4) {
                 return -1L;
             }
+            tn = 4;
             tag = Integer.toUnsignedLong(PrefixVarint.getIntLE(packet, pos)) >>> 3;
         } else if (b0 == 0) {
-            nextPos = pos + 9;
-            if (nextPos > end) {
+            if (end - pos < 9) {
                 return -1L;
             }
+            tn = 9;
             tag = PrefixVarint.getLongLE(packet, pos + 1);
         } else {
             return -1L;
@@ -160,7 +254,7 @@ public final class OmniBufOpaque {
         if (Long.compareUnsigned(fnum, WireType.MAX_FIELD_NUMBER) > 0) {
             return -1L;
         }
-        return (((long) nextPos) << 36) | (tag & 0x0FFF_FFFF_FFFFL);
+        return (((long) tn) << 33) | (tag & 0x1_FFFF_FFFFL);
     }
 
     /**
@@ -170,20 +264,17 @@ public final class OmniBufOpaque {
      */
     public static LocatedField locateField(
             byte[] packet, int offset, int length, int targetField, int wireMask) {
-        if (packet != null && offset >= 0 && length >= 0 && length <= packet.length - offset) {
-            int end = offset + length;
-            if (end <= MAX_PACKED_OFFSET) {
-                long packed = locateFieldPacked(packet, offset, length, targetField, wireMask);
-                if (packed < 0L) {
-                    return LocatedField.NOT_FOUND;
-                }
-                int valStart = (int) (packed >>> 32);
-                int valEnd = ((int) packed) >>> 4;
-                int wt = ((int) packed) & 0x0F;
-                return new LocatedField(valStart, valEnd, wt, true);
-            }
+        long packed = locateFieldPacked(packet, offset, length, targetField, wireMask);
+        if (packed >= 0L) {
+            int valStart = (int) (packed >>> 32);
+            int valLen = ((int) packed) >>> 4;
+            int wt = ((int) packed) & 0x0F;
+            return new LocatedField(valStart, valStart + valLen, wt, true);
         }
-        return locateFieldGeneral(packet, offset, length, targetField, wireMask);
+        if (packed == LARGE_VALUE_SENTINEL) {
+            return locateFieldGeneral(packet, offset, length, targetField, wireMask);
+        }
+        return LocatedField.NOT_FOUND;
     }
 
     private static LocatedField locateFieldGeneral(
@@ -206,7 +297,7 @@ public final class OmniBufOpaque {
                 wt = (b0 >>> 1) & 0x0F;
                 pos += 1;
             } else if ((b0 & 2) != 0) {
-                if (pos + 2 > end) {
+                if (end - pos < 2) {
                     return LocatedField.NOT_FOUND;
                 }
                 int u16 = Short.toUnsignedInt(PrefixVarint.getShortLE(packet, pos)) >>> 2;
@@ -214,14 +305,13 @@ public final class OmniBufOpaque {
                 wt = u16 & 0x0F;
                 pos += 2;
             } else {
-                long[] scratch = new long[1];
-                int tn = PrefixVarint.tryDecode(packet, pos, end, scratch);
-                if (tn == 0 || Long.compareUnsigned(scratch[0] >>> 4, WireType.MAX_FIELD_NUMBER) > 0) {
+                long tagPacked = decodeWideTag(packet, pos, end);
+                if (tagPacked < 0L) {
                     return LocatedField.NOT_FOUND;
                 }
-                fnum = (int) (scratch[0] >>> 4);
-                wt = (int) (scratch[0] & 0x0FL);
-                pos += tn;
+                pos += (int) (tagPacked >>> 33);
+                fnum = (int) ((tagPacked >>> 4) & 0x1FFF_FFFFL);
+                wt = (int) (tagPacked & 0x0FL);
             }
             if (fnum == 0) {
                 int nextPos = trySkipField0(packet, pos, end, wt);
@@ -260,17 +350,17 @@ public final class OmniBufOpaque {
             case WireType.WIRE_UINT, WireType.WIRE_SINT -> PrefixVarint.skipVarint(packet, pos, end);
             case WireType.WIRE_BOOL_FALSE, WireType.WIRE_BOOL_TRUE -> pos <= end ? pos : -1;
             case WireType.WIRE_FIXED32, WireType.WIRE_SFIXED32, WireType.WIRE_FLOAT32 ->
-                pos + 4 <= end ? pos + 4 : -1;
+                end - pos >= 4 ? pos + 4 : -1;
             case WireType.WIRE_FIXED64, WireType.WIRE_SFIXED64, WireType.WIRE_FLOAT64 ->
-                pos + 8 <= end ? pos + 8 : -1;
+                end - pos >= 8 ? pos + 8 : -1;
             case WireType.WIRE_STRING, WireType.WIRE_BYTES, WireType.WIRE_SUB_MSG -> {
                 if (pos >= end) {
                     yield -1;
                 }
                 int b0 = packet[pos] & 0xFF;
                 if ((b0 & 1) != 0) {
-                    int next = pos + 1 + (b0 >>> 1);
-                    yield next <= end ? next : -1;
+                    int len = b0 >>> 1;
+                    yield end - pos - 1 >= len ? pos + 1 + len : -1;
                 }
                 long packed = PrefixVarint.tryReadLengthSlicePacked(packet, pos, end, 0);
                 yield packed < 0L ? -1 : (int) packed;
@@ -355,7 +445,7 @@ public final class OmniBufOpaque {
                 wt = tag & 0x0F;
                 pos += 1;
             } else if ((b0 & 2) != 0) {
-                if (pos + 2 > end) {
+                if (end - pos < 2) {
                     throw new OmniBufException("omnibuf: truncated 2-byte tag in packet");
                 }
                 int u16 = Short.toUnsignedInt(PrefixVarint.getShortLE(packet, pos)) >>> 2;
@@ -367,8 +457,8 @@ public final class OmniBufOpaque {
                 if (tagPacked < 0L) {
                     throw new OmniBufException("omnibuf: malformed or truncated tag in packet");
                 }
-                pos = (int) (tagPacked >>> 36);
-                fnum = (int) ((tagPacked >>> 4) & 0xFFFF_FFFFL);
+                pos += (int) (tagPacked >>> 33);
+                fnum = (int) ((tagPacked >>> 4) & 0x1FFF_FFFFL);
                 wt = (int) (tagPacked & 0x0FL);
             }
             if (fnum == 0) {
@@ -393,7 +483,7 @@ public final class OmniBufOpaque {
             return 0L;
         }
         int valStart = (int) (packed >>> 32);
-        int valEnd = ((int) packed) >>> 4;
+        int valEnd = valStart + (((int) packed) >>> 4);
         return PrefixVarint.decodeValueOrZero(packet, valStart, valEnd);
     }
 
@@ -407,7 +497,7 @@ public final class OmniBufOpaque {
             return 0L;
         }
         int valStart = (int) (packed >>> 32);
-        int valEnd = ((int) packed) >>> 4;
+        int valEnd = valStart + (((int) packed) >>> 4);
         return PrefixVarint.decodeZigZag64(PrefixVarint.decodeValueOrZero(packet, valStart, valEnd));
     }
 
@@ -438,8 +528,8 @@ public final class OmniBufOpaque {
             return 0;
         }
         int valStart = (int) (packed >>> 32);
-        int valEnd = ((int) packed) >>> 4;
-        return valEnd - valStart >= 4 ? PrefixVarint.getIntLE(packet, valStart) : 0;
+        int valLen = ((int) packed) >>> 4;
+        return valLen >= 4 ? PrefixVarint.getIntLE(packet, valStart) : 0;
     }
 
     public static long readFixed64(byte[] packet, int offset, int length, int fieldNum) {
@@ -454,8 +544,8 @@ public final class OmniBufOpaque {
             return 0L;
         }
         int valStart = (int) (packed >>> 32);
-        int valEnd = ((int) packed) >>> 4;
-        return valEnd - valStart >= 8 ? PrefixVarint.getLongLE(packet, valStart) : 0L;
+        int valLen = ((int) packed) >>> 4;
+        return valLen >= 8 ? PrefixVarint.getLongLE(packet, valStart) : 0L;
     }
 
     public static float readFloat32(byte[] packet, int offset, int length, int fieldNum) {
@@ -464,8 +554,8 @@ public final class OmniBufOpaque {
             return 0.0f;
         }
         int valStart = (int) (packed >>> 32);
-        int valEnd = ((int) packed) >>> 4;
-        return valEnd - valStart >= 4 ? Float.intBitsToFloat(PrefixVarint.getIntLE(packet, valStart)) : 0.0f;
+        int valLen = ((int) packed) >>> 4;
+        return valLen >= 4 ? Float.intBitsToFloat(PrefixVarint.getIntLE(packet, valStart)) : 0.0f;
     }
 
     public static double readFloat64(byte[] packet, int offset, int length, int fieldNum) {
@@ -474,17 +564,27 @@ public final class OmniBufOpaque {
             return 0.0d;
         }
         int valStart = (int) (packed >>> 32);
-        int valEnd = ((int) packed) >>> 4;
-        return valEnd - valStart >= 8 ? Double.longBitsToDouble(PrefixVarint.getLongLE(packet, valStart)) : 0.0d;
+        int valLen = ((int) packed) >>> 4;
+        return valLen >= 8 ? Double.longBitsToDouble(PrefixVarint.getLongLE(packet, valStart)) : 0.0d;
     }
 
     public static String readString(byte[] packet, int offset, int length, int fieldNum) {
         long packed = locateFieldPacked(packet, offset, length, fieldNum, 1 << WireType.WIRE_STRING);
-        if (packed < 0L) {
+        int p;
+        int valEnd;
+        if (packed >= 0L) {
+            p = (int) (packed >>> 32);
+            valEnd = p + (((int) packed) >>> 4);
+        } else if (packed == LARGE_VALUE_SENTINEL) {
+            LocatedField loc = locateFieldGeneral(packet, offset, length, fieldNum, 1 << WireType.WIRE_STRING);
+            if (!loc.found()) {
+                return "";
+            }
+            p = loc.valueOffset();
+            valEnd = loc.valueEnd();
+        } else {
             return "";
         }
-        int p = (int) (packed >>> 32);
-        int valEnd = ((int) packed) >>> 4;
         int b0 = packet[p] & 0xFF;
         if ((b0 & 1) != 0) {
             int strLen = b0 >>> 1;
@@ -498,15 +598,213 @@ public final class OmniBufOpaque {
 
     public static byte[] readBytes(byte[] packet, int offset, int length, int fieldNum) {
         long packed = locateFieldPacked(packet, offset, length, fieldNum, 1 << WireType.WIRE_BYTES);
-        if (packed < 0L) {
+        int p;
+        int valEnd;
+        if (packed >= 0L) {
+            p = (int) (packed >>> 32);
+            valEnd = p + (((int) packed) >>> 4);
+        } else if (packed == LARGE_VALUE_SENTINEL) {
+            LocatedField loc = locateFieldGeneral(packet, offset, length, fieldNum, 1 << WireType.WIRE_BYTES);
+            if (!loc.found()) {
+                return EMPTY_BYTES;
+            }
+            p = loc.valueOffset();
+            valEnd = loc.valueEnd();
+        } else {
             return EMPTY_BYTES;
         }
-        int p = (int) (packed >>> 32);
-        int valEnd = ((int) packed) >>> 4;
         long slicePacked = PrefixVarint.readLengthSlicePacked(packet, p, valEnd, 0);
         int start = (int) (slicePacked >>> 32);
         int end = (int) slicePacked;
         return start == end ? EMPTY_BYTES : Arrays.copyOfRange(packet, start, end);
+    }
+
+    public static PacketView readBytesView(byte[] packet, int offset, int length, int fieldNum) {
+        long packed = locateFieldPacked(packet, offset, length, fieldNum, 1 << WireType.WIRE_BYTES);
+        int p;
+        int valEnd;
+        if (packed >= 0L) {
+            p = (int) (packed >>> 32);
+            valEnd = p + (((int) packed) >>> 4);
+        } else if (packed == LARGE_VALUE_SENTINEL) {
+            LocatedField loc = locateFieldGeneral(packet, offset, length, fieldNum, 1 << WireType.WIRE_BYTES);
+            if (!loc.found()) {
+                return new PacketView(EMPTY_BYTES, 0, 0);
+            }
+            p = loc.valueOffset();
+            valEnd = loc.valueEnd();
+        } else {
+            return new PacketView(EMPTY_BYTES, 0, 0);
+        }
+        long slicePacked = PrefixVarint.readLengthSlicePacked(packet, p, valEnd, 0);
+        int start = (int) (slicePacked >>> 32);
+        int end = (int) slicePacked;
+        return new PacketView(packet, start, end - start);
+    }
+
+    public static long readUint64Indexed(long[] index, byte[] packet, int offset, int length, int fieldNum) {
+        long packed = lookupIndexedPacked(index, packet, offset, length, fieldNum, 1 << WireType.WIRE_UINT);
+        if (packed < 0L) {
+            return 0L;
+        }
+        int valStart = (int) (packed >>> 32);
+        int valEnd = valStart + (((int) packed) >>> 4);
+        return PrefixVarint.decodeValueOrZero(packet, valStart, valEnd);
+    }
+
+    public static int readUint32Indexed(long[] index, byte[] packet, int offset, int length, int fieldNum) {
+        return (int) readUint64Indexed(index, packet, offset, length, fieldNum);
+    }
+
+    public static long readSint64Indexed(long[] index, byte[] packet, int offset, int length, int fieldNum) {
+        long packed = lookupIndexedPacked(index, packet, offset, length, fieldNum, 1 << WireType.WIRE_SINT);
+        if (packed < 0L) {
+            return 0L;
+        }
+        int valStart = (int) (packed >>> 32);
+        int valEnd = valStart + (((int) packed) >>> 4);
+        return PrefixVarint.decodeZigZag64(PrefixVarint.decodeValueOrZero(packet, valStart, valEnd));
+    }
+
+    public static int readSint32Indexed(long[] index, byte[] packet, int offset, int length, int fieldNum) {
+        return (int) readSint64Indexed(index, packet, offset, length, fieldNum);
+    }
+
+    public static boolean readBoolIndexed(long[] index, byte[] packet, int offset, int length, int fieldNum) {
+        long packed = lookupIndexedPacked(
+            index,
+            packet,
+            offset,
+            length,
+            fieldNum,
+            (1 << WireType.WIRE_BOOL_FALSE) | (1 << WireType.WIRE_BOOL_TRUE)
+        );
+        return packed >= 0L && (((int) packed) & 0x0F) == WireType.WIRE_BOOL_TRUE;
+    }
+
+    public static int readFixed32Indexed(long[] index, byte[] packet, int offset, int length, int fieldNum) {
+        long packed = lookupIndexedPacked(
+            index,
+            packet,
+            offset,
+            length,
+            fieldNum,
+            (1 << WireType.WIRE_FIXED32) | (1 << WireType.WIRE_SFIXED32)
+        );
+        if (packed < 0L) {
+            return 0;
+        }
+        int valStart = (int) (packed >>> 32);
+        int valLen = ((int) packed) >>> 4;
+        return valLen >= 4 ? PrefixVarint.getIntLE(packet, valStart) : 0;
+    }
+
+    public static long readFixed64Indexed(long[] index, byte[] packet, int offset, int length, int fieldNum) {
+        long packed = lookupIndexedPacked(
+            index,
+            packet,
+            offset,
+            length,
+            fieldNum,
+            (1 << WireType.WIRE_FIXED64) | (1 << WireType.WIRE_SFIXED64)
+        );
+        if (packed < 0L) {
+            return 0L;
+        }
+        int valStart = (int) (packed >>> 32);
+        int valLen = ((int) packed) >>> 4;
+        return valLen >= 8 ? PrefixVarint.getLongLE(packet, valStart) : 0L;
+    }
+
+    public static float readFloat32Indexed(long[] index, byte[] packet, int offset, int length, int fieldNum) {
+        long packed = lookupIndexedPacked(index, packet, offset, length, fieldNum, 1 << WireType.WIRE_FLOAT32);
+        if (packed < 0L) {
+            return 0.0f;
+        }
+        int valStart = (int) (packed >>> 32);
+        int valLen = ((int) packed) >>> 4;
+        return valLen >= 4 ? Float.intBitsToFloat(PrefixVarint.getIntLE(packet, valStart)) : 0.0f;
+    }
+
+    public static double readFloat64Indexed(long[] index, byte[] packet, int offset, int length, int fieldNum) {
+        long packed = lookupIndexedPacked(index, packet, offset, length, fieldNum, 1 << WireType.WIRE_FLOAT64);
+        if (packed < 0L) {
+            return 0.0d;
+        }
+        int valStart = (int) (packed >>> 32);
+        int valLen = ((int) packed) >>> 4;
+        return valLen >= 8 ? Double.longBitsToDouble(PrefixVarint.getLongLE(packet, valStart)) : 0.0d;
+    }
+
+    public static String readStringIndexed(long[] index, byte[] packet, int offset, int length, int fieldNum) {
+        long packed = lookupIndexedPacked(index, packet, offset, length, fieldNum, 1 << WireType.WIRE_STRING);
+        if (packed == LARGE_VALUE_SENTINEL) {
+            return readString(packet, offset, length, fieldNum);
+        }
+        if (packed < 0L) {
+            return "";
+        }
+        int p = (int) (packed >>> 32);
+        int valEnd = p + (((int) packed) >>> 4);
+        int b0 = packet[p] & 0xFF;
+        if ((b0 & 1) != 0) {
+            int strLen = b0 >>> 1;
+            return Utf8Validator.decodeStrictUnchecked(packet, p + 1, strLen);
+        }
+        long slicePacked = PrefixVarint.readLengthSlicePacked(packet, p, valEnd, 0);
+        int start = (int) (slicePacked >>> 32);
+        int end = (int) slicePacked;
+        return Utf8Validator.decodeStrictUnchecked(packet, start, end - start);
+    }
+
+    public static byte[] readBytesIndexed(long[] index, byte[] packet, int offset, int length, int fieldNum) {
+        long packed = lookupIndexedPacked(index, packet, offset, length, fieldNum, 1 << WireType.WIRE_BYTES);
+        if (packed == LARGE_VALUE_SENTINEL) {
+            return readBytes(packet, offset, length, fieldNum);
+        }
+        if (packed < 0L) {
+            return EMPTY_BYTES;
+        }
+        int p = (int) (packed >>> 32);
+        int valEnd = p + (((int) packed) >>> 4);
+        long slicePacked = PrefixVarint.readLengthSlicePacked(packet, p, valEnd, 0);
+        int start = (int) (slicePacked >>> 32);
+        int end = (int) slicePacked;
+        return start == end ? EMPTY_BYTES : Arrays.copyOfRange(packet, start, end);
+    }
+
+    public static PacketView readBytesViewIndexed(long[] index, byte[] packet, int offset, int length, int fieldNum) {
+        long packed = lookupIndexedPacked(index, packet, offset, length, fieldNum, 1 << WireType.WIRE_BYTES);
+        if (packed == LARGE_VALUE_SENTINEL) {
+            return readBytesView(packet, offset, length, fieldNum);
+        }
+        if (packed < 0L) {
+            return new PacketView(EMPTY_BYTES, 0, 0);
+        }
+        int p = (int) (packed >>> 32);
+        int valEnd = p + (((int) packed) >>> 4);
+        long slicePacked = PrefixVarint.readLengthSlicePacked(packet, p, valEnd, 0);
+        int start = (int) (slicePacked >>> 32);
+        int end = (int) slicePacked;
+        return new PacketView(packet, start, end - start);
+    }
+
+    public static PacketView readSubMsgViewIndexed(long[] index, byte[] packet, int offset, int length, int fieldNum) {
+        if (fieldNum > 0 && fieldNum < index.length) {
+            long packed = index[fieldNum];
+            if (packed == -1L) {
+                return null;
+            }
+            if (packed >= 0L && (((int) packed) & 0x0F) == WireType.WIRE_SUB_MSG) {
+                int p = (int) (packed >>> 32);
+                int valEnd = p + (((int) packed) >>> 4);
+                long slicePacked = PrefixVarint.readLengthSlicePacked(packet, p, valEnd, 0);
+                int start = (int) (slicePacked >>> 32);
+                int end = (int) slicePacked;
+                return new PacketView(packet, start, end - start);
+            }
+        }
+        return readSubMsgView(packet, offset, length, fieldNum);
     }
 
     /**
@@ -514,13 +812,8 @@ public final class OmniBufOpaque {
      * top-level occurrence of {@code fieldNum} matching {@code wireMask}.
      */
     public static boolean hasField(byte[] packet, int offset, int length, int fieldNum, int wireMask) {
-        if (packet != null && offset >= 0 && length >= 0 && length <= packet.length - offset) {
-            int end = offset + length;
-            if (end <= MAX_PACKED_OFFSET) {
-                return locateFieldPacked(packet, offset, length, fieldNum, wireMask) >= 0L;
-            }
-        }
-        return locateFieldGeneral(packet, offset, length, fieldNum, wireMask).found();
+        long packed = locateFieldPacked(packet, offset, length, fieldNum, wireMask);
+        return packed >= 0L || packed == LARGE_VALUE_SENTINEL;
     }
 
     /**
@@ -549,7 +842,7 @@ public final class OmniBufOpaque {
                 wt = tag & 0x0F;
                 pos += 1;
             } else if ((b0 & 2) != 0) {
-                if (pos + 2 > end) {
+                if (end - pos < 2) {
                     throw new OmniBufException("omnibuf: truncated 2-byte tag in packet");
                 }
                 int u16 = Short.toUnsignedInt(PrefixVarint.getShortLE(packet, pos)) >>> 2;
@@ -561,8 +854,8 @@ public final class OmniBufOpaque {
                 if (tagPacked < 0L) {
                     throw new OmniBufException("omnibuf: malformed or truncated tag in packet");
                 }
-                pos = (int) (tagPacked >>> 36);
-                fnum = (int) ((tagPacked >>> 4) & 0xFFFF_FFFFL);
+                pos += (int) (tagPacked >>> 33);
+                fnum = (int) ((tagPacked >>> 4) & 0x1FFF_FFFFL);
                 wt = (int) (tagPacked & 0x0FL);
             }
             if (fnum == 0) {
@@ -611,7 +904,7 @@ public final class OmniBufOpaque {
                 wt = tag & 0x0F;
                 pos += 1;
             } else if ((b0 & 2) != 0) {
-                if (pos + 2 > end) {
+                if (end - pos < 2) {
                     throw new OmniBufException("omnibuf: truncated 2-byte tag in readSubMsgView");
                 }
                 int u16 = Short.toUnsignedInt(PrefixVarint.getShortLE(packet, pos)) >>> 2;
@@ -623,8 +916,8 @@ public final class OmniBufOpaque {
                 if (tagPacked < 0L) {
                     throw new OmniBufException("omnibuf: malformed or truncated tag in readSubMsgView");
                 }
-                pos = (int) (tagPacked >>> 36);
-                fnum = (int) ((tagPacked >>> 4) & 0xFFFF_FFFFL);
+                pos += (int) (tagPacked >>> 33);
+                fnum = (int) ((tagPacked >>> 4) & 0x1FFF_FFFFL);
                 wt = (int) (tagPacked & 0x0FL);
             }
             if (fnum == 0) {
@@ -683,7 +976,7 @@ public final class OmniBufOpaque {
                 wt = tag & 0x0F;
                 pos += 1;
             } else if ((b0 & 2) != 0) {
-                if (pos + 2 > end) {
+                if (end - pos < 2) {
                     throw new OmniBufException("omnibuf: truncated 2-byte tag in readSubMsgView");
                 }
                 int u16 = Short.toUnsignedInt(PrefixVarint.getShortLE(packet, pos)) >>> 2;
@@ -695,8 +988,8 @@ public final class OmniBufOpaque {
                 if (tagPacked < 0L) {
                     throw new OmniBufException("omnibuf: malformed or truncated tag in readSubMsgView");
                 }
-                pos = (int) (tagPacked >>> 36);
-                fnum = (int) ((tagPacked >>> 4) & 0xFFFF_FFFFL);
+                pos += (int) (tagPacked >>> 33);
+                fnum = (int) ((tagPacked >>> 4) & 0x1FFF_FFFFL);
                 wt = (int) (tagPacked & 0x0FL);
             }
             if (fnum == 0) {
@@ -742,7 +1035,7 @@ public final class OmniBufOpaque {
                 wt = (b0 >>> 1) & 0x0F;
                 pos += 1;
             } else if ((b0 & 2) != 0) {
-                if (pos + 2 > end) {
+                if (end - pos < 2) {
                     throw new OmniBufException("omnibuf: truncated 2-byte tag in container scan");
                 }
                 int u16 = Short.toUnsignedInt(PrefixVarint.getShortLE(packet, pos)) >>> 2;
@@ -754,8 +1047,8 @@ public final class OmniBufOpaque {
                 if (tagPacked < 0L) {
                     throw new OmniBufException("omnibuf: malformed or truncated tag in container scan");
                 }
-                pos = (int) (tagPacked >>> 36);
-                fnum = (int) ((tagPacked >>> 4) & 0xFFFF_FFFFL);
+                pos += (int) (tagPacked >>> 33);
+                fnum = (int) ((tagPacked >>> 4) & 0x1FFF_FFFFL);
                 wt = (int) (tagPacked & 0x0FL);
             }
             if (fnum == 0) {
@@ -1285,7 +1578,7 @@ public final class OmniBufOpaque {
                 wt = tag & 0x0F;
                 pos += 1;
             } else if ((b0 & 2) != 0) {
-                if (pos + 2 > end) {
+                if (end - pos < 2) {
                     throw new OmniBufException("omnibuf: truncated 2-byte tag in spliceFields");
                 }
                 int u16 = Short.toUnsignedInt(PrefixVarint.getShortLE(packet, pos)) >>> 2;
@@ -1297,8 +1590,8 @@ public final class OmniBufOpaque {
                 if (tagPacked < 0L) {
                     throw new OmniBufException("omnibuf: malformed or truncated tag in spliceFields");
                 }
-                pos = (int) (tagPacked >>> 36);
-                fnum = (int) ((tagPacked >>> 4) & 0xFFFF_FFFFL);
+                pos += (int) (tagPacked >>> 33);
+                fnum = (int) ((tagPacked >>> 4) & 0x1FFF_FFFFL);
                 wt = (int) (tagPacked & 0x0FL);
             }
 
@@ -1375,7 +1668,7 @@ public final class OmniBufOpaque {
                 wt = tag & 0x0F;
                 pos += 1;
             } else if ((b0 & 2) != 0) {
-                if (pos + 2 > end) {
+                if (end - pos < 2) {
                     throw new OmniBufException("omnibuf: truncated 2-byte tag in spliceFields");
                 }
                 int u16 = Short.toUnsignedInt(PrefixVarint.getShortLE(packet, pos)) >>> 2;
@@ -1387,8 +1680,8 @@ public final class OmniBufOpaque {
                 if (tagPacked < 0L) {
                     throw new OmniBufException("omnibuf: malformed or truncated tag in spliceFields");
                 }
-                pos = (int) (tagPacked >>> 36);
-                fnum = (int) ((tagPacked >>> 4) & 0xFFFF_FFFFL);
+                pos += (int) (tagPacked >>> 33);
+                fnum = (int) ((tagPacked >>> 4) & 0x1FFF_FFFFL);
                 wt = (int) (tagPacked & 0x0FL);
             }
 

@@ -3,9 +3,8 @@
 
 package com.omnibuf.pb.conformance;
 
-import com.omnibuf.wire.OmniBufEncoder;
-import com.omnibuf.wire.OmniBufOpaque;
 import com.omnibuf.wire.WireType;
+import java.nio.ByteBuffer;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.LinkedHashMap;
@@ -15,29 +14,35 @@ import java.util.Map;
 public final class OpaqueTestAllTypes {
     private static final byte[] EMPTY_BYTES = new byte[0];
     private static final int MAX_FIELD_NUMBER = 20;
+    private static final int MAX_INDEXED_FIELD = 20;
+
+    private static final class DirtyState {
+        long dirtyMask;
+        int dirty_f1Uint32;
+        long dirty_f2Uint64;
+        int dirty_f3Sint32;
+        long dirty_f4Sint64;
+        boolean dirty_f5Bool;
+        String dirty_f6String;
+        byte[] dirty_f7Bytes;
+        com.omnibuf.pb.conformance.OmniBufAllTypesSubMsg dirty_f8SubMsg;
+        List<String> dirty_f9StringArr;
+        List<Integer> dirty_f10Uint32Arr;
+        List<com.omnibuf.pb.conformance.OmniBufAllTypesSubMsg> dirty_f11SubMsgArr;
+        Map<String, Long> dirty_f12MapStrUint;
+        float dirty_f13Float32;
+        double dirty_f14Float64;
+        int dirty_f15Fixed32;
+        long dirty_f16Fixed64;
+        String dirty_f20OverflowStr;
+    }
 
     private final byte[] buffer;
     private final int offset;
     private final int length;
-    private long dirtyMask;
-
-    private int dirty_f1Uint32;
-    private long dirty_f2Uint64;
-    private int dirty_f3Sint32;
-    private long dirty_f4Sint64;
-    private boolean dirty_f5Bool;
-    private String dirty_f6String;
-    private byte[] dirty_f7Bytes;
-    private com.omnibuf.pb.conformance.OmniBufAllTypesSubMsg dirty_f8SubMsg;
-    private List<String> dirty_f9StringArr;
-    private List<Integer> dirty_f10Uint32Arr;
-    private List<com.omnibuf.pb.conformance.OmniBufAllTypesSubMsg> dirty_f11SubMsgArr;
-    private Map<String, Long> dirty_f12MapStrUint;
-    private float dirty_f13Float32;
-    private double dirty_f14Float64;
-    private int dirty_f15Fixed32;
-    private long dirty_f16Fixed64;
-    private String dirty_f20OverflowStr;
+    private DirtyState dirty;
+    private long[] fieldIndex;
+    private byte readCount;
 
     public OpaqueTestAllTypes(byte[] packet) {
         this.buffer = packet == null ? EMPTY_BYTES : packet;
@@ -46,262 +51,399 @@ public final class OpaqueTestAllTypes {
     }
 
     public OpaqueTestAllTypes(byte[] buffer, int offset, int length) {
-        this.buffer = buffer == null ? EMPTY_BYTES : buffer;
+        byte[] b = buffer == null ? EMPTY_BYTES : buffer;
+        com.omnibuf.wire.OmniBufOpaque.checkSliceBounds(b, offset, length);
+        this.buffer = b;
         this.offset = offset;
         this.length = length;
     }
 
-    public OpaqueTestAllTypes(OmniBufOpaque.PacketView view) {
+    public OpaqueTestAllTypes(com.omnibuf.wire.OmniBufOpaque.PacketView view) {
         this(view.buffer(), view.offset(), view.length());
     }
 
+    public com.omnibuf.wire.OmniBufOpaque.PacketView packetView() {
+        return new com.omnibuf.wire.OmniBufOpaque.PacketView(buffer, offset, length);
+    }
+
+    public ByteBuffer asReadOnlyByteBuffer() {
+        return ByteBuffer.wrap(buffer, offset, length).asReadOnlyBuffer();
+    }
+
+    private DirtyState ensureDirty() {
+        DirtyState d = this.dirty;
+        if (d == null) {
+            d = new DirtyState();
+            this.dirty = d;
+        }
+        return d;
+    }
+
+    private long[] getOrBuildIndex() {
+        long[] idx = this.fieldIndex;
+        if (idx != null) {
+            return idx;
+        }
+        if (this.readCount == 0) {
+            this.readCount = 1;
+            return null;
+        }
+        idx = com.omnibuf.wire.OmniBufOpaque.buildFieldIndex(buffer, offset, length, MAX_INDEXED_FIELD);
+        this.fieldIndex = idx;
+        return idx;
+    }
+
     public boolean hasDirtyFields() {
-        return dirtyMask != 0L;
+        DirtyState d = this.dirty;
+        return d != null && d.dirtyMask != 0L;
     }
 
     public int getF1Uint32() {
-        if ((dirtyMask & 0x2L) != 0L) {
-            return dirty_f1Uint32;
+        DirtyState d = this.dirty;
+        if (d != null && (d.dirtyMask & 0x2L) != 0L) {
+            return d.dirty_f1Uint32;
         }
-        return OmniBufOpaque.readUint32(buffer, offset, length, 1);
+        long[] idx = getOrBuildIndex();
+        if (idx != null) {
+            return com.omnibuf.wire.OmniBufOpaque.readUint32Indexed(idx, buffer, offset, length, 1);
+        }
+        return com.omnibuf.wire.OmniBufOpaque.readUint32(buffer, offset, length, 1);
     }
 
     public OpaqueTestAllTypes setF1Uint32(int value) {
-        this.dirty_f1Uint32 = value;
-        this.dirtyMask |= 0x2L;
+        DirtyState d = ensureDirty();
+        d.dirty_f1Uint32 = value;
+        d.dirtyMask |= 0x2L;
         return this;
     }
 
     public long getF2Uint64() {
-        if ((dirtyMask & 0x4L) != 0L) {
-            return dirty_f2Uint64;
+        DirtyState d = this.dirty;
+        if (d != null && (d.dirtyMask & 0x4L) != 0L) {
+            return d.dirty_f2Uint64;
         }
-        return OmniBufOpaque.readUint64(buffer, offset, length, 2);
+        long[] idx = getOrBuildIndex();
+        if (idx != null) {
+            return com.omnibuf.wire.OmniBufOpaque.readUint64Indexed(idx, buffer, offset, length, 2);
+        }
+        return com.omnibuf.wire.OmniBufOpaque.readUint64(buffer, offset, length, 2);
     }
 
     public OpaqueTestAllTypes setF2Uint64(long value) {
-        this.dirty_f2Uint64 = value;
-        this.dirtyMask |= 0x4L;
+        DirtyState d = ensureDirty();
+        d.dirty_f2Uint64 = value;
+        d.dirtyMask |= 0x4L;
         return this;
     }
 
     public int getF3Sint32() {
-        if ((dirtyMask & 0x8L) != 0L) {
-            return dirty_f3Sint32;
+        DirtyState d = this.dirty;
+        if (d != null && (d.dirtyMask & 0x8L) != 0L) {
+            return d.dirty_f3Sint32;
         }
-        return OmniBufOpaque.readSint32(buffer, offset, length, 3);
+        long[] idx = getOrBuildIndex();
+        if (idx != null) {
+            return com.omnibuf.wire.OmniBufOpaque.readSint32Indexed(idx, buffer, offset, length, 3);
+        }
+        return com.omnibuf.wire.OmniBufOpaque.readSint32(buffer, offset, length, 3);
     }
 
     public OpaqueTestAllTypes setF3Sint32(int value) {
-        this.dirty_f3Sint32 = value;
-        this.dirtyMask |= 0x8L;
+        DirtyState d = ensureDirty();
+        d.dirty_f3Sint32 = value;
+        d.dirtyMask |= 0x8L;
         return this;
     }
 
     public long getF4Sint64() {
-        if ((dirtyMask & 0x10L) != 0L) {
-            return dirty_f4Sint64;
+        DirtyState d = this.dirty;
+        if (d != null && (d.dirtyMask & 0x10L) != 0L) {
+            return d.dirty_f4Sint64;
         }
-        return OmniBufOpaque.readSint64(buffer, offset, length, 4);
+        long[] idx = getOrBuildIndex();
+        if (idx != null) {
+            return com.omnibuf.wire.OmniBufOpaque.readSint64Indexed(idx, buffer, offset, length, 4);
+        }
+        return com.omnibuf.wire.OmniBufOpaque.readSint64(buffer, offset, length, 4);
     }
 
     public OpaqueTestAllTypes setF4Sint64(long value) {
-        this.dirty_f4Sint64 = value;
-        this.dirtyMask |= 0x10L;
+        DirtyState d = ensureDirty();
+        d.dirty_f4Sint64 = value;
+        d.dirtyMask |= 0x10L;
         return this;
     }
 
     public boolean getF5Bool() {
-        if ((dirtyMask & 0x20L) != 0L) {
-            return dirty_f5Bool;
+        DirtyState d = this.dirty;
+        if (d != null && (d.dirtyMask & 0x20L) != 0L) {
+            return d.dirty_f5Bool;
         }
-        return OmniBufOpaque.readBool(buffer, offset, length, 5);
+        long[] idx = getOrBuildIndex();
+        if (idx != null) {
+            return com.omnibuf.wire.OmniBufOpaque.readBoolIndexed(idx, buffer, offset, length, 5);
+        }
+        return com.omnibuf.wire.OmniBufOpaque.readBool(buffer, offset, length, 5);
     }
 
     public OpaqueTestAllTypes setF5Bool(boolean value) {
-        this.dirty_f5Bool = value;
-        this.dirtyMask |= 0x20L;
+        DirtyState d = ensureDirty();
+        d.dirty_f5Bool = value;
+        d.dirtyMask |= 0x20L;
         return this;
     }
 
     public String getF6String() {
-        if ((dirtyMask & 0x40L) != 0L) {
-            return dirty_f6String;
+        DirtyState d = this.dirty;
+        if (d != null && (d.dirtyMask & 0x40L) != 0L) {
+            return d.dirty_f6String;
         }
-        return OmniBufOpaque.readString(buffer, offset, length, 6);
+        long[] idx = getOrBuildIndex();
+        if (idx != null) {
+            return com.omnibuf.wire.OmniBufOpaque.readStringIndexed(idx, buffer, offset, length, 6);
+        }
+        return com.omnibuf.wire.OmniBufOpaque.readString(buffer, offset, length, 6);
     }
 
     public OpaqueTestAllTypes setF6String(String value) {
-        this.dirty_f6String = value == null ? "" : value;
-        this.dirtyMask |= 0x40L;
+        DirtyState d = ensureDirty();
+        d.dirty_f6String = value == null ? "" : value;
+        d.dirtyMask |= 0x40L;
         return this;
     }
 
     public byte[] getF7Bytes() {
-        if ((dirtyMask & 0x80L) != 0L) {
-            return dirty_f7Bytes;
+        DirtyState d = this.dirty;
+        if (d != null && (d.dirtyMask & 0x80L) != 0L) {
+            return d.dirty_f7Bytes;
         }
-        return OmniBufOpaque.readBytes(buffer, offset, length, 7);
+        long[] idx = getOrBuildIndex();
+        if (idx != null) {
+            return com.omnibuf.wire.OmniBufOpaque.readBytesIndexed(idx, buffer, offset, length, 7);
+        }
+        return com.omnibuf.wire.OmniBufOpaque.readBytes(buffer, offset, length, 7);
+    }
+
+    public com.omnibuf.wire.OmniBufOpaque.PacketView getF7BytesView() {
+        DirtyState d = this.dirty;
+        if (d != null && (d.dirtyMask & 0x80L) != 0L) {
+            byte[] b = d.dirty_f7Bytes;
+            return new com.omnibuf.wire.OmniBufOpaque.PacketView(b, 0, b.length);
+        }
+        long[] idx = getOrBuildIndex();
+        if (idx != null) {
+            return com.omnibuf.wire.OmniBufOpaque.readBytesViewIndexed(idx, buffer, offset, length, 7);
+        }
+        return com.omnibuf.wire.OmniBufOpaque.readBytesView(buffer, offset, length, 7);
+    }
+
+    public ByteBuffer getF7BytesBuffer() {
+        return getF7BytesView().asByteBuffer();
     }
 
     public OpaqueTestAllTypes setF7Bytes(byte[] value) {
-        this.dirty_f7Bytes = value == null ? EMPTY_BYTES : value;
-        this.dirtyMask |= 0x80L;
+        DirtyState d = ensureDirty();
+        d.dirty_f7Bytes = value == null ? EMPTY_BYTES : value;
+        d.dirtyMask |= 0x80L;
         return this;
     }
 
     public com.omnibuf.pb.conformance.OpaqueAllTypesSubMsg getF8SubMsg() {
-        if ((dirtyMask & 0x100L) != 0L) {
-            return dirty_f8SubMsg == null
+        DirtyState d = this.dirty;
+        if (d != null && (d.dirtyMask & 0x100L) != 0L) {
+            return d.dirty_f8SubMsg == null
                 ? null
-                : new com.omnibuf.pb.conformance.OpaqueAllTypesSubMsg(com.omnibuf.pb.conformance.AllTypesSubMsgOmniBuf.marshal(dirty_f8SubMsg));
+                : new com.omnibuf.pb.conformance.OpaqueAllTypesSubMsg(com.omnibuf.pb.conformance.AllTypesSubMsgOmniBuf.marshal(d.dirty_f8SubMsg));
         }
-        OmniBufOpaque.PacketView view = OmniBufOpaque.readSubMsgView(buffer, offset, length, 8);
+        long[] idx = getOrBuildIndex();
+        com.omnibuf.wire.OmniBufOpaque.PacketView view = idx != null
+            ? com.omnibuf.wire.OmniBufOpaque.readSubMsgViewIndexed(idx, buffer, offset, length, 8)
+            : com.omnibuf.wire.OmniBufOpaque.readSubMsgView(buffer, offset, length, 8);
         return view == null ? null : new com.omnibuf.pb.conformance.OpaqueAllTypesSubMsg(view);
     }
 
     public boolean hasF8SubMsg() {
-        if ((dirtyMask & 0x100L) != 0L) {
-            return dirty_f8SubMsg != null;
+        DirtyState d = this.dirty;
+        if (d != null && (d.dirtyMask & 0x100L) != 0L) {
+            return d.dirty_f8SubMsg != null;
         }
-        return OmniBufOpaque.hasField(buffer, offset, length, 8, 1 << WireType.WIRE_SUB_MSG);
+        return com.omnibuf.wire.OmniBufOpaque.hasField(buffer, offset, length, 8, 1 << WireType.WIRE_SUB_MSG);
     }
 
     public OpaqueTestAllTypes setF8SubMsg(com.omnibuf.pb.conformance.OmniBufAllTypesSubMsg value) {
-        this.dirty_f8SubMsg = value;
-        this.dirtyMask |= 0x100L;
+        DirtyState d = ensureDirty();
+        d.dirty_f8SubMsg = value;
+        d.dirtyMask |= 0x100L;
         return this;
     }
 
     public List<String> getF9StringArr() {
-        if ((dirtyMask & 0x200L) != 0L) {
-            return dirty_f9StringArr;
+        DirtyState d = this.dirty;
+        if (d != null && (d.dirtyMask & 0x200L) != 0L) {
+            return d.dirty_f9StringArr;
         }
-        return OmniBufOpaque.readStringList(buffer, offset, length, 9);
+        return com.omnibuf.wire.OmniBufOpaque.readStringList(buffer, offset, length, 9);
     }
 
     public OpaqueTestAllTypes setF9StringArr(List<String> value) {
-        this.dirty_f9StringArr = value == null ? new ArrayList<>() : value;
-        this.dirtyMask |= 0x200L;
+        DirtyState d = ensureDirty();
+        d.dirty_f9StringArr = value == null ? new ArrayList<>() : value;
+        d.dirtyMask |= 0x200L;
         return this;
     }
 
     public List<Integer> getF10Uint32Arr() {
-        if ((dirtyMask & 0x400L) != 0L) {
-            return dirty_f10Uint32Arr;
+        DirtyState d = this.dirty;
+        if (d != null && (d.dirtyMask & 0x400L) != 0L) {
+            return d.dirty_f10Uint32Arr;
         }
-        return OmniBufOpaque.readUint32List(buffer, offset, length, 10);
+        return com.omnibuf.wire.OmniBufOpaque.readUint32List(buffer, offset, length, 10);
     }
 
     public OpaqueTestAllTypes setF10Uint32Arr(List<Integer> value) {
-        this.dirty_f10Uint32Arr = value == null ? new ArrayList<>() : value;
-        this.dirtyMask |= 0x400L;
+        DirtyState d = ensureDirty();
+        d.dirty_f10Uint32Arr = value == null ? new ArrayList<>() : value;
+        d.dirtyMask |= 0x400L;
         return this;
     }
 
     public List<com.omnibuf.pb.conformance.OpaqueAllTypesSubMsg> getF11SubMsgArr() {
-        if ((dirtyMask & 0x800L) != 0L) {
-            if (dirty_f11SubMsgArr == null || dirty_f11SubMsgArr.isEmpty()) {
+        DirtyState d = this.dirty;
+        if (d != null && (d.dirtyMask & 0x800L) != 0L) {
+            if (d.dirty_f11SubMsgArr == null || d.dirty_f11SubMsgArr.isEmpty()) {
                 return Collections.emptyList();
             }
-            List<com.omnibuf.pb.conformance.OpaqueAllTypesSubMsg> out = new ArrayList<>(dirty_f11SubMsgArr.size());
-            for (com.omnibuf.pb.conformance.OmniBufAllTypesSubMsg elem : dirty_f11SubMsgArr) {
+            List<com.omnibuf.pb.conformance.OpaqueAllTypesSubMsg> out = new ArrayList<>(d.dirty_f11SubMsgArr.size());
+            for (com.omnibuf.pb.conformance.OmniBufAllTypesSubMsg elem : d.dirty_f11SubMsgArr) {
                 out.add(new com.omnibuf.pb.conformance.OpaqueAllTypesSubMsg(com.omnibuf.pb.conformance.AllTypesSubMsgOmniBuf.marshal(elem)));
             }
             return out;
         }
-        List<OmniBufOpaque.PacketView> views = OmniBufOpaque.readSubMsgList(buffer, offset, length, 11);
+        List<com.omnibuf.wire.OmniBufOpaque.PacketView> views = com.omnibuf.wire.OmniBufOpaque.readSubMsgList(buffer, offset, length, 11);
         if (views.isEmpty()) {
             return Collections.emptyList();
         }
         List<com.omnibuf.pb.conformance.OpaqueAllTypesSubMsg> out = new ArrayList<>(views.size());
-        for (OmniBufOpaque.PacketView v : views) {
+        for (com.omnibuf.wire.OmniBufOpaque.PacketView v : views) {
             out.add(new com.omnibuf.pb.conformance.OpaqueAllTypesSubMsg(v));
         }
         return out;
     }
 
     public OpaqueTestAllTypes setF11SubMsgArr(List<com.omnibuf.pb.conformance.OmniBufAllTypesSubMsg> value) {
-        this.dirty_f11SubMsgArr = value == null ? new ArrayList<>() : value;
-        this.dirtyMask |= 0x800L;
+        DirtyState d = ensureDirty();
+        d.dirty_f11SubMsgArr = value == null ? new ArrayList<>() : value;
+        d.dirtyMask |= 0x800L;
         return this;
     }
 
     public Map<String, Long> getF12MapStrUint() {
-        if ((dirtyMask & 0x1000L) != 0L) {
-            return dirty_f12MapStrUint;
+        DirtyState d = this.dirty;
+        if (d != null && (d.dirtyMask & 0x1000L) != 0L) {
+            return d.dirty_f12MapStrUint;
         }
-        return OmniBufOpaque.readMapStringUint64(buffer, offset, length, 12);
+        return com.omnibuf.wire.OmniBufOpaque.readMapStringUint64(buffer, offset, length, 12);
     }
 
     public OpaqueTestAllTypes setF12MapStrUint(Map<String, Long> value) {
-        this.dirty_f12MapStrUint = value == null ? new LinkedHashMap<>() : value;
-        this.dirtyMask |= 0x1000L;
+        DirtyState d = ensureDirty();
+        d.dirty_f12MapStrUint = value == null ? new LinkedHashMap<>() : value;
+        d.dirtyMask |= 0x1000L;
         return this;
     }
 
     public float getF13Float32() {
-        if ((dirtyMask & 0x2000L) != 0L) {
-            return dirty_f13Float32;
+        DirtyState d = this.dirty;
+        if (d != null && (d.dirtyMask & 0x2000L) != 0L) {
+            return d.dirty_f13Float32;
         }
-        return OmniBufOpaque.readFloat32(buffer, offset, length, 13);
+        long[] idx = getOrBuildIndex();
+        if (idx != null) {
+            return com.omnibuf.wire.OmniBufOpaque.readFloat32Indexed(idx, buffer, offset, length, 13);
+        }
+        return com.omnibuf.wire.OmniBufOpaque.readFloat32(buffer, offset, length, 13);
     }
 
     public OpaqueTestAllTypes setF13Float32(float value) {
-        this.dirty_f13Float32 = value;
-        this.dirtyMask |= 0x2000L;
+        DirtyState d = ensureDirty();
+        d.dirty_f13Float32 = value;
+        d.dirtyMask |= 0x2000L;
         return this;
     }
 
     public double getF14Float64() {
-        if ((dirtyMask & 0x4000L) != 0L) {
-            return dirty_f14Float64;
+        DirtyState d = this.dirty;
+        if (d != null && (d.dirtyMask & 0x4000L) != 0L) {
+            return d.dirty_f14Float64;
         }
-        return OmniBufOpaque.readFloat64(buffer, offset, length, 14);
+        long[] idx = getOrBuildIndex();
+        if (idx != null) {
+            return com.omnibuf.wire.OmniBufOpaque.readFloat64Indexed(idx, buffer, offset, length, 14);
+        }
+        return com.omnibuf.wire.OmniBufOpaque.readFloat64(buffer, offset, length, 14);
     }
 
     public OpaqueTestAllTypes setF14Float64(double value) {
-        this.dirty_f14Float64 = value;
-        this.dirtyMask |= 0x4000L;
+        DirtyState d = ensureDirty();
+        d.dirty_f14Float64 = value;
+        d.dirtyMask |= 0x4000L;
         return this;
     }
 
     public int getF15Fixed32() {
-        if ((dirtyMask & 0x8000L) != 0L) {
-            return dirty_f15Fixed32;
+        DirtyState d = this.dirty;
+        if (d != null && (d.dirtyMask & 0x8000L) != 0L) {
+            return d.dirty_f15Fixed32;
         }
-        return OmniBufOpaque.readFixed32(buffer, offset, length, 15);
+        long[] idx = getOrBuildIndex();
+        if (idx != null) {
+            return com.omnibuf.wire.OmniBufOpaque.readFixed32Indexed(idx, buffer, offset, length, 15);
+        }
+        return com.omnibuf.wire.OmniBufOpaque.readFixed32(buffer, offset, length, 15);
     }
 
     public OpaqueTestAllTypes setF15Fixed32(int value) {
-        this.dirty_f15Fixed32 = value;
-        this.dirtyMask |= 0x8000L;
+        DirtyState d = ensureDirty();
+        d.dirty_f15Fixed32 = value;
+        d.dirtyMask |= 0x8000L;
         return this;
     }
 
     public long getF16Fixed64() {
-        if ((dirtyMask & 0x10000L) != 0L) {
-            return dirty_f16Fixed64;
+        DirtyState d = this.dirty;
+        if (d != null && (d.dirtyMask & 0x10000L) != 0L) {
+            return d.dirty_f16Fixed64;
         }
-        return OmniBufOpaque.readFixed64(buffer, offset, length, 16);
+        long[] idx = getOrBuildIndex();
+        if (idx != null) {
+            return com.omnibuf.wire.OmniBufOpaque.readFixed64Indexed(idx, buffer, offset, length, 16);
+        }
+        return com.omnibuf.wire.OmniBufOpaque.readFixed64(buffer, offset, length, 16);
     }
 
     public OpaqueTestAllTypes setF16Fixed64(long value) {
-        this.dirty_f16Fixed64 = value;
-        this.dirtyMask |= 0x10000L;
+        DirtyState d = ensureDirty();
+        d.dirty_f16Fixed64 = value;
+        d.dirtyMask |= 0x10000L;
         return this;
     }
 
     public String getF20OverflowStr() {
-        if ((dirtyMask & 0x100000L) != 0L) {
-            return dirty_f20OverflowStr;
+        DirtyState d = this.dirty;
+        if (d != null && (d.dirtyMask & 0x100000L) != 0L) {
+            return d.dirty_f20OverflowStr;
         }
-        return OmniBufOpaque.readString(buffer, offset, length, 20);
+        long[] idx = getOrBuildIndex();
+        if (idx != null) {
+            return com.omnibuf.wire.OmniBufOpaque.readStringIndexed(idx, buffer, offset, length, 20);
+        }
+        return com.omnibuf.wire.OmniBufOpaque.readString(buffer, offset, length, 20);
     }
 
     public OpaqueTestAllTypes setF20OverflowStr(String value) {
-        this.dirty_f20OverflowStr = value == null ? "" : value;
-        this.dirtyMask |= 0x100000L;
+        DirtyState d = ensureDirty();
+        d.dirty_f20OverflowStr = value == null ? "" : value;
+        d.dirtyMask |= 0x100000L;
         return this;
     }
 
@@ -309,9 +451,10 @@ public final class OpaqueTestAllTypes {
         return marshalInto(null);
     }
 
-    public byte[] marshalInto(OmniBufEncoder target) {
-        return OmniBufOpaque.spliceFields(
-            buffer, offset, length, dirtyMask, MAX_FIELD_NUMBER, this::writeDirtyField, target
+    public byte[] marshalInto(com.omnibuf.wire.OmniBufEncoder target) {
+        DirtyState d = this.dirty;
+        return com.omnibuf.wire.OmniBufOpaque.spliceFields(
+            buffer, offset, length, (d == null ? 0L : d.dirtyMask), MAX_FIELD_NUMBER, this::writeDirtyField, target
         );
     }
 
@@ -323,39 +466,44 @@ public final class OpaqueTestAllTypes {
         return marshalValidatedInto(null);
     }
 
-    public byte[] marshalValidatedInto(OmniBufEncoder target) {
-        return OmniBufOpaque.spliceFieldsValidated(
-            buffer, offset, length, dirtyMask, MAX_FIELD_NUMBER, this::writeDirtyField, target
+    public byte[] marshalValidatedInto(com.omnibuf.wire.OmniBufEncoder target) {
+        DirtyState d = this.dirty;
+        return com.omnibuf.wire.OmniBufOpaque.spliceFieldsValidated(
+            buffer, offset, length, (d == null ? 0L : d.dirtyMask), MAX_FIELD_NUMBER, this::writeDirtyField, target
         );
     }
 
-    private void writeDirtyField(OmniBufEncoder enc, int fieldNumber) {
+    private void writeDirtyField(com.omnibuf.wire.OmniBufEncoder enc, int fieldNumber) {
+        DirtyState d = this.dirty;
+        if (d == null) {
+            return;
+        }
         boolean deterministic = true;
         switch (fieldNumber) {
             case 1 -> {
-                enc.writeUint32(1, this.dirty_f1Uint32);
+                enc.writeUint32(1, d.dirty_f1Uint32);
             }
             case 2 -> {
-                enc.writeUint(2, this.dirty_f2Uint64);
+                enc.writeUint(2, d.dirty_f2Uint64);
             }
             case 3 -> {
-                enc.writeSint32(3, this.dirty_f3Sint32);
+                enc.writeSint32(3, d.dirty_f3Sint32);
             }
             case 4 -> {
-                enc.writeSint(4, this.dirty_f4Sint64);
+                enc.writeSint(4, d.dirty_f4Sint64);
             }
             case 5 -> {
-                enc.writeBool(5, this.dirty_f5Bool);
+                enc.writeBool(5, d.dirty_f5Bool);
             }
             case 6 -> {
-                enc.writeString1BTag((byte) 0xd5, this.dirty_f6String);
+                enc.writeString1BTag((byte) 0xd5, d.dirty_f6String);
             }
             case 7 -> {
-                enc.writeBytes(7, this.dirty_f7Bytes);
+                enc.writeBytes(7, d.dirty_f7Bytes);
             }
             case 8 -> {
                 {
-                    com.omnibuf.pb.conformance.OmniBufAllTypesSubMsg sub8 = this.dirty_f8SubMsg;
+                    com.omnibuf.pb.conformance.OmniBufAllTypesSubMsg sub8 = d.dirty_f8SubMsg;
                     if (sub8 != null) {
                         int subPos = enc.beginSubMsgFast(8, com.omnibuf.pb.conformance.AllTypesSubMsgOmniBuf.isLargePayload(sub8));
                         com.omnibuf.pb.conformance.AllTypesSubMsgOmniBuf.encode(enc, sub8, deterministic);
@@ -364,16 +512,22 @@ public final class OpaqueTestAllTypes {
                 }
             }
             case 9 -> {
-                enc.writeStringList(9, this.dirty_f9StringArr);
+                enc.writeStringList(9, d.dirty_f9StringArr);
             }
             case 10 -> {
-                enc.writeUint32List(10, this.dirty_f10Uint32Arr);
+                enc.writeUint32List(10, d.dirty_f10Uint32Arr);
             }
             case 11 -> {
                 {
-                    List<com.omnibuf.pb.conformance.OmniBufAllTypesSubMsg> list11 = this.dirty_f11SubMsgArr;
+                    List<com.omnibuf.pb.conformance.OmniBufAllTypesSubMsg> list11 = d.dirty_f11SubMsgArr;
                     int n = list11 == null ? 0 : list11.size();
-                    boolean largeArr = n > 0 && com.omnibuf.pb.conformance.AllTypesSubMsgOmniBuf.isLargePayload(list11.get(0));
+                    boolean largeArr = false;
+                    for (int i = 0; i < n; i++) {
+                        if (com.omnibuf.pb.conformance.AllTypesSubMsgOmniBuf.isLargePayload(list11.get(i))) {
+                            largeArr = true;
+                            break;
+                        }
+                    }
                     int arrPos = enc.beginTypedArrayFast(11, WireType.WIRE_SUB_MSG, n, largeArr);
                     for (int i = 0; i < n; i++) {
                         com.omnibuf.pb.conformance.OmniBufAllTypesSubMsg elem = list11.get(i);
@@ -387,22 +541,22 @@ public final class OpaqueTestAllTypes {
                 }
             }
             case 12 -> {
-                enc.writeMapStringUint64(12, this.dirty_f12MapStrUint, deterministic);
+                enc.writeMapStringUint64(12, d.dirty_f12MapStrUint, deterministic);
             }
             case 13 -> {
-                enc.writeFloat32(13, this.dirty_f13Float32);
+                enc.writeFloat32(13, d.dirty_f13Float32);
             }
             case 14 -> {
-                enc.writeFloat64(14, this.dirty_f14Float64);
+                enc.writeFloat64(14, d.dirty_f14Float64);
             }
             case 15 -> {
-                enc.writeFixed32(15, this.dirty_f15Fixed32);
+                enc.writeFixed32(15, d.dirty_f15Fixed32);
             }
             case 16 -> {
-                enc.writeFixed64(16, this.dirty_f16Fixed64);
+                enc.writeFixed64(16, d.dirty_f16Fixed64);
             }
             case 20 -> {
-                enc.writeString2BTag((short) 0x52a, this.dirty_f20OverflowStr);
+                enc.writeString2BTag((short) 0x52a, d.dirty_f20OverflowStr);
             }
             default -> {}
         }

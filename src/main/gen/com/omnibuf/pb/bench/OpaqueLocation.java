@@ -3,9 +3,8 @@
 
 package com.omnibuf.pb.bench;
 
-import com.omnibuf.wire.OmniBufEncoder;
-import com.omnibuf.wire.OmniBufOpaque;
 import com.omnibuf.wire.WireType;
+import java.nio.ByteBuffer;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.LinkedHashMap;
@@ -15,18 +14,24 @@ import java.util.Map;
 public final class OpaqueLocation {
     private static final byte[] EMPTY_BYTES = new byte[0];
     private static final int MAX_FIELD_NUMBER = 6;
+    private static final int MAX_INDEXED_FIELD = 6;
+
+    private static final class DirtyState {
+        long dirtyMask;
+        String dirty_region;
+        String dirty_datacenter;
+        String dirty_city;
+        int dirty_rack;
+        float dirty_latitude;
+        float dirty_longitude;
+    }
 
     private final byte[] buffer;
     private final int offset;
     private final int length;
-    private long dirtyMask;
-
-    private String dirty_region;
-    private String dirty_datacenter;
-    private String dirty_city;
-    private int dirty_rack;
-    private float dirty_latitude;
-    private float dirty_longitude;
+    private DirtyState dirty;
+    private long[] fieldIndex;
+    private byte readCount;
 
     public OpaqueLocation(byte[] packet) {
         this.buffer = packet == null ? EMPTY_BYTES : packet;
@@ -35,94 +40,164 @@ public final class OpaqueLocation {
     }
 
     public OpaqueLocation(byte[] buffer, int offset, int length) {
-        this.buffer = buffer == null ? EMPTY_BYTES : buffer;
+        byte[] b = buffer == null ? EMPTY_BYTES : buffer;
+        com.omnibuf.wire.OmniBufOpaque.checkSliceBounds(b, offset, length);
+        this.buffer = b;
         this.offset = offset;
         this.length = length;
     }
 
-    public OpaqueLocation(OmniBufOpaque.PacketView view) {
+    public OpaqueLocation(com.omnibuf.wire.OmniBufOpaque.PacketView view) {
         this(view.buffer(), view.offset(), view.length());
     }
 
+    public com.omnibuf.wire.OmniBufOpaque.PacketView packetView() {
+        return new com.omnibuf.wire.OmniBufOpaque.PacketView(buffer, offset, length);
+    }
+
+    public ByteBuffer asReadOnlyByteBuffer() {
+        return ByteBuffer.wrap(buffer, offset, length).asReadOnlyBuffer();
+    }
+
+    private DirtyState ensureDirty() {
+        DirtyState d = this.dirty;
+        if (d == null) {
+            d = new DirtyState();
+            this.dirty = d;
+        }
+        return d;
+    }
+
+    private long[] getOrBuildIndex() {
+        long[] idx = this.fieldIndex;
+        if (idx != null) {
+            return idx;
+        }
+        if (this.readCount == 0) {
+            this.readCount = 1;
+            return null;
+        }
+        idx = com.omnibuf.wire.OmniBufOpaque.buildFieldIndex(buffer, offset, length, MAX_INDEXED_FIELD);
+        this.fieldIndex = idx;
+        return idx;
+    }
+
     public boolean hasDirtyFields() {
-        return dirtyMask != 0L;
+        DirtyState d = this.dirty;
+        return d != null && d.dirtyMask != 0L;
     }
 
     public String getRegion() {
-        if ((dirtyMask & 0x2L) != 0L) {
-            return dirty_region;
+        DirtyState d = this.dirty;
+        if (d != null && (d.dirtyMask & 0x2L) != 0L) {
+            return d.dirty_region;
         }
-        return OmniBufOpaque.readString(buffer, offset, length, 1);
+        long[] idx = getOrBuildIndex();
+        if (idx != null) {
+            return com.omnibuf.wire.OmniBufOpaque.readStringIndexed(idx, buffer, offset, length, 1);
+        }
+        return com.omnibuf.wire.OmniBufOpaque.readString(buffer, offset, length, 1);
     }
 
     public OpaqueLocation setRegion(String value) {
-        this.dirty_region = value == null ? "" : value;
-        this.dirtyMask |= 0x2L;
+        DirtyState d = ensureDirty();
+        d.dirty_region = value == null ? "" : value;
+        d.dirtyMask |= 0x2L;
         return this;
     }
 
     public String getDatacenter() {
-        if ((dirtyMask & 0x4L) != 0L) {
-            return dirty_datacenter;
+        DirtyState d = this.dirty;
+        if (d != null && (d.dirtyMask & 0x4L) != 0L) {
+            return d.dirty_datacenter;
         }
-        return OmniBufOpaque.readString(buffer, offset, length, 2);
+        long[] idx = getOrBuildIndex();
+        if (idx != null) {
+            return com.omnibuf.wire.OmniBufOpaque.readStringIndexed(idx, buffer, offset, length, 2);
+        }
+        return com.omnibuf.wire.OmniBufOpaque.readString(buffer, offset, length, 2);
     }
 
     public OpaqueLocation setDatacenter(String value) {
-        this.dirty_datacenter = value == null ? "" : value;
-        this.dirtyMask |= 0x4L;
+        DirtyState d = ensureDirty();
+        d.dirty_datacenter = value == null ? "" : value;
+        d.dirtyMask |= 0x4L;
         return this;
     }
 
     public String getCity() {
-        if ((dirtyMask & 0x8L) != 0L) {
-            return dirty_city;
+        DirtyState d = this.dirty;
+        if (d != null && (d.dirtyMask & 0x8L) != 0L) {
+            return d.dirty_city;
         }
-        return OmniBufOpaque.readString(buffer, offset, length, 3);
+        long[] idx = getOrBuildIndex();
+        if (idx != null) {
+            return com.omnibuf.wire.OmniBufOpaque.readStringIndexed(idx, buffer, offset, length, 3);
+        }
+        return com.omnibuf.wire.OmniBufOpaque.readString(buffer, offset, length, 3);
     }
 
     public OpaqueLocation setCity(String value) {
-        this.dirty_city = value == null ? "" : value;
-        this.dirtyMask |= 0x8L;
+        DirtyState d = ensureDirty();
+        d.dirty_city = value == null ? "" : value;
+        d.dirtyMask |= 0x8L;
         return this;
     }
 
     public int getRack() {
-        if ((dirtyMask & 0x10L) != 0L) {
-            return dirty_rack;
+        DirtyState d = this.dirty;
+        if (d != null && (d.dirtyMask & 0x10L) != 0L) {
+            return d.dirty_rack;
         }
-        return OmniBufOpaque.readUint32(buffer, offset, length, 4);
+        long[] idx = getOrBuildIndex();
+        if (idx != null) {
+            return com.omnibuf.wire.OmniBufOpaque.readUint32Indexed(idx, buffer, offset, length, 4);
+        }
+        return com.omnibuf.wire.OmniBufOpaque.readUint32(buffer, offset, length, 4);
     }
 
     public OpaqueLocation setRack(int value) {
-        this.dirty_rack = value;
-        this.dirtyMask |= 0x10L;
+        DirtyState d = ensureDirty();
+        d.dirty_rack = value;
+        d.dirtyMask |= 0x10L;
         return this;
     }
 
     public float getLatitude() {
-        if ((dirtyMask & 0x20L) != 0L) {
-            return dirty_latitude;
+        DirtyState d = this.dirty;
+        if (d != null && (d.dirtyMask & 0x20L) != 0L) {
+            return d.dirty_latitude;
         }
-        return OmniBufOpaque.readFloat32(buffer, offset, length, 5);
+        long[] idx = getOrBuildIndex();
+        if (idx != null) {
+            return com.omnibuf.wire.OmniBufOpaque.readFloat32Indexed(idx, buffer, offset, length, 5);
+        }
+        return com.omnibuf.wire.OmniBufOpaque.readFloat32(buffer, offset, length, 5);
     }
 
     public OpaqueLocation setLatitude(float value) {
-        this.dirty_latitude = value;
-        this.dirtyMask |= 0x20L;
+        DirtyState d = ensureDirty();
+        d.dirty_latitude = value;
+        d.dirtyMask |= 0x20L;
         return this;
     }
 
     public float getLongitude() {
-        if ((dirtyMask & 0x40L) != 0L) {
-            return dirty_longitude;
+        DirtyState d = this.dirty;
+        if (d != null && (d.dirtyMask & 0x40L) != 0L) {
+            return d.dirty_longitude;
         }
-        return OmniBufOpaque.readFloat32(buffer, offset, length, 6);
+        long[] idx = getOrBuildIndex();
+        if (idx != null) {
+            return com.omnibuf.wire.OmniBufOpaque.readFloat32Indexed(idx, buffer, offset, length, 6);
+        }
+        return com.omnibuf.wire.OmniBufOpaque.readFloat32(buffer, offset, length, 6);
     }
 
     public OpaqueLocation setLongitude(float value) {
-        this.dirty_longitude = value;
-        this.dirtyMask |= 0x40L;
+        DirtyState d = ensureDirty();
+        d.dirty_longitude = value;
+        d.dirtyMask |= 0x40L;
         return this;
     }
 
@@ -130,9 +205,10 @@ public final class OpaqueLocation {
         return marshalInto(null);
     }
 
-    public byte[] marshalInto(OmniBufEncoder target) {
-        return OmniBufOpaque.spliceFields(
-            buffer, offset, length, dirtyMask, MAX_FIELD_NUMBER, this::writeDirtyField, target
+    public byte[] marshalInto(com.omnibuf.wire.OmniBufEncoder target) {
+        DirtyState d = this.dirty;
+        return com.omnibuf.wire.OmniBufOpaque.spliceFields(
+            buffer, offset, length, (d == null ? 0L : d.dirtyMask), MAX_FIELD_NUMBER, this::writeDirtyField, target
         );
     }
 
@@ -144,31 +220,36 @@ public final class OpaqueLocation {
         return marshalValidatedInto(null);
     }
 
-    public byte[] marshalValidatedInto(OmniBufEncoder target) {
-        return OmniBufOpaque.spliceFieldsValidated(
-            buffer, offset, length, dirtyMask, MAX_FIELD_NUMBER, this::writeDirtyField, target
+    public byte[] marshalValidatedInto(com.omnibuf.wire.OmniBufEncoder target) {
+        DirtyState d = this.dirty;
+        return com.omnibuf.wire.OmniBufOpaque.spliceFieldsValidated(
+            buffer, offset, length, (d == null ? 0L : d.dirtyMask), MAX_FIELD_NUMBER, this::writeDirtyField, target
         );
     }
 
-    private void writeDirtyField(OmniBufEncoder enc, int fieldNumber) {
+    private void writeDirtyField(com.omnibuf.wire.OmniBufEncoder enc, int fieldNumber) {
+        DirtyState d = this.dirty;
+        if (d == null) {
+            return;
+        }
         switch (fieldNumber) {
             case 1 -> {
-                enc.writeString1BTag((byte) 0x35, this.dirty_region);
+                enc.writeString1BTag((byte) 0x35, d.dirty_region);
             }
             case 2 -> {
-                enc.writeString1BTag((byte) 0x55, this.dirty_datacenter);
+                enc.writeString1BTag((byte) 0x55, d.dirty_datacenter);
             }
             case 3 -> {
-                enc.writeString1BTag((byte) 0x75, this.dirty_city);
+                enc.writeString1BTag((byte) 0x75, d.dirty_city);
             }
             case 4 -> {
-                enc.writeUint32(4, this.dirty_rack);
+                enc.writeUint32(4, d.dirty_rack);
             }
             case 5 -> {
-                enc.writeFloat32(5, this.dirty_latitude);
+                enc.writeFloat32(5, d.dirty_latitude);
             }
             case 6 -> {
-                enc.writeFloat32(6, this.dirty_longitude);
+                enc.writeFloat32(6, d.dirty_longitude);
             }
             default -> {}
         }

@@ -11,42 +11,42 @@
     "unit" : "ns",
     "results" : [ {
       "name" : "OmniBuf (Generated)",
-      "nsPerOp" : 315,
-      "opsPerSec" : 3170137,
+      "nsPerOp" : 246,
+      "opsPerSec" : 4071086,
       "wireBytes" : 366,
       "highlight" : true,
       "baseline" : true
     }, {
       "name" : "Protobuf (protobuf-java)",
-      "nsPerOp" : 364,
-      "opsPerSec" : 2746668,
+      "nsPerOp" : 260,
+      "opsPerSec" : 3847110,
       "wireBytes" : 341
     }, {
       "name" : "OmniBuf (@OmniBufField)",
-      "nsPerOp" : 662,
-      "opsPerSec" : 1510544,
+      "nsPerOp" : 514,
+      "opsPerSec" : 1945310,
       "wireBytes" : 366,
       "highlight" : true
     }, {
       "name" : "FlatBuffers",
-      "nsPerOp" : 1021,
-      "opsPerSec" : 979782,
+      "nsPerOp" : 795,
+      "opsPerSec" : 1257517,
       "wireBytes" : 600
     }, {
       "name" : "OmniBuf (Protobuf)",
-      "nsPerOp" : 1358,
-      "opsPerSec" : 736489,
+      "nsPerOp" : 1034,
+      "opsPerSec" : 966683,
       "wireBytes" : 366,
       "highlight" : true
     }, {
       "name" : "JSON (Jackson)",
-      "nsPerOp" : 1559,
-      "opsPerSec" : 641393,
+      "nsPerOp" : 1158,
+      "opsPerSec" : 863913,
       "wireBytes" : 803
     }, {
       "name" : "MessagePack (Jackson)",
-      "nsPerOp" : 2401,
-      "opsPerSec" : 416550,
+      "nsPerOp" : 1955,
+      "opsPerSec" : 511517,
       "wireBytes" : 626
     } ]
   }, {
@@ -54,37 +54,37 @@
     "title" : "Full Message Decode Speed",
     "unit" : "ns",
     "results" : [ {
+      "name" : "OmniBuf (@OmniBufField)",
+      "nsPerOp" : 763,
+      "opsPerSec" : 1311148,
+      "highlight" : true
+    }, {
       "name" : "OmniBuf (Generated)",
-      "nsPerOp" : 1045,
-      "opsPerSec" : 957172,
+      "nsPerOp" : 857,
+      "opsPerSec" : 1166774,
       "highlight" : true,
       "baseline" : true
     }, {
-      "name" : "OmniBuf (@OmniBufField)",
-      "nsPerOp" : 1056,
-      "opsPerSec" : 947079,
-      "highlight" : true
-    }, {
       "name" : "FlatBuffers",
-      "nsPerOp" : 1061,
-      "opsPerSec" : 942438
+      "nsPerOp" : 860,
+      "opsPerSec" : 1163055
     }, {
       "name" : "Protobuf (protobuf-java)",
-      "nsPerOp" : 1520,
-      "opsPerSec" : 657699
+      "nsPerOp" : 1321,
+      "opsPerSec" : 756876
     }, {
       "name" : "OmniBuf (Protobuf)",
-      "nsPerOp" : 2704,
-      "opsPerSec" : 369755,
+      "nsPerOp" : 2150,
+      "opsPerSec" : 465063,
       "highlight" : true
     }, {
       "name" : "JSON (Jackson)",
-      "nsPerOp" : 2950,
-      "opsPerSec" : 339012
+      "nsPerOp" : 2309,
+      "opsPerSec" : 433022
     }, {
       "name" : "MessagePack (Jackson)",
-      "nsPerOp" : 4346,
-      "opsPerSec" : 230074
+      "nsPerOp" : 3575,
+      "opsPerSec" : 279703
     } ]
   }, {
     "id" : "lookup_city",
@@ -92,26 +92,26 @@
     "unit" : "ns",
     "results" : [ {
       "name" : "FlatBuffers",
-      "nsPerOp" : 24,
-      "opsPerSec" : 41794746
+      "nsPerOp" : 15,
+      "opsPerSec" : 67466384
     }, {
       "name" : "OmniBuf (Generated)",
-      "nsPerOp" : 127,
-      "opsPerSec" : 7890737,
+      "nsPerOp" : 77,
+      "opsPerSec" : 13050897,
       "highlight" : true,
       "baseline" : true
     }, {
       "name" : "Protobuf (protobuf-java)",
-      "nsPerOp" : 1036,
-      "opsPerSec" : 965501
+      "nsPerOp" : 883,
+      "opsPerSec" : 1132611
     }, {
       "name" : "JSON (Jackson)",
-      "nsPerOp" : 2607,
-      "opsPerSec" : 383546
+      "nsPerOp" : 1959,
+      "opsPerSec" : 510386
     }, {
       "name" : "MessagePack (Jackson)",
-      "nsPerOp" : 3991,
-      "opsPerSec" : 250541
+      "nsPerOp" : 3121,
+      "opsPerSec" : 320418
     } ]
   }, {
     "id" : "mutate_sequence",
@@ -119,26 +119,26 @@
     "unit" : "ns",
     "results" : [ {
       "name" : "OmniBuf (Generated)",
-      "nsPerOp" : 294,
-      "opsPerSec" : 3396061,
+      "nsPerOp" : 255,
+      "opsPerSec" : 3923670,
       "highlight" : true,
       "baseline" : true
     }, {
       "name" : "FlatBuffers",
-      "nsPerOp" : 1453,
-      "opsPerSec" : 688129
+      "nsPerOp" : 1122,
+      "opsPerSec" : 891214
     }, {
       "name" : "Protobuf (protobuf-java)",
-      "nsPerOp" : 1454,
-      "opsPerSec" : 687891
+      "nsPerOp" : 1123,
+      "opsPerSec" : 890696
     }, {
       "name" : "JSON (Jackson)",
-      "nsPerOp" : 4166,
-      "opsPerSec" : 240024
+      "nsPerOp" : 3214,
+      "opsPerSec" : 311122
     }, {
       "name" : "MessagePack (Jackson)",
-      "nsPerOp" : 6453,
-      "opsPerSec" : 154970
+      "nsPerOp" : 5040,
+      "opsPerSec" : 198429
     } ]
   }, {
     "id" : "encode_nested_shift",
@@ -146,42 +146,42 @@
     "unit" : "ns",
     "results" : [ {
       "name" : "Protobuf (protobuf-java)",
-      "nsPerOp" : 4384,
-      "opsPerSec" : 228106,
+      "nsPerOp" : 3659,
+      "opsPerSec" : 273267,
       "wireBytes" : 39227
     }, {
+      "name" : "OmniBuf (@OmniBufField)",
+      "nsPerOp" : 4125,
+      "opsPerSec" : 242441,
+      "wireBytes" : 39256,
+      "highlight" : true
+    }, {
       "name" : "OmniBuf (Generated)",
-      "nsPerOp" : 5044,
-      "opsPerSec" : 198270,
+      "nsPerOp" : 4218,
+      "opsPerSec" : 237053,
       "wireBytes" : 39256,
       "highlight" : true,
       "baseline" : true
     }, {
-      "name" : "OmniBuf (@OmniBufField)",
-      "nsPerOp" : 5211,
-      "opsPerSec" : 191901,
-      "wireBytes" : 39256,
-      "highlight" : true
-    }, {
       "name" : "OmniBuf (Protobuf)",
-      "nsPerOp" : 6004,
-      "opsPerSec" : 166544,
+      "nsPerOp" : 4700,
+      "opsPerSec" : 212786,
       "wireBytes" : 39256,
       "highlight" : true
     }, {
       "name" : "JSON (Jackson)",
-      "nsPerOp" : 62896,
-      "opsPerSec" : 15899,
+      "nsPerOp" : 48886,
+      "opsPerSec" : 20456,
       "wireBytes" : 39681
     }, {
       "name" : "FlatBuffers",
-      "nsPerOp" : 77382,
-      "opsPerSec" : 12923,
+      "nsPerOp" : 60626,
+      "opsPerSec" : 16495,
       "wireBytes" : 39488
     }, {
       "name" : "MessagePack (Jackson)",
-      "nsPerOp" : 116427,
-      "opsPerSec" : 8589,
+      "nsPerOp" : 90249,
+      "opsPerSec" : 11080,
       "wireBytes" : 39508
     } ]
   }, {
@@ -190,26 +190,26 @@
     "unit" : "ns",
     "results" : [ {
       "name" : "OmniBuf (Generated)",
-      "nsPerOp" : 3020,
-      "opsPerSec" : 331141,
+      "nsPerOp" : 2320,
+      "opsPerSec" : 430959,
       "highlight" : true,
       "baseline" : true
     }, {
       "name" : "Protobuf (protobuf-java)",
-      "nsPerOp" : 24464,
-      "opsPerSec" : 40876
+      "nsPerOp" : 19332,
+      "opsPerSec" : 51728
     }, {
       "name" : "FlatBuffers",
-      "nsPerOp" : 46102,
-      "opsPerSec" : 21691
+      "nsPerOp" : 36126,
+      "opsPerSec" : 27681
     }, {
       "name" : "JSON (Jackson)",
-      "nsPerOp" : 48786,
-      "opsPerSec" : 20498
+      "nsPerOp" : 37974,
+      "opsPerSec" : 26334
     }, {
       "name" : "MessagePack (Jackson)",
-      "nsPerOp" : 87759,
-      "opsPerSec" : 11395
+      "nsPerOp" : 68812,
+      "opsPerSec" : 14532
     } ]
   } ]
 }

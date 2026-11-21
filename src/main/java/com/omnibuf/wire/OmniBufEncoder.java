@@ -443,8 +443,7 @@ public final class OmniBufEncoder {
             int c6 = s.charAt(i + 6);
             int c7 = s.charAt(i + 7);
             if (((c0 | c1 | c2 | c3 | c4 | c5 | c6 | c7) & 0xFF80) != 0) {
-                this.pos = lenBytePos;
-                writeStringNonAscii(s, n);
+                writeStringNonAsciiTail(s, n, lenBytePos, 1, i);
                 return;
             }
             long word = (long) c0
@@ -463,8 +462,7 @@ public final class OmniBufEncoder {
             int c2 = s.charAt(i + 2);
             int c3 = s.charAt(i + 3);
             if (((c0 | c1 | c2 | c3) & 0xFF80) != 0) {
-                this.pos = lenBytePos;
-                writeStringNonAscii(s, n);
+                writeStringNonAsciiTail(s, n, lenBytePos, 1, i);
                 return;
             }
             PrefixVarint.setIntLE(dst, p + i, c0 | (c1 << 8) | (c2 << 16) | (c3 << 24));
@@ -473,35 +471,13 @@ public final class OmniBufEncoder {
         for (; i < n; i++) {
             int c = s.charAt(i);
             if (c >= 0x80) {
-                this.pos = lenBytePos;
-                writeStringNonAscii(s, n);
+                writeStringNonAsciiTail(s, n, lenBytePos, 1, i);
                 return;
             }
             dst[p + i] = (byte) c;
         }
         dst[lenBytePos] = (byte) ((n << 1) | 1);
         this.pos = p + n;
-    }
-
-    private void writeStringNonAscii(String s, int n) {
-        if (n <= 42) {
-            // Maximum UTF-8 expansion 3 * n <= 126 fits strictly in a 1-byte PrefixVarint
-            ensureCapacity(1 + n * 3);
-            int lenBytePos = this.pos;
-            int endPos = encodeUtf8Into(s, n, this.buf, lenBytePos + 1);
-            int utf8Len = endPos - (lenBytePos + 1);
-            this.buf[lenBytePos] = (byte) ((utf8Len << 1) | 1);
-            this.pos = endPos;
-            return;
-        }
-        if (n > 127) {
-            writeLargeStringStreamed(s, n);
-            return;
-        }
-        int utf8Len = utf8LengthStrict(s, n);
-        ensureCapacityLong((long) this.pos + 9L + (long) utf8Len);
-        int payloadPos = PrefixVarint.write(this.buf, this.pos, utf8Len);
-        this.pos = encodeUtf8Into(s, n, this.buf, payloadPos);
     }
 
     private void writeLargeStringStreamed(String s, int n) {
@@ -601,9 +577,28 @@ public final class OmniBufEncoder {
         PrefixVarint.write(this.buf, lenPos, utf8Len);
     }
 
-    private static int utf8LengthStrict(String s, int n) {
-        long len = n;
-        for (int i = 0; i < n; i++) {
+    private void writeStringNonAsciiTail(
+            String s, int n, int lenPos, int reservedHdr, int asciiPrefixLen) {
+        long tailUtf8 = utf8LengthStrictFrom(s, asciiPrefixLen, n);
+        long totalUtf8Long = (long) asciiPrefixLen + tailUtf8;
+        if (totalUtf8Long > MAX_ARRAY_SIZE - 16) {
+            throw new OmniBufException("omnibuf: UTF-8 string exceeds maximum array size");
+        }
+        int utf8Len = (int) totalUtf8Long;
+        int actualHdr = PrefixVarint.encodedLength(utf8Len);
+        this.pos = lenPos;
+        ensureCapacityLong((long) lenPos + (long) actualHdr + (long) utf8Len);
+        byte[] dst = this.buf;
+        if (actualHdr != reservedHdr && asciiPrefixLen > 0) {
+            System.arraycopy(dst, lenPos + reservedHdr, dst, lenPos + actualHdr, asciiPrefixLen);
+        }
+        PrefixVarint.write(dst, lenPos, utf8Len);
+        this.pos = encodeUtf8RangeInto(s, asciiPrefixLen, n, dst, lenPos + actualHdr + asciiPrefixLen);
+    }
+
+    private static long utf8LengthStrictFrom(String s, int start, int n) {
+        long len = n - start;
+        for (int i = start; i < n; i++) {
             char c = s.charAt(i);
             if (c < 0x80) {
                 continue;
@@ -617,20 +612,17 @@ public final class OmniBufEncoder {
                 if (low < 0xDC00 || low > 0xDFFF) {
                     throw new OmniBufException("omnibuf: unpaired UTF-16 surrogate in WireString");
                 }
-                len += 2; // 2 UTF-16 chars (already counted as 2) -> 4 UTF-8 bytes
+                len += 2;
                 i++;
             } else {
                 throw new OmniBufException("omnibuf: unpaired UTF-16 surrogate in WireString");
             }
         }
-        if (len > MAX_ARRAY_SIZE - 16) {
-            throw new OmniBufException("omnibuf: UTF-8 string exceeds maximum array size");
-        }
-        return (int) len;
+        return len;
     }
 
-    private static int encodeUtf8Into(String s, int n, byte[] dst, int p) {
-        for (int i = 0; i < n; i++) {
+    private static int encodeUtf8RangeInto(String s, int start, int n, byte[] dst, int p) {
+        for (int i = start; i < n; i++) {
             char c = s.charAt(i);
             if (c < 0x80) {
                 dst[p++] = (byte) c;
@@ -1189,6 +1181,13 @@ public final class OmniBufEncoder {
 
     public void writeMapStringUint64(int fieldNumber, Map<String, Long> map, boolean deterministic) {
         int n = map == null ? 0 : map.size();
+        if (n > 0) {
+            for (String key : map.keySet()) {
+                if (key == null) {
+                    throw new OmniBufException("omnibuf: null WireMap key is not allowed");
+                }
+            }
+        }
         int lenPos = beginTypedMapFast(fieldNumber, WireType.WIRE_STRING, WireType.WIRE_UINT, n);
         if (n > 0) {
             Map<String, Long> iter;
@@ -1214,6 +1213,11 @@ public final class OmniBufEncoder {
      */
     public static <K, V> Iterable<Map.Entry<K, V>> sortMapEntries(
             Map<K, V> map, int keyWireType, boolean deterministic) {
+        for (K key : map.keySet()) {
+            if (key == null) {
+                throw new OmniBufException("omnibuf: null WireMap key is not allowed");
+            }
+        }
         if (!deterministic || map.size() <= 1) {
             return map.entrySet();
         }

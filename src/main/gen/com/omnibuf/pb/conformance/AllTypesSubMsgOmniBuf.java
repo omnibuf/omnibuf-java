@@ -4,12 +4,9 @@
 package com.omnibuf.pb.conformance;
 
 import com.omnibuf.MarshalOptions;
-import com.omnibuf.OmniBufException;
 import com.omnibuf.SchemaMeta;
 import com.omnibuf.UnmarshalOptions;
 import com.omnibuf.wire.CodecPool;
-import com.omnibuf.wire.OmniBufDecoder;
-import com.omnibuf.wire.OmniBufEncoder;
 import com.omnibuf.wire.PrefixVarint;
 import com.omnibuf.wire.WireType;
 import java.util.HashSet;
@@ -95,10 +92,10 @@ public final class AllTypesSubMsgOmniBuf {
 
     public static byte[] marshal(OmniBufAllTypesSubMsg msg, MarshalOptions options) {
         if (msg == null) {
-            throw new OmniBufException("omnibuf: cannot marshal null AllTypesSubMsg");
+            throw new com.omnibuf.OmniBufException("omnibuf: cannot marshal null AllTypesSubMsg");
         }
         MarshalOptions opts = options == null ? MarshalOptions.DEFAULT : options;
-        OmniBufEncoder enc = CodecPool.acquireEncoder();
+        com.omnibuf.wire.OmniBufEncoder enc = CodecPool.acquireEncoder();
         try {
             if (opts.selfDescribing()) {
                 if (isCyclicSchema()) {
@@ -133,7 +130,7 @@ public final class AllTypesSubMsgOmniBuf {
         return false;
     }
 
-    public static void encode(OmniBufEncoder enc, OmniBufAllTypesSubMsg msg, boolean deterministic) {
+    public static void encode(com.omnibuf.wire.OmniBufEncoder enc, OmniBufAllTypesSubMsg msg, boolean deterministic) {
         {
             byte[] dst = enc.ensureFree(10);
             int p = enc.rawPosition();
@@ -158,9 +155,9 @@ public final class AllTypesSubMsgOmniBuf {
 
     public static OmniBufAllTypesSubMsg unmarshal(byte[] data, UnmarshalOptions options) {
         if (data == null) {
-            throw new OmniBufException("omnibuf: null packet buffer");
+            throw new com.omnibuf.OmniBufException("omnibuf: null packet buffer");
         }
-        OmniBufDecoder dec = CodecPool.acquireDecoder(data, 0, data.length, options);
+        com.omnibuf.wire.OmniBufDecoder dec = CodecPool.acquireDecoder(data, 0, data.length, options);
         try {
             OmniBufAllTypesSubMsg out = new OmniBufAllTypesSubMsg();
             decodeFrom(dec, out, 0);
@@ -176,12 +173,12 @@ public final class AllTypesSubMsgOmniBuf {
 
     public static void unmarshal(byte[] data, OmniBufAllTypesSubMsg target, UnmarshalOptions options) {
         if (data == null) {
-            throw new OmniBufException("omnibuf: null packet buffer");
+            throw new com.omnibuf.OmniBufException("omnibuf: null packet buffer");
         }
         if (target == null) {
-            throw new OmniBufException("omnibuf: null target instance");
+            throw new com.omnibuf.OmniBufException("omnibuf: null target instance");
         }
-        OmniBufDecoder dec = CodecPool.acquireDecoder(data, 0, data.length, options);
+        com.omnibuf.wire.OmniBufDecoder dec = CodecPool.acquireDecoder(data, 0, data.length, options);
         try {
             target.reset();
             decodeFrom(dec, target, 0);
@@ -192,7 +189,7 @@ public final class AllTypesSubMsgOmniBuf {
 
     public static void decodeInto(
             byte[] data, int offset, int length, OmniBufAllTypesSubMsg target, int depth) {
-        OmniBufDecoder dec = CodecPool.acquireDecoder(data, offset, length);
+        com.omnibuf.wire.OmniBufDecoder dec = CodecPool.acquireDecoder(data, offset, length);
         try {
             decodeFrom(dec, target, depth);
         } finally {
@@ -200,9 +197,9 @@ public final class AllTypesSubMsgOmniBuf {
         }
     }
 
-    public static void decodeFrom(OmniBufDecoder dec, OmniBufAllTypesSubMsg target, int depth) {
+    public static void decodeFrom(com.omnibuf.wire.OmniBufDecoder dec, OmniBufAllTypesSubMsg target, int depth) {
         if (depth > dec.maxNestingDepth()) {
-            throw new OmniBufException("omnibuf: nesting depth exceeds MaxNestingDepth");
+            throw new com.omnibuf.OmniBufException("omnibuf: nesting depth exceeds MaxNestingDepth");
         }
         while (dec.hasRemaining()) {
             long tag = dec.readTag();

@@ -17,8 +17,11 @@ import com.omnibuf.pb.bench.OmniBufPeerUpdate;
 import com.omnibuf.pb.bench.OpaqueLocation;
 import com.omnibuf.pb.bench.OpaquePeerUpdate;
 import com.omnibuf.pb.bench.PeerUpdateOmniBuf;
+import com.omnibuf.pb.conformance.OmniBufTestAllTypes;
 import com.omnibuf.pb.conformance.OpaqueTestAllTypes;
 import java.io.ByteArrayOutputStream;
+import java.nio.ByteBuffer;
+import java.nio.ReadOnlyBufferException;
 import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
 import java.util.List;
@@ -374,5 +377,33 @@ class WireContainerAndOpaqueTest {
                 unkBytes
             )
         );
+    }
+
+    @Test
+    void opaqueZeroCopyBytesViewAndReadOnlyByteBufferShareBackingPacket() {
+        byte[] rawPayload = new byte[] {0x10, 0x20, 0x30, 0x40, 0x50};
+        byte[] pkt = new OmniBufTestAllTypes()
+            .setF1Uint32(77)
+            .setF6String("zero-copy-java")
+            .setF7Bytes(rawPayload)
+            .marshal();
+
+        OpaqueTestAllTypes view = new OpaqueTestAllTypes(pkt);
+        // Trigger lazy fieldIndex on second and subsequent reads
+        assertEquals(77, view.getF1Uint32());
+        assertEquals("zero-copy-java", view.getF6String());
+
+        OmniBufOpaque.PacketView f7View = view.getF7BytesView();
+        assertSame(pkt, f7View.buffer());
+        assertEquals(rawPayload.length, f7View.length());
+        assertArrayEquals(rawPayload, f7View.toByteArray());
+
+        ByteBuffer roBuf = view.getF7BytesBuffer();
+        assertTrue(roBuf.isReadOnly());
+        assertEquals(rawPayload.length, roBuf.remaining());
+        assertThrows(ReadOnlyBufferException.class, () -> roBuf.put((byte) 1));
+        byte[] fromBuf = new byte[roBuf.remaining()];
+        roBuf.get(fromBuf);
+        assertArrayEquals(rawPayload, fromBuf);
     }
 }

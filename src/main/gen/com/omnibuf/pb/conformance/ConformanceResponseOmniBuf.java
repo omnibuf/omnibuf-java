@@ -4,12 +4,9 @@
 package com.omnibuf.pb.conformance;
 
 import com.omnibuf.MarshalOptions;
-import com.omnibuf.OmniBufException;
 import com.omnibuf.SchemaMeta;
 import com.omnibuf.UnmarshalOptions;
 import com.omnibuf.wire.CodecPool;
-import com.omnibuf.wire.OmniBufDecoder;
-import com.omnibuf.wire.OmniBufEncoder;
 import com.omnibuf.wire.WireType;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
@@ -98,10 +95,10 @@ public final class ConformanceResponseOmniBuf {
 
     public static byte[] marshal(OmniBufConformanceResponse msg, MarshalOptions options) {
         if (msg == null) {
-            throw new OmniBufException("omnibuf: cannot marshal null ConformanceResponse");
+            throw new com.omnibuf.OmniBufException("omnibuf: cannot marshal null ConformanceResponse");
         }
         MarshalOptions opts = options == null ? MarshalOptions.DEFAULT : options;
-        OmniBufEncoder enc = CodecPool.acquireEncoder();
+        com.omnibuf.wire.OmniBufEncoder enc = CodecPool.acquireEncoder();
         try {
             if (opts.selfDescribing()) {
                 if (isCyclicSchema()) {
@@ -141,7 +138,7 @@ public final class ConformanceResponseOmniBuf {
         return false;
     }
 
-    public static void encode(OmniBufEncoder enc, OmniBufConformanceResponse msg, boolean deterministic) {
+    public static void encode(com.omnibuf.wire.OmniBufEncoder enc, OmniBufConformanceResponse msg, boolean deterministic) {
         enc.writeString1BTag((byte) 0x35, msg.parseError);
         enc.writeString1BTag((byte) 0x55, msg.serializeError);
         enc.writeString1BTag((byte) 0x75, msg.runtimeError);
@@ -156,9 +153,9 @@ public final class ConformanceResponseOmniBuf {
 
     public static OmniBufConformanceResponse unmarshal(byte[] data, UnmarshalOptions options) {
         if (data == null) {
-            throw new OmniBufException("omnibuf: null packet buffer");
+            throw new com.omnibuf.OmniBufException("omnibuf: null packet buffer");
         }
-        OmniBufDecoder dec = CodecPool.acquireDecoder(data, 0, data.length, options);
+        com.omnibuf.wire.OmniBufDecoder dec = CodecPool.acquireDecoder(data, 0, data.length, options);
         try {
             OmniBufConformanceResponse out = new OmniBufConformanceResponse();
             decodeFrom(dec, out, 0);
@@ -174,12 +171,12 @@ public final class ConformanceResponseOmniBuf {
 
     public static void unmarshal(byte[] data, OmniBufConformanceResponse target, UnmarshalOptions options) {
         if (data == null) {
-            throw new OmniBufException("omnibuf: null packet buffer");
+            throw new com.omnibuf.OmniBufException("omnibuf: null packet buffer");
         }
         if (target == null) {
-            throw new OmniBufException("omnibuf: null target instance");
+            throw new com.omnibuf.OmniBufException("omnibuf: null target instance");
         }
-        OmniBufDecoder dec = CodecPool.acquireDecoder(data, 0, data.length, options);
+        com.omnibuf.wire.OmniBufDecoder dec = CodecPool.acquireDecoder(data, 0, data.length, options);
         try {
             target.reset();
             decodeFrom(dec, target, 0);
@@ -190,7 +187,7 @@ public final class ConformanceResponseOmniBuf {
 
     public static void decodeInto(
             byte[] data, int offset, int length, OmniBufConformanceResponse target, int depth) {
-        OmniBufDecoder dec = CodecPool.acquireDecoder(data, offset, length);
+        com.omnibuf.wire.OmniBufDecoder dec = CodecPool.acquireDecoder(data, offset, length);
         try {
             decodeFrom(dec, target, depth);
         } finally {
@@ -198,9 +195,9 @@ public final class ConformanceResponseOmniBuf {
         }
     }
 
-    public static void decodeFrom(OmniBufDecoder dec, OmniBufConformanceResponse target, int depth) {
+    public static void decodeFrom(com.omnibuf.wire.OmniBufDecoder dec, OmniBufConformanceResponse target, int depth) {
         if (depth > dec.maxNestingDepth()) {
-            throw new OmniBufException("omnibuf: nesting depth exceeds MaxNestingDepth");
+            throw new com.omnibuf.OmniBufException("omnibuf: nesting depth exceeds MaxNestingDepth");
         }
         while (dec.hasRemaining()) {
             long tag = dec.readTag();

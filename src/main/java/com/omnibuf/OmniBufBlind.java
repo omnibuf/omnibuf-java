@@ -291,6 +291,9 @@ public final class OmniBufBlind {
                         if ((long) baos.size() + s.length() > opts.maxMessageBytes()) {
                             throw new OmniBufException("omnibuf: merged sub-message exceeds maxMessageBytes");
                         }
+                        OmniBufDecoder.validateMessage(
+                            data, s.offset(), s.length(), depth + 1, maxDepth, maxElems
+                        );
                         baos.write(data, s.offset(), s.length());
                     } else if (singleSubSlices.containsKey(name)) {
                         OmniBufDecoder.Slice first = singleSubSlices.remove(name);
@@ -506,11 +509,18 @@ public final class OmniBufBlind {
         int minLen = valWT == WireType.WIRE_ARRAY ? 2 : 3;
         BlindShape valShape = null;
         for (int i = 0; i < hdr.count(); i++) {
-            int afterKey = OmniBufDecoder.tryFastSkipValue(data, p, end, keyWT);
-            if (afterKey < 0) {
-                throw new OmniBufException("omnibuf: truncated WireMap key at " + p);
+            if (keyWT == WireType.WIRE_BOOL_FALSE) {
+                if (p >= end || (data[p] & 0xFF) > 1) {
+                    throw new OmniBufException("omnibuf: invalid or truncated WireMap boolean key at " + p);
+                }
+                p += 1;
+            } else {
+                int afterKey = OmniBufDecoder.tryFastSkipValue(data, p, end, keyWT);
+                if (afterKey < 0) {
+                    throw new OmniBufException("omnibuf: truncated WireMap key at " + p);
+                }
+                p = afterKey;
             }
-            p = afterKey;
             OmniBufDecoder.Slice vs = OmniBufDecoder.readLengthSlice(data, p, end, minLen);
             BlindShape child = parseBlindContainerShape(
                 data, vs.offset(), vs.end(), valWT, depth + 1, maxNestingDepth, maxCollectionElements, fnum
@@ -926,22 +936,20 @@ public final class OmniBufBlind {
         if (f == 0.0f) {
             return bits < 0 ? "-0.0" : "0";
         }
+        float abs = Math.abs(f);
+        boolean fixedPoint = abs >= 1e-6f && abs < 1e21f;
         String s = Float.toString(f);
         int eIdx = s.indexOf('E');
-        if (eIdx < 0) {
-            if (s.endsWith(".0")) {
-                return s.substring(0, s.length() - 2);
-            }
-            return s;
-        }
-        int sigStart = s.charAt(0) == '-' ? 1 : 0;
-        if (eIdx - sigStart == 3 && s.charAt(sigStart + 1) == '.') {
-            String cand = new BigDecimal(s).round(ONE_SIG_DIGIT).toString().toLowerCase(Locale.ROOT);
-            if (Float.floatToRawIntBits(Float.parseFloat(cand)) == bits) {
-                return cand;
+        if (eIdx >= 0) {
+            int sigStart = s.charAt(0) == '-' ? 1 : 0;
+            if (eIdx - sigStart == 3 && s.charAt(sigStart + 1) == '.') {
+                BigDecimal cand = new BigDecimal(s).round(ONE_SIG_DIGIT);
+                if (Float.floatToRawIntBits(Float.parseFloat(cand.toString())) == bits) {
+                    return formatCanonicalDecimal(cand, fixedPoint);
+                }
             }
         }
-        return s.toLowerCase(Locale.ROOT);
+        return formatCanonicalDecimal(new BigDecimal(s), fixedPoint);
     }
 
     private static String formatFloat64Json(double d) {
@@ -949,22 +957,28 @@ public final class OmniBufBlind {
         if (d == 0.0d) {
             return bits < 0L ? "-0.0" : "0";
         }
+        double abs = Math.abs(d);
+        boolean fixedPoint = abs >= 1e-6d && abs < 1e21d;
         String s = Double.toString(d);
         int eIdx = s.indexOf('E');
-        if (eIdx < 0) {
-            if (s.endsWith(".0")) {
-                return s.substring(0, s.length() - 2);
-            }
-            return s;
-        }
-        int sigStart = s.charAt(0) == '-' ? 1 : 0;
-        if (eIdx - sigStart == 3 && s.charAt(sigStart + 1) == '.') {
-            String cand = new BigDecimal(s).round(ONE_SIG_DIGIT).toString().toLowerCase(Locale.ROOT);
-            if (Double.doubleToRawLongBits(Double.parseDouble(cand)) == bits) {
-                return cand;
+        if (eIdx >= 0) {
+            int sigStart = s.charAt(0) == '-' ? 1 : 0;
+            if (eIdx - sigStart == 3 && s.charAt(sigStart + 1) == '.') {
+                BigDecimal cand = new BigDecimal(s).round(ONE_SIG_DIGIT);
+                if (Double.doubleToRawLongBits(Double.parseDouble(cand.toString())) == bits) {
+                    return formatCanonicalDecimal(cand, fixedPoint);
+                }
             }
         }
-        return s.toLowerCase(Locale.ROOT);
+        return formatCanonicalDecimal(new BigDecimal(s), fixedPoint);
+    }
+
+    private static String formatCanonicalDecimal(BigDecimal bd, boolean fixedPoint) {
+        BigDecimal stripped = bd.stripTrailingZeros();
+        if (fixedPoint) {
+            return stripped.toPlainString();
+        }
+        return stripped.toString().toLowerCase(Locale.ROOT);
     }
 
     private static void writeJsonString(StringBuilder sb, String s) {

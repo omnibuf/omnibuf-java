@@ -3,9 +3,8 @@
 
 package com.omnibuf.pb.bench;
 
-import com.omnibuf.wire.OmniBufEncoder;
-import com.omnibuf.wire.OmniBufOpaque;
 import com.omnibuf.wire.WireType;
+import java.nio.ByteBuffer;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.LinkedHashMap;
@@ -15,16 +14,22 @@ import java.util.Map;
 public final class OpaqueNeighbor {
     private static final byte[] EMPTY_BYTES = new byte[0];
     private static final int MAX_FIELD_NUMBER = 4;
+    private static final int MAX_INDEXED_FIELD = 4;
+
+    private static final class DirtyState {
+        long dirtyMask;
+        int dirty_peerAsn;
+        String dirty_router;
+        int dirty_latencyUs;
+        boolean dirty_established;
+    }
 
     private final byte[] buffer;
     private final int offset;
     private final int length;
-    private long dirtyMask;
-
-    private int dirty_peerAsn;
-    private String dirty_router;
-    private int dirty_latencyUs;
-    private boolean dirty_established;
+    private DirtyState dirty;
+    private long[] fieldIndex;
+    private byte readCount;
 
     public OpaqueNeighbor(byte[] packet) {
         this.buffer = packet == null ? EMPTY_BYTES : packet;
@@ -33,68 +38,126 @@ public final class OpaqueNeighbor {
     }
 
     public OpaqueNeighbor(byte[] buffer, int offset, int length) {
-        this.buffer = buffer == null ? EMPTY_BYTES : buffer;
+        byte[] b = buffer == null ? EMPTY_BYTES : buffer;
+        com.omnibuf.wire.OmniBufOpaque.checkSliceBounds(b, offset, length);
+        this.buffer = b;
         this.offset = offset;
         this.length = length;
     }
 
-    public OpaqueNeighbor(OmniBufOpaque.PacketView view) {
+    public OpaqueNeighbor(com.omnibuf.wire.OmniBufOpaque.PacketView view) {
         this(view.buffer(), view.offset(), view.length());
     }
 
+    public com.omnibuf.wire.OmniBufOpaque.PacketView packetView() {
+        return new com.omnibuf.wire.OmniBufOpaque.PacketView(buffer, offset, length);
+    }
+
+    public ByteBuffer asReadOnlyByteBuffer() {
+        return ByteBuffer.wrap(buffer, offset, length).asReadOnlyBuffer();
+    }
+
+    private DirtyState ensureDirty() {
+        DirtyState d = this.dirty;
+        if (d == null) {
+            d = new DirtyState();
+            this.dirty = d;
+        }
+        return d;
+    }
+
+    private long[] getOrBuildIndex() {
+        long[] idx = this.fieldIndex;
+        if (idx != null) {
+            return idx;
+        }
+        if (this.readCount == 0) {
+            this.readCount = 1;
+            return null;
+        }
+        idx = com.omnibuf.wire.OmniBufOpaque.buildFieldIndex(buffer, offset, length, MAX_INDEXED_FIELD);
+        this.fieldIndex = idx;
+        return idx;
+    }
+
     public boolean hasDirtyFields() {
-        return dirtyMask != 0L;
+        DirtyState d = this.dirty;
+        return d != null && d.dirtyMask != 0L;
     }
 
     public int getPeerAsn() {
-        if ((dirtyMask & 0x2L) != 0L) {
-            return dirty_peerAsn;
+        DirtyState d = this.dirty;
+        if (d != null && (d.dirtyMask & 0x2L) != 0L) {
+            return d.dirty_peerAsn;
         }
-        return OmniBufOpaque.readUint32(buffer, offset, length, 1);
+        long[] idx = getOrBuildIndex();
+        if (idx != null) {
+            return com.omnibuf.wire.OmniBufOpaque.readUint32Indexed(idx, buffer, offset, length, 1);
+        }
+        return com.omnibuf.wire.OmniBufOpaque.readUint32(buffer, offset, length, 1);
     }
 
     public OpaqueNeighbor setPeerAsn(int value) {
-        this.dirty_peerAsn = value;
-        this.dirtyMask |= 0x2L;
+        DirtyState d = ensureDirty();
+        d.dirty_peerAsn = value;
+        d.dirtyMask |= 0x2L;
         return this;
     }
 
     public String getRouter() {
-        if ((dirtyMask & 0x4L) != 0L) {
-            return dirty_router;
+        DirtyState d = this.dirty;
+        if (d != null && (d.dirtyMask & 0x4L) != 0L) {
+            return d.dirty_router;
         }
-        return OmniBufOpaque.readString(buffer, offset, length, 2);
+        long[] idx = getOrBuildIndex();
+        if (idx != null) {
+            return com.omnibuf.wire.OmniBufOpaque.readStringIndexed(idx, buffer, offset, length, 2);
+        }
+        return com.omnibuf.wire.OmniBufOpaque.readString(buffer, offset, length, 2);
     }
 
     public OpaqueNeighbor setRouter(String value) {
-        this.dirty_router = value == null ? "" : value;
-        this.dirtyMask |= 0x4L;
+        DirtyState d = ensureDirty();
+        d.dirty_router = value == null ? "" : value;
+        d.dirtyMask |= 0x4L;
         return this;
     }
 
     public int getLatencyUs() {
-        if ((dirtyMask & 0x8L) != 0L) {
-            return dirty_latencyUs;
+        DirtyState d = this.dirty;
+        if (d != null && (d.dirtyMask & 0x8L) != 0L) {
+            return d.dirty_latencyUs;
         }
-        return OmniBufOpaque.readUint32(buffer, offset, length, 3);
+        long[] idx = getOrBuildIndex();
+        if (idx != null) {
+            return com.omnibuf.wire.OmniBufOpaque.readUint32Indexed(idx, buffer, offset, length, 3);
+        }
+        return com.omnibuf.wire.OmniBufOpaque.readUint32(buffer, offset, length, 3);
     }
 
     public OpaqueNeighbor setLatencyUs(int value) {
-        this.dirty_latencyUs = value;
-        this.dirtyMask |= 0x8L;
+        DirtyState d = ensureDirty();
+        d.dirty_latencyUs = value;
+        d.dirtyMask |= 0x8L;
         return this;
     }
 
     public boolean getEstablished() {
-        if ((dirtyMask & 0x10L) != 0L) {
-            return dirty_established;
+        DirtyState d = this.dirty;
+        if (d != null && (d.dirtyMask & 0x10L) != 0L) {
+            return d.dirty_established;
         }
-        return OmniBufOpaque.readBool(buffer, offset, length, 4);
+        long[] idx = getOrBuildIndex();
+        if (idx != null) {
+            return com.omnibuf.wire.OmniBufOpaque.readBoolIndexed(idx, buffer, offset, length, 4);
+        }
+        return com.omnibuf.wire.OmniBufOpaque.readBool(buffer, offset, length, 4);
     }
 
     public OpaqueNeighbor setEstablished(boolean value) {
-        this.dirty_established = value;
-        this.dirtyMask |= 0x10L;
+        DirtyState d = ensureDirty();
+        d.dirty_established = value;
+        d.dirtyMask |= 0x10L;
         return this;
     }
 
@@ -102,9 +165,10 @@ public final class OpaqueNeighbor {
         return marshalInto(null);
     }
 
-    public byte[] marshalInto(OmniBufEncoder target) {
-        return OmniBufOpaque.spliceFields(
-            buffer, offset, length, dirtyMask, MAX_FIELD_NUMBER, this::writeDirtyField, target
+    public byte[] marshalInto(com.omnibuf.wire.OmniBufEncoder target) {
+        DirtyState d = this.dirty;
+        return com.omnibuf.wire.OmniBufOpaque.spliceFields(
+            buffer, offset, length, (d == null ? 0L : d.dirtyMask), MAX_FIELD_NUMBER, this::writeDirtyField, target
         );
     }
 
@@ -116,25 +180,30 @@ public final class OpaqueNeighbor {
         return marshalValidatedInto(null);
     }
 
-    public byte[] marshalValidatedInto(OmniBufEncoder target) {
-        return OmniBufOpaque.spliceFieldsValidated(
-            buffer, offset, length, dirtyMask, MAX_FIELD_NUMBER, this::writeDirtyField, target
+    public byte[] marshalValidatedInto(com.omnibuf.wire.OmniBufEncoder target) {
+        DirtyState d = this.dirty;
+        return com.omnibuf.wire.OmniBufOpaque.spliceFieldsValidated(
+            buffer, offset, length, (d == null ? 0L : d.dirtyMask), MAX_FIELD_NUMBER, this::writeDirtyField, target
         );
     }
 
-    private void writeDirtyField(OmniBufEncoder enc, int fieldNumber) {
+    private void writeDirtyField(com.omnibuf.wire.OmniBufEncoder enc, int fieldNumber) {
+        DirtyState d = this.dirty;
+        if (d == null) {
+            return;
+        }
         switch (fieldNumber) {
             case 1 -> {
-                enc.writeUint32(1, this.dirty_peerAsn);
+                enc.writeUint32(1, d.dirty_peerAsn);
             }
             case 2 -> {
-                enc.writeString1BTag((byte) 0x55, this.dirty_router);
+                enc.writeString1BTag((byte) 0x55, d.dirty_router);
             }
             case 3 -> {
-                enc.writeUint32(3, this.dirty_latencyUs);
+                enc.writeUint32(3, d.dirty_latencyUs);
             }
             case 4 -> {
-                enc.writeBool(4, this.dirty_established);
+                enc.writeBool(4, d.dirty_established);
             }
             default -> {}
         }

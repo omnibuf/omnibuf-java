@@ -3,9 +3,8 @@
 
 package com.omnibuf.pb.bench;
 
-import com.omnibuf.wire.OmniBufEncoder;
-import com.omnibuf.wire.OmniBufOpaque;
 import com.omnibuf.wire.WireType;
+import java.nio.ByteBuffer;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.LinkedHashMap;
@@ -15,23 +14,29 @@ import java.util.Map;
 public final class OpaquePeerUpdate {
     private static final byte[] EMPTY_BYTES = new byte[0];
     private static final int MAX_FIELD_NUMBER = 11;
+    private static final int MAX_INDEXED_FIELD = 11;
+
+    private static final class DirtyState {
+        long dirtyMask;
+        int dirty_asn;
+        String dirty_routerId;
+        boolean dirty_active;
+        long dirty_uptimeSec;
+        int dirty_rssiDbm;
+        double dirty_cpuLoad;
+        List<String> dirty_tags;
+        List<Integer> dirty_prefixes;
+        com.omnibuf.pb.bench.OmniBufLocation dirty_location;
+        List<com.omnibuf.pb.bench.OmniBufNeighbor> dirty_neighbors;
+        long dirty_sequence;
+    }
 
     private final byte[] buffer;
     private final int offset;
     private final int length;
-    private long dirtyMask;
-
-    private int dirty_asn;
-    private String dirty_routerId;
-    private boolean dirty_active;
-    private long dirty_uptimeSec;
-    private int dirty_rssiDbm;
-    private double dirty_cpuLoad;
-    private List<String> dirty_tags;
-    private List<Integer> dirty_prefixes;
-    private com.omnibuf.pb.bench.OmniBufLocation dirty_location;
-    private List<com.omnibuf.pb.bench.OmniBufNeighbor> dirty_neighbors;
-    private long dirty_sequence;
+    private DirtyState dirty;
+    private long[] fieldIndex;
+    private byte readCount;
 
     public OpaquePeerUpdate(byte[] packet) {
         this.buffer = packet == null ? EMPTY_BYTES : packet;
@@ -40,184 +45,272 @@ public final class OpaquePeerUpdate {
     }
 
     public OpaquePeerUpdate(byte[] buffer, int offset, int length) {
-        this.buffer = buffer == null ? EMPTY_BYTES : buffer;
+        byte[] b = buffer == null ? EMPTY_BYTES : buffer;
+        com.omnibuf.wire.OmniBufOpaque.checkSliceBounds(b, offset, length);
+        this.buffer = b;
         this.offset = offset;
         this.length = length;
     }
 
-    public OpaquePeerUpdate(OmniBufOpaque.PacketView view) {
+    public OpaquePeerUpdate(com.omnibuf.wire.OmniBufOpaque.PacketView view) {
         this(view.buffer(), view.offset(), view.length());
     }
 
+    public com.omnibuf.wire.OmniBufOpaque.PacketView packetView() {
+        return new com.omnibuf.wire.OmniBufOpaque.PacketView(buffer, offset, length);
+    }
+
+    public ByteBuffer asReadOnlyByteBuffer() {
+        return ByteBuffer.wrap(buffer, offset, length).asReadOnlyBuffer();
+    }
+
+    private DirtyState ensureDirty() {
+        DirtyState d = this.dirty;
+        if (d == null) {
+            d = new DirtyState();
+            this.dirty = d;
+        }
+        return d;
+    }
+
+    private long[] getOrBuildIndex() {
+        long[] idx = this.fieldIndex;
+        if (idx != null) {
+            return idx;
+        }
+        if (this.readCount == 0) {
+            this.readCount = 1;
+            return null;
+        }
+        idx = com.omnibuf.wire.OmniBufOpaque.buildFieldIndex(buffer, offset, length, MAX_INDEXED_FIELD);
+        this.fieldIndex = idx;
+        return idx;
+    }
+
     public boolean hasDirtyFields() {
-        return dirtyMask != 0L;
+        DirtyState d = this.dirty;
+        return d != null && d.dirtyMask != 0L;
     }
 
     public int getAsn() {
-        if ((dirtyMask & 0x2L) != 0L) {
-            return dirty_asn;
+        DirtyState d = this.dirty;
+        if (d != null && (d.dirtyMask & 0x2L) != 0L) {
+            return d.dirty_asn;
         }
-        return OmniBufOpaque.readUint32(buffer, offset, length, 1);
+        long[] idx = getOrBuildIndex();
+        if (idx != null) {
+            return com.omnibuf.wire.OmniBufOpaque.readUint32Indexed(idx, buffer, offset, length, 1);
+        }
+        return com.omnibuf.wire.OmniBufOpaque.readUint32(buffer, offset, length, 1);
     }
 
     public OpaquePeerUpdate setAsn(int value) {
-        this.dirty_asn = value;
-        this.dirtyMask |= 0x2L;
+        DirtyState d = ensureDirty();
+        d.dirty_asn = value;
+        d.dirtyMask |= 0x2L;
         return this;
     }
 
     public String getRouterId() {
-        if ((dirtyMask & 0x4L) != 0L) {
-            return dirty_routerId;
+        DirtyState d = this.dirty;
+        if (d != null && (d.dirtyMask & 0x4L) != 0L) {
+            return d.dirty_routerId;
         }
-        return OmniBufOpaque.readString(buffer, offset, length, 2);
+        long[] idx = getOrBuildIndex();
+        if (idx != null) {
+            return com.omnibuf.wire.OmniBufOpaque.readStringIndexed(idx, buffer, offset, length, 2);
+        }
+        return com.omnibuf.wire.OmniBufOpaque.readString(buffer, offset, length, 2);
     }
 
     public OpaquePeerUpdate setRouterId(String value) {
-        this.dirty_routerId = value == null ? "" : value;
-        this.dirtyMask |= 0x4L;
+        DirtyState d = ensureDirty();
+        d.dirty_routerId = value == null ? "" : value;
+        d.dirtyMask |= 0x4L;
         return this;
     }
 
     public boolean getActive() {
-        if ((dirtyMask & 0x8L) != 0L) {
-            return dirty_active;
+        DirtyState d = this.dirty;
+        if (d != null && (d.dirtyMask & 0x8L) != 0L) {
+            return d.dirty_active;
         }
-        return OmniBufOpaque.readBool(buffer, offset, length, 3);
+        long[] idx = getOrBuildIndex();
+        if (idx != null) {
+            return com.omnibuf.wire.OmniBufOpaque.readBoolIndexed(idx, buffer, offset, length, 3);
+        }
+        return com.omnibuf.wire.OmniBufOpaque.readBool(buffer, offset, length, 3);
     }
 
     public OpaquePeerUpdate setActive(boolean value) {
-        this.dirty_active = value;
-        this.dirtyMask |= 0x8L;
+        DirtyState d = ensureDirty();
+        d.dirty_active = value;
+        d.dirtyMask |= 0x8L;
         return this;
     }
 
     public long getUptimeSec() {
-        if ((dirtyMask & 0x10L) != 0L) {
-            return dirty_uptimeSec;
+        DirtyState d = this.dirty;
+        if (d != null && (d.dirtyMask & 0x10L) != 0L) {
+            return d.dirty_uptimeSec;
         }
-        return OmniBufOpaque.readUint64(buffer, offset, length, 4);
+        long[] idx = getOrBuildIndex();
+        if (idx != null) {
+            return com.omnibuf.wire.OmniBufOpaque.readUint64Indexed(idx, buffer, offset, length, 4);
+        }
+        return com.omnibuf.wire.OmniBufOpaque.readUint64(buffer, offset, length, 4);
     }
 
     public OpaquePeerUpdate setUptimeSec(long value) {
-        this.dirty_uptimeSec = value;
-        this.dirtyMask |= 0x10L;
+        DirtyState d = ensureDirty();
+        d.dirty_uptimeSec = value;
+        d.dirtyMask |= 0x10L;
         return this;
     }
 
     public int getRssiDbm() {
-        if ((dirtyMask & 0x20L) != 0L) {
-            return dirty_rssiDbm;
+        DirtyState d = this.dirty;
+        if (d != null && (d.dirtyMask & 0x20L) != 0L) {
+            return d.dirty_rssiDbm;
         }
-        return OmniBufOpaque.readSint32(buffer, offset, length, 5);
+        long[] idx = getOrBuildIndex();
+        if (idx != null) {
+            return com.omnibuf.wire.OmniBufOpaque.readSint32Indexed(idx, buffer, offset, length, 5);
+        }
+        return com.omnibuf.wire.OmniBufOpaque.readSint32(buffer, offset, length, 5);
     }
 
     public OpaquePeerUpdate setRssiDbm(int value) {
-        this.dirty_rssiDbm = value;
-        this.dirtyMask |= 0x20L;
+        DirtyState d = ensureDirty();
+        d.dirty_rssiDbm = value;
+        d.dirtyMask |= 0x20L;
         return this;
     }
 
     public double getCpuLoad() {
-        if ((dirtyMask & 0x40L) != 0L) {
-            return dirty_cpuLoad;
+        DirtyState d = this.dirty;
+        if (d != null && (d.dirtyMask & 0x40L) != 0L) {
+            return d.dirty_cpuLoad;
         }
-        return OmniBufOpaque.readFloat64(buffer, offset, length, 6);
+        long[] idx = getOrBuildIndex();
+        if (idx != null) {
+            return com.omnibuf.wire.OmniBufOpaque.readFloat64Indexed(idx, buffer, offset, length, 6);
+        }
+        return com.omnibuf.wire.OmniBufOpaque.readFloat64(buffer, offset, length, 6);
     }
 
     public OpaquePeerUpdate setCpuLoad(double value) {
-        this.dirty_cpuLoad = value;
-        this.dirtyMask |= 0x40L;
+        DirtyState d = ensureDirty();
+        d.dirty_cpuLoad = value;
+        d.dirtyMask |= 0x40L;
         return this;
     }
 
     public List<String> getTags() {
-        if ((dirtyMask & 0x80L) != 0L) {
-            return dirty_tags;
+        DirtyState d = this.dirty;
+        if (d != null && (d.dirtyMask & 0x80L) != 0L) {
+            return d.dirty_tags;
         }
-        return OmniBufOpaque.readStringList(buffer, offset, length, 7);
+        return com.omnibuf.wire.OmniBufOpaque.readStringList(buffer, offset, length, 7);
     }
 
     public OpaquePeerUpdate setTags(List<String> value) {
-        this.dirty_tags = value == null ? new ArrayList<>() : value;
-        this.dirtyMask |= 0x80L;
+        DirtyState d = ensureDirty();
+        d.dirty_tags = value == null ? new ArrayList<>() : value;
+        d.dirtyMask |= 0x80L;
         return this;
     }
 
     public List<Integer> getPrefixes() {
-        if ((dirtyMask & 0x100L) != 0L) {
-            return dirty_prefixes;
+        DirtyState d = this.dirty;
+        if (d != null && (d.dirtyMask & 0x100L) != 0L) {
+            return d.dirty_prefixes;
         }
-        return OmniBufOpaque.readUint32List(buffer, offset, length, 8);
+        return com.omnibuf.wire.OmniBufOpaque.readUint32List(buffer, offset, length, 8);
     }
 
     public OpaquePeerUpdate setPrefixes(List<Integer> value) {
-        this.dirty_prefixes = value == null ? new ArrayList<>() : value;
-        this.dirtyMask |= 0x100L;
+        DirtyState d = ensureDirty();
+        d.dirty_prefixes = value == null ? new ArrayList<>() : value;
+        d.dirtyMask |= 0x100L;
         return this;
     }
 
     public com.omnibuf.pb.bench.OpaqueLocation getLocation() {
-        if ((dirtyMask & 0x200L) != 0L) {
-            return dirty_location == null
+        DirtyState d = this.dirty;
+        if (d != null && (d.dirtyMask & 0x200L) != 0L) {
+            return d.dirty_location == null
                 ? null
-                : new com.omnibuf.pb.bench.OpaqueLocation(com.omnibuf.pb.bench.LocationOmniBuf.marshal(dirty_location));
+                : new com.omnibuf.pb.bench.OpaqueLocation(com.omnibuf.pb.bench.LocationOmniBuf.marshal(d.dirty_location));
         }
-        OmniBufOpaque.PacketView view = OmniBufOpaque.readSubMsgView(buffer, offset, length, 9);
+        long[] idx = getOrBuildIndex();
+        com.omnibuf.wire.OmniBufOpaque.PacketView view = idx != null
+            ? com.omnibuf.wire.OmniBufOpaque.readSubMsgViewIndexed(idx, buffer, offset, length, 9)
+            : com.omnibuf.wire.OmniBufOpaque.readSubMsgView(buffer, offset, length, 9);
         return view == null ? null : new com.omnibuf.pb.bench.OpaqueLocation(view);
     }
 
     public boolean hasLocation() {
-        if ((dirtyMask & 0x200L) != 0L) {
-            return dirty_location != null;
+        DirtyState d = this.dirty;
+        if (d != null && (d.dirtyMask & 0x200L) != 0L) {
+            return d.dirty_location != null;
         }
-        return OmniBufOpaque.hasField(buffer, offset, length, 9, 1 << WireType.WIRE_SUB_MSG);
+        return com.omnibuf.wire.OmniBufOpaque.hasField(buffer, offset, length, 9, 1 << WireType.WIRE_SUB_MSG);
     }
 
     public OpaquePeerUpdate setLocation(com.omnibuf.pb.bench.OmniBufLocation value) {
-        this.dirty_location = value;
-        this.dirtyMask |= 0x200L;
+        DirtyState d = ensureDirty();
+        d.dirty_location = value;
+        d.dirtyMask |= 0x200L;
         return this;
     }
 
     public List<com.omnibuf.pb.bench.OpaqueNeighbor> getNeighbors() {
-        if ((dirtyMask & 0x400L) != 0L) {
-            if (dirty_neighbors == null || dirty_neighbors.isEmpty()) {
+        DirtyState d = this.dirty;
+        if (d != null && (d.dirtyMask & 0x400L) != 0L) {
+            if (d.dirty_neighbors == null || d.dirty_neighbors.isEmpty()) {
                 return Collections.emptyList();
             }
-            List<com.omnibuf.pb.bench.OpaqueNeighbor> out = new ArrayList<>(dirty_neighbors.size());
-            for (com.omnibuf.pb.bench.OmniBufNeighbor elem : dirty_neighbors) {
+            List<com.omnibuf.pb.bench.OpaqueNeighbor> out = new ArrayList<>(d.dirty_neighbors.size());
+            for (com.omnibuf.pb.bench.OmniBufNeighbor elem : d.dirty_neighbors) {
                 out.add(new com.omnibuf.pb.bench.OpaqueNeighbor(com.omnibuf.pb.bench.NeighborOmniBuf.marshal(elem)));
             }
             return out;
         }
-        List<OmniBufOpaque.PacketView> views = OmniBufOpaque.readSubMsgList(buffer, offset, length, 10);
+        List<com.omnibuf.wire.OmniBufOpaque.PacketView> views = com.omnibuf.wire.OmniBufOpaque.readSubMsgList(buffer, offset, length, 10);
         if (views.isEmpty()) {
             return Collections.emptyList();
         }
         List<com.omnibuf.pb.bench.OpaqueNeighbor> out = new ArrayList<>(views.size());
-        for (OmniBufOpaque.PacketView v : views) {
+        for (com.omnibuf.wire.OmniBufOpaque.PacketView v : views) {
             out.add(new com.omnibuf.pb.bench.OpaqueNeighbor(v));
         }
         return out;
     }
 
     public OpaquePeerUpdate setNeighbors(List<com.omnibuf.pb.bench.OmniBufNeighbor> value) {
-        this.dirty_neighbors = value == null ? new ArrayList<>() : value;
-        this.dirtyMask |= 0x400L;
+        DirtyState d = ensureDirty();
+        d.dirty_neighbors = value == null ? new ArrayList<>() : value;
+        d.dirtyMask |= 0x400L;
         return this;
     }
 
     public long getSequence() {
-        if ((dirtyMask & 0x800L) != 0L) {
-            return dirty_sequence;
+        DirtyState d = this.dirty;
+        if (d != null && (d.dirtyMask & 0x800L) != 0L) {
+            return d.dirty_sequence;
         }
-        return OmniBufOpaque.readUint64(buffer, offset, length, 11);
+        long[] idx = getOrBuildIndex();
+        if (idx != null) {
+            return com.omnibuf.wire.OmniBufOpaque.readUint64Indexed(idx, buffer, offset, length, 11);
+        }
+        return com.omnibuf.wire.OmniBufOpaque.readUint64(buffer, offset, length, 11);
     }
 
     public OpaquePeerUpdate setSequence(long value) {
-        this.dirty_sequence = value;
-        this.dirtyMask |= 0x800L;
+        DirtyState d = ensureDirty();
+        d.dirty_sequence = value;
+        d.dirtyMask |= 0x800L;
         return this;
     }
 
@@ -225,9 +318,10 @@ public final class OpaquePeerUpdate {
         return marshalInto(null);
     }
 
-    public byte[] marshalInto(OmniBufEncoder target) {
-        return OmniBufOpaque.spliceFields(
-            buffer, offset, length, dirtyMask, MAX_FIELD_NUMBER, this::writeDirtyField, target
+    public byte[] marshalInto(com.omnibuf.wire.OmniBufEncoder target) {
+        DirtyState d = this.dirty;
+        return com.omnibuf.wire.OmniBufOpaque.spliceFields(
+            buffer, offset, length, (d == null ? 0L : d.dirtyMask), MAX_FIELD_NUMBER, this::writeDirtyField, target
         );
     }
 
@@ -239,42 +333,47 @@ public final class OpaquePeerUpdate {
         return marshalValidatedInto(null);
     }
 
-    public byte[] marshalValidatedInto(OmniBufEncoder target) {
-        return OmniBufOpaque.spliceFieldsValidated(
-            buffer, offset, length, dirtyMask, MAX_FIELD_NUMBER, this::writeDirtyField, target
+    public byte[] marshalValidatedInto(com.omnibuf.wire.OmniBufEncoder target) {
+        DirtyState d = this.dirty;
+        return com.omnibuf.wire.OmniBufOpaque.spliceFieldsValidated(
+            buffer, offset, length, (d == null ? 0L : d.dirtyMask), MAX_FIELD_NUMBER, this::writeDirtyField, target
         );
     }
 
-    private void writeDirtyField(OmniBufEncoder enc, int fieldNumber) {
+    private void writeDirtyField(com.omnibuf.wire.OmniBufEncoder enc, int fieldNumber) {
+        DirtyState d = this.dirty;
+        if (d == null) {
+            return;
+        }
         boolean deterministic = true;
         switch (fieldNumber) {
             case 1 -> {
-                enc.writeUint32(1, this.dirty_asn);
+                enc.writeUint32(1, d.dirty_asn);
             }
             case 2 -> {
-                enc.writeString1BTag((byte) 0x55, this.dirty_routerId);
+                enc.writeString1BTag((byte) 0x55, d.dirty_routerId);
             }
             case 3 -> {
-                enc.writeBool(3, this.dirty_active);
+                enc.writeBool(3, d.dirty_active);
             }
             case 4 -> {
-                enc.writeUint(4, this.dirty_uptimeSec);
+                enc.writeUint(4, d.dirty_uptimeSec);
             }
             case 5 -> {
-                enc.writeSint32(5, this.dirty_rssiDbm);
+                enc.writeSint32(5, d.dirty_rssiDbm);
             }
             case 6 -> {
-                enc.writeFloat64(6, this.dirty_cpuLoad);
+                enc.writeFloat64(6, d.dirty_cpuLoad);
             }
             case 7 -> {
-                enc.writeStringList(7, this.dirty_tags);
+                enc.writeStringList(7, d.dirty_tags);
             }
             case 8 -> {
-                enc.writeUint32List(8, this.dirty_prefixes);
+                enc.writeUint32List(8, d.dirty_prefixes);
             }
             case 9 -> {
                 {
-                    com.omnibuf.pb.bench.OmniBufLocation sub9 = this.dirty_location;
+                    com.omnibuf.pb.bench.OmniBufLocation sub9 = d.dirty_location;
                     if (sub9 != null) {
                         int subPos = enc.beginSubMsgFast(9, com.omnibuf.pb.bench.LocationOmniBuf.isLargePayload(sub9));
                         com.omnibuf.pb.bench.LocationOmniBuf.encode(enc, sub9, deterministic);
@@ -284,9 +383,15 @@ public final class OpaquePeerUpdate {
             }
             case 10 -> {
                 {
-                    List<com.omnibuf.pb.bench.OmniBufNeighbor> list10 = this.dirty_neighbors;
+                    List<com.omnibuf.pb.bench.OmniBufNeighbor> list10 = d.dirty_neighbors;
                     int n = list10 == null ? 0 : list10.size();
-                    boolean largeArr = n > 0 && com.omnibuf.pb.bench.NeighborOmniBuf.isLargePayload(list10.get(0));
+                    boolean largeArr = false;
+                    for (int i = 0; i < n; i++) {
+                        if (com.omnibuf.pb.bench.NeighborOmniBuf.isLargePayload(list10.get(i))) {
+                            largeArr = true;
+                            break;
+                        }
+                    }
                     int arrPos = enc.beginTypedArrayFast(10, WireType.WIRE_SUB_MSG, n, largeArr);
                     for (int i = 0; i < n; i++) {
                         com.omnibuf.pb.bench.OmniBufNeighbor elem = list10.get(i);
@@ -300,7 +405,7 @@ public final class OpaquePeerUpdate {
                 }
             }
             case 11 -> {
-                enc.writeUint(11, this.dirty_sequence);
+                enc.writeUint(11, d.dirty_sequence);
             }
             default -> {}
         }

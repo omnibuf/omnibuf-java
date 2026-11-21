@@ -1,11 +1,6 @@
 package com.omnibuf.wire;
 
 import com.omnibuf.OmniBufException;
-import java.nio.ByteBuffer;
-import java.nio.CharBuffer;
-import java.nio.charset.CharacterCodingException;
-import java.nio.charset.CharsetDecoder;
-import java.nio.charset.CodingErrorAction;
 import java.nio.charset.StandardCharsets;
 import java.util.Comparator;
 
@@ -19,11 +14,9 @@ import java.util.Comparator;
  */
 public final class Utf8Validator {
 
-    private static final ThreadLocal<CharsetDecoder> STRICT_DECODER = ThreadLocal.withInitial(() ->
-        StandardCharsets.UTF_8.newDecoder()
-            .onMalformedInput(CodingErrorAction.REPORT)
-            .onUnmappableCharacter(CodingErrorAction.REPORT)
-    );
+    private static final int CHAR_DECODE_SCRATCH_LIMIT = 4096;
+    private static final ThreadLocal<char[]> CHAR_DECODE_SCRATCH =
+        ThreadLocal.withInitial(() -> new char[CHAR_DECODE_SCRATCH_LIMIT]);
 
     private Utf8Validator() {}
 
@@ -145,14 +138,67 @@ public final class Utf8Validator {
     }
 
     private static String decodeUtf8NonAscii(byte[] buf, int off, int len) {
-        CharsetDecoder decoder = STRICT_DECODER.get();
-        decoder.reset();
-        try {
-            CharBuffer chars = decoder.decode(ByteBuffer.wrap(buf, off, len));
-            return chars.toString();
-        } catch (CharacterCodingException e) {
-            throw new OmniBufException("omnibuf: invalid UTF-8 in WireString", e);
+        char[] out = len <= CHAR_DECODE_SCRATCH_LIMIT ? CHAR_DECODE_SCRATCH.get() : new char[len];
+        int end = off + len;
+        int i = off;
+        int outPos = 0;
+        while (i < end && buf[i] >= 0) {
+            out[outPos++] = (char) buf[i++];
         }
+        while (i < end) {
+            int b0 = buf[i++];
+            if (b0 >= 0) {
+                out[outPos++] = (char) b0;
+                continue;
+            }
+            int u0 = b0 & 0xFF;
+            if (u0 < 0xC2) {
+                throw new OmniBufException("omnibuf: invalid UTF-8 in WireString");
+            }
+            if (u0 <= 0xDF) {
+                if (i >= end) {
+                    throw new OmniBufException("omnibuf: invalid UTF-8 in WireString");
+                }
+                int b1 = buf[i++] & 0xFF;
+                if ((b1 & 0xC0) != 0x80) {
+                    throw new OmniBufException("omnibuf: invalid UTF-8 in WireString");
+                }
+                out[outPos++] = (char) (((u0 & 0x1F) << 6) | (b1 & 0x3F));
+            } else if (u0 <= 0xEF) {
+                if (end - i < 2) {
+                    throw new OmniBufException("omnibuf: invalid UTF-8 in WireString");
+                }
+                int b1 = buf[i++] & 0xFF;
+                int b2 = buf[i++] & 0xFF;
+                if ((b1 & 0xC0) != 0x80
+                        || (b2 & 0xC0) != 0x80
+                        || (u0 == 0xE0 && b1 < 0xA0)
+                        || (u0 == 0xED && b1 >= 0xA0)) {
+                    throw new OmniBufException("omnibuf: invalid UTF-8 in WireString");
+                }
+                out[outPos++] = (char) (((u0 & 0x0F) << 12) | ((b1 & 0x3F) << 6) | (b2 & 0x3F));
+            } else if (u0 <= 0xF4) {
+                if (end - i < 3) {
+                    throw new OmniBufException("omnibuf: invalid UTF-8 in WireString");
+                }
+                int b1 = buf[i++] & 0xFF;
+                int b2 = buf[i++] & 0xFF;
+                int b3 = buf[i++] & 0xFF;
+                if ((b1 & 0xC0) != 0x80
+                        || (b2 & 0xC0) != 0x80
+                        || (b3 & 0xC0) != 0x80
+                        || (u0 == 0xF0 && b1 < 0x90)
+                        || (u0 == 0xF4 && b1 > 0x8F)) {
+                    throw new OmniBufException("omnibuf: invalid UTF-8 in WireString");
+                }
+                int u = (((u0 & 0x07) << 18) | ((b1 & 0x3F) << 12) | ((b2 & 0x3F) << 6) | (b3 & 0x3F)) - 0x10000;
+                out[outPos++] = (char) (0xD800 | (u >>> 10));
+                out[outPos++] = (char) (0xDC00 | (u & 0x3FF));
+            } else {
+                throw new OmniBufException("omnibuf: invalid UTF-8 in WireString");
+            }
+        }
+        return new String(out, 0, outPos);
     }
 
     private static boolean isPureAscii(byte[] buf, int off, int len) {
@@ -218,6 +264,9 @@ public final class Utf8Validator {
     public static final Comparator<String> UTF8_ORDER = Utf8Validator::compareUtf8;
 
     public static int compareUtf8(String a, String b) {
+        if (a == null || b == null) {
+            throw new OmniBufException("omnibuf: null string in compareUtf8");
+        }
         if (a == b) {
             return 0;
         }
@@ -228,7 +277,7 @@ public final class Utf8Validator {
         while (ia < na && ib < nb) {
             char ca = a.charAt(ia);
             char cb = b.charAt(ib);
-            if (ca == cb) {
+            if (ca == cb && (ca < 0xD800 || ca > 0xDFFF)) {
                 ia++;
                 ib++;
                 continue;

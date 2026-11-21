@@ -134,21 +134,21 @@ public final class PrefixVarint {
             return new Decoded(b0 >>> 1, 1);
         }
         if ((b0 & 2) != 0) {
-            if (pos + 2 > limit) {
+            if (limit - pos < 2) {
                 throw new OmniBufException("omnibuf: truncated 2-byte prefix-varint");
             }
             long v = Short.toUnsignedLong((short) SHORT_LE.get(src, pos)) >>> 2;
             return new Decoded(v, 2);
         }
         if ((b0 & 4) != 0) {
-            if (pos + 4 > limit) {
+            if (limit - pos < 4) {
                 throw new OmniBufException("omnibuf: truncated 4-byte prefix-varint");
             }
             long v = Integer.toUnsignedLong((int) INT_LE.get(src, pos)) >>> 3;
             return new Decoded(v, 4);
         }
         if (b0 == 0) {
-            if (pos + 9 > limit) {
+            if (limit - pos < 9) {
                 throw new OmniBufException("omnibuf: truncated 9-byte prefix-varint");
             }
             long v = (long) LONG_LE.get(src, pos + 1);
@@ -173,21 +173,21 @@ public final class PrefixVarint {
             return 1;
         }
         if ((b0 & 2) != 0) {
-            if (pos + 2 > limit) {
+            if (limit - pos < 2) {
                 return 0;
             }
             out[0] = Short.toUnsignedLong((short) SHORT_LE.get(src, pos)) >>> 2;
             return 2;
         }
         if ((b0 & 4) != 0) {
-            if (pos + 4 > limit) {
+            if (limit - pos < 4) {
                 return 0;
             }
             out[0] = Integer.toUnsignedLong((int) INT_LE.get(src, pos)) >>> 3;
             return 4;
         }
         if (b0 == 0) {
-            if (pos + 9 > limit) {
+            if (limit - pos < 9) {
                 return 0;
             }
             out[0] = (long) LONG_LE.get(src, pos + 1);
@@ -209,16 +209,13 @@ public final class PrefixVarint {
             return pos + 1;
         }
         if ((b0 & 2) != 0) {
-            int next = pos + 2;
-            return next <= limit ? next : -1;
+            return limit - pos >= 2 ? pos + 2 : -1;
         }
         if ((b0 & 4) != 0) {
-            int next = pos + 4;
-            return next <= limit ? next : -1;
+            return limit - pos >= 4 ? pos + 4 : -1;
         }
         if (b0 == 0) {
-            int next = pos + 9;
-            return next <= limit ? next : -1;
+            return limit - pos >= 9 ? pos + 9 : -1;
         }
         return -1;
     }
@@ -236,13 +233,13 @@ public final class PrefixVarint {
             return b0 >>> 1;
         }
         if ((b0 & 2) != 0) {
-            return pos + 2 <= limit ? (Short.toUnsignedLong((short) SHORT_LE.get(src, pos)) >>> 2) : 0L;
+            return limit - pos >= 2 ? (Short.toUnsignedLong((short) SHORT_LE.get(src, pos)) >>> 2) : 0L;
         }
         if ((b0 & 4) != 0) {
-            return pos + 4 <= limit ? (Integer.toUnsignedLong((int) INT_LE.get(src, pos)) >>> 3) : 0L;
+            return limit - pos >= 4 ? (Integer.toUnsignedLong((int) INT_LE.get(src, pos)) >>> 3) : 0L;
         }
         if (b0 == 0) {
-            return pos + 9 <= limit ? (long) LONG_LE.get(src, pos + 1) : 0L;
+            return limit - pos >= 9 ? (long) LONG_LE.get(src, pos + 1) : 0L;
         }
         return 0L;
     }
@@ -264,19 +261,19 @@ public final class PrefixVarint {
             byteLen = b0 >>> 1;
             bodyStart = pos + 1;
         } else if ((b0 & 2) != 0) {
-            if (pos + 2 > limit) {
+            if (limit - pos < 2) {
                 return -1L;
             }
             byteLen = Short.toUnsignedLong((short) SHORT_LE.get(src, pos)) >>> 2;
             bodyStart = pos + 2;
         } else if ((b0 & 4) != 0) {
-            if (pos + 4 > limit) {
+            if (limit - pos < 4) {
                 return -1L;
             }
             byteLen = Integer.toUnsignedLong((int) INT_LE.get(src, pos)) >>> 3;
             bodyStart = pos + 4;
         } else if (b0 == 0) {
-            if (pos + 9 > limit) {
+            if (limit - pos < 9) {
                 return -1L;
             }
             byteLen = (long) LONG_LE.get(src, pos + 1);
