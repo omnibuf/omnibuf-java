@@ -493,6 +493,9 @@ public final class OmniBufBlind {
         );
         int keyWT = hdr.keyWireType();
         int valWT = hdr.valWireType();
+        if (valWT == WireType.WIRE_EXTENDED) {
+            throw new OmniBufException("omnibuf: unsupported WireExtended value in WireMap");
+        }
         if (valWT != WireType.WIRE_ARRAY && valWT != WireType.WIRE_MAP) {
             return new BlindShape(
                 WireType.WIRE_MAP, false, keyWT, new BlindShape(valWT, false, 0, null)
@@ -662,6 +665,9 @@ public final class OmniBufBlind {
         );
         int keyWT = hdr.keyWireType();
         int valWT = hdr.valWireType();
+        if (valWT == WireType.WIRE_EXTENDED) {
+            throw new OmniBufException("omnibuf: unsupported WireExtended value in WireMap");
+        }
         int p = hdr.payloadStart();
         int end = hdr.payloadEnd();
 

@@ -68,13 +68,12 @@ public final class OmniBufOpaque {
      * Zero-allocation field locator for packets at any valid array offset up to {@code Integer.MAX_VALUE}.
      * Packs {@code (((long) valStart) << 32) | (((long) valLen) << 4) | (wt & 0x0FL)} when
      * {@code valLen <= MAX_PACKED_LEN}, returns {@link #LARGE_VALUE_SENTINEL} if the matching
-     * field's payload length exceeds {@code MAX_PACKED_LEN}, or {@code -1L} if absent or malformed.
+     * field's payload length exceeds {@code MAX_PACKED_LEN}, or {@code -1L} if absent.
+     * Throws {@link OmniBufException} if the packet slice bounds, framing, or Field #0 are malformed.
      */
     private static long locateFieldPacked(
             byte[] packet, int offset, int length, int targetField, int wireMask) {
-        if (packet == null || offset < 0 || length < 0 || length > packet.length - offset) {
-            return -1L;
-        }
+        checkSliceBounds(packet, offset, length);
         int end = offset + length;
         int pos = offset;
         long found = -1L;
@@ -90,7 +89,7 @@ public final class OmniBufOpaque {
                 pos += 1;
             } else if ((b0 & 2) != 0) {
                 if (end - pos < 2) {
-                    return -1L;
+                    throw new OmniBufException("omnibuf: truncated 2-byte tag in packet");
                 }
                 int tag = Short.toUnsignedInt(PrefixVarint.getShortLE(packet, pos)) >>> 2;
                 fnum = tag >>> 4;
@@ -99,25 +98,21 @@ public final class OmniBufOpaque {
             } else {
                 long tagPacked = decodeWideTag(packet, pos, end);
                 if (tagPacked < 0L) {
-                    return -1L;
+                    throw new OmniBufException("omnibuf: malformed or truncated tag in packet");
                 }
                 pos += (int) (tagPacked >>> 33);
                 fnum = (int) ((tagPacked >>> 4) & 0x1FFF_FFFFL);
                 wt = (int) (tagPacked & 0x0FL);
             }
             if (fnum == 0) {
-                int nextPos = trySkipField0(packet, pos, end, wt);
-                if (nextPos < 0) {
-                    return -1L;
-                }
-                pos = nextPos;
+                pos = validateField0(packet, pos, end, wt);
                 continue;
             }
 
             int valStart = pos;
             int nextPos = skipValidatedHeader(packet, pos, end, wt);
             if (nextPos < 0) {
-                return -1L;
+                throw new OmniBufException("omnibuf: malformed or truncated field payload in packet");
             }
             if (fnum == targetField && ((wireMask >>> wt) & 1) != 0) {
                 int valLen = nextPos - valStart;
@@ -134,11 +129,13 @@ public final class OmniBufOpaque {
 
     /**
      * Scans {@code packet[offset..offset+length]} once and populates a field-offset directory for
-     * field numbers {@code 1..maxField}. Malformed packets return an empty array so subsequent
-     * indexed lookups return default values without rescanning.
+     * field numbers {@code 1..maxField}. Throws {@link OmniBufException} on malformed framing or
+     * invalid Field #0.
      */
     public static long[] buildFieldIndex(byte[] packet, int offset, int length, int maxField) {
-        if (maxField <= 0 || packet == null || offset < 0 || length < 0 || length > packet.length - offset) {
+        checkSliceBounds(packet, offset, length);
+        if (maxField <= 0) {
+            validateTopLevelHeaders(packet, offset, offset + length);
             return EMPTY_FIELD_INDEX;
         }
         long[] index = new long[maxField + 1];
@@ -157,7 +154,7 @@ public final class OmniBufOpaque {
                 pos += 1;
             } else if ((b0 & 2) != 0) {
                 if (end - pos < 2) {
-                    return EMPTY_FIELD_INDEX;
+                    throw new OmniBufException("omnibuf: truncated 2-byte tag in packet");
                 }
                 int tag = Short.toUnsignedInt(PrefixVarint.getShortLE(packet, pos)) >>> 2;
                 fnum = tag >>> 4;
@@ -166,25 +163,21 @@ public final class OmniBufOpaque {
             } else {
                 long tagPacked = decodeWideTag(packet, pos, end);
                 if (tagPacked < 0L) {
-                    return EMPTY_FIELD_INDEX;
+                    throw new OmniBufException("omnibuf: malformed or truncated tag in packet");
                 }
                 pos += (int) (tagPacked >>> 33);
                 fnum = (int) ((tagPacked >>> 4) & 0x1FFF_FFFFL);
                 wt = (int) (tagPacked & 0x0FL);
             }
             if (fnum == 0) {
-                int nextPos = trySkipField0(packet, pos, end, wt);
-                if (nextPos < 0) {
-                    return EMPTY_FIELD_INDEX;
-                }
-                pos = nextPos;
+                pos = validateField0(packet, pos, end, wt);
                 continue;
             }
 
             int valStart = pos;
             int nextPos = skipValidatedHeader(packet, pos, end, wt);
             if (nextPos < 0) {
-                return EMPTY_FIELD_INDEX;
+                throw new OmniBufException("omnibuf: malformed or truncated field payload in packet");
             }
             if (fnum <= maxField) {
                 long prev = index[fnum];
@@ -279,9 +272,7 @@ public final class OmniBufOpaque {
 
     private static LocatedField locateFieldGeneral(
             byte[] packet, int offset, int length, int targetField, int wireMask) {
-        if (packet == null || offset < 0 || length < 0 || length > packet.length - offset) {
-            return LocatedField.NOT_FOUND;
-        }
+        checkSliceBounds(packet, offset, length);
         int pos = offset;
         int end = offset + length;
         int lastValStart = -1;
@@ -298,7 +289,7 @@ public final class OmniBufOpaque {
                 pos += 1;
             } else if ((b0 & 2) != 0) {
                 if (end - pos < 2) {
-                    return LocatedField.NOT_FOUND;
+                    throw new OmniBufException("omnibuf: truncated 2-byte tag in packet");
                 }
                 int u16 = Short.toUnsignedInt(PrefixVarint.getShortLE(packet, pos)) >>> 2;
                 fnum = u16 >>> 4;
@@ -307,25 +298,21 @@ public final class OmniBufOpaque {
             } else {
                 long tagPacked = decodeWideTag(packet, pos, end);
                 if (tagPacked < 0L) {
-                    return LocatedField.NOT_FOUND;
+                    throw new OmniBufException("omnibuf: malformed or truncated tag in packet");
                 }
                 pos += (int) (tagPacked >>> 33);
                 fnum = (int) ((tagPacked >>> 4) & 0x1FFF_FFFFL);
                 wt = (int) (tagPacked & 0x0FL);
             }
             if (fnum == 0) {
-                int nextPos = trySkipField0(packet, pos, end, wt);
-                if (nextPos < 0) {
-                    return LocatedField.NOT_FOUND;
-                }
-                pos = nextPos;
+                pos = validateField0(packet, pos, end, wt);
                 continue;
             }
 
             int valStart = pos;
             int nextPos = skipValidatedHeader(packet, pos, end, wt);
             if (nextPos < 0) {
-                return LocatedField.NOT_FOUND;
+                throw new OmniBufException("omnibuf: malformed or truncated field payload in packet");
             }
             if (fnum == targetField && ((wireMask >>> wt) & 1) != 0) {
                 lastValStart = valStart;
@@ -389,31 +376,6 @@ public final class OmniBufOpaque {
             }
             default -> -1;
         };
-    }
-
-    private static int trySkipField0(byte[] packet, int pos, int end, int wt) {
-        if (wt != WireType.WIRE_SUB_MSG) {
-            return -1;
-        }
-        long packed = PrefixVarint.tryReadLengthSlicePacked(packet, pos, end, 0);
-        if (packed < 0L) {
-            return -1;
-        }
-        int start = (int) (packed >>> 32);
-        int subEnd = (int) packed;
-        try {
-            SchemaMeta.decode(
-                packet,
-                start,
-                subEnd - start,
-                1,
-                OmniBufDecoder.MAX_CONTAINER_DEPTH,
-                UnmarshalOptions.DEFAULT_MAX_COLLECTION_ELEMENTS
-            );
-            return subEnd;
-        } catch (OmniBufException e) {
-            return -1;
-        }
     }
 
     private static int validateField0(byte[] packet, int pos, int end, int wt) {
@@ -517,13 +479,17 @@ public final class OmniBufOpaque {
     }
 
     public static int readFixed32(byte[] packet, int offset, int length, int fieldNum) {
-        long packed = locateFieldPacked(
-            packet,
-            offset,
-            length,
-            fieldNum,
-            (1 << WireType.WIRE_FIXED32) | (1 << WireType.WIRE_SFIXED32)
-        );
+        long packed = locateFieldPacked(packet, offset, length, fieldNum, 1 << WireType.WIRE_FIXED32);
+        if (packed < 0L) {
+            return 0;
+        }
+        int valStart = (int) (packed >>> 32);
+        int valLen = ((int) packed) >>> 4;
+        return valLen >= 4 ? PrefixVarint.getIntLE(packet, valStart) : 0;
+    }
+
+    public static int readSfixed32(byte[] packet, int offset, int length, int fieldNum) {
+        long packed = locateFieldPacked(packet, offset, length, fieldNum, 1 << WireType.WIRE_SFIXED32);
         if (packed < 0L) {
             return 0;
         }
@@ -533,13 +499,17 @@ public final class OmniBufOpaque {
     }
 
     public static long readFixed64(byte[] packet, int offset, int length, int fieldNum) {
-        long packed = locateFieldPacked(
-            packet,
-            offset,
-            length,
-            fieldNum,
-            (1 << WireType.WIRE_FIXED64) | (1 << WireType.WIRE_SFIXED64)
-        );
+        long packed = locateFieldPacked(packet, offset, length, fieldNum, 1 << WireType.WIRE_FIXED64);
+        if (packed < 0L) {
+            return 0L;
+        }
+        int valStart = (int) (packed >>> 32);
+        int valLen = ((int) packed) >>> 4;
+        return valLen >= 8 ? PrefixVarint.getLongLE(packet, valStart) : 0L;
+    }
+
+    public static long readSfixed64(byte[] packet, int offset, int length, int fieldNum) {
+        long packed = locateFieldPacked(packet, offset, length, fieldNum, 1 << WireType.WIRE_SFIXED64);
         if (packed < 0L) {
             return 0L;
         }
@@ -683,14 +653,17 @@ public final class OmniBufOpaque {
     }
 
     public static int readFixed32Indexed(long[] index, byte[] packet, int offset, int length, int fieldNum) {
-        long packed = lookupIndexedPacked(
-            index,
-            packet,
-            offset,
-            length,
-            fieldNum,
-            (1 << WireType.WIRE_FIXED32) | (1 << WireType.WIRE_SFIXED32)
-        );
+        long packed = lookupIndexedPacked(index, packet, offset, length, fieldNum, 1 << WireType.WIRE_FIXED32);
+        if (packed < 0L) {
+            return 0;
+        }
+        int valStart = (int) (packed >>> 32);
+        int valLen = ((int) packed) >>> 4;
+        return valLen >= 4 ? PrefixVarint.getIntLE(packet, valStart) : 0;
+    }
+
+    public static int readSfixed32Indexed(long[] index, byte[] packet, int offset, int length, int fieldNum) {
+        long packed = lookupIndexedPacked(index, packet, offset, length, fieldNum, 1 << WireType.WIRE_SFIXED32);
         if (packed < 0L) {
             return 0;
         }
@@ -700,14 +673,17 @@ public final class OmniBufOpaque {
     }
 
     public static long readFixed64Indexed(long[] index, byte[] packet, int offset, int length, int fieldNum) {
-        long packed = lookupIndexedPacked(
-            index,
-            packet,
-            offset,
-            length,
-            fieldNum,
-            (1 << WireType.WIRE_FIXED64) | (1 << WireType.WIRE_SFIXED64)
-        );
+        long packed = lookupIndexedPacked(index, packet, offset, length, fieldNum, 1 << WireType.WIRE_FIXED64);
+        if (packed < 0L) {
+            return 0L;
+        }
+        int valStart = (int) (packed >>> 32);
+        int valLen = ((int) packed) >>> 4;
+        return valLen >= 8 ? PrefixVarint.getLongLE(packet, valStart) : 0L;
+    }
+
+    public static long readSfixed64Indexed(long[] index, byte[] packet, int offset, int length, int fieldNum) {
+        long packed = lookupIndexedPacked(index, packet, offset, length, fieldNum, 1 << WireType.WIRE_SFIXED64);
         if (packed < 0L) {
             return 0L;
         }
@@ -951,6 +927,118 @@ public final class OmniBufOpaque {
         return firstStart < 0 ? null : new PacketView(packet, firstStart, firstLen);
     }
 
+    /**
+     * Locates occurrences of a {@code oneof} {@code WireSubMsg} member {@code fieldNum}, resetting
+     * any previously accumulated slices whenever an intervening sibling member from
+     * {@code oneofFieldNumbers} / {@code oneofWireMasks} appears on the wire.
+     */
+    public static PacketView readOneofSubMsgView(
+            byte[] packet,
+            int offset,
+            int length,
+            int fieldNum,
+            int[] oneofFieldNumbers,
+            int[] oneofWireMasks) {
+        checkSliceBounds(packet, offset, length);
+        int pos = offset;
+        int end = offset + length;
+        int firstStart = -1;
+        int firstLen = 0;
+        ByteArrayOutputStream merged = null;
+        long mergedLen = 0L;
+
+        while (pos < end) {
+            int fnum;
+            int wt;
+            int b0 = packet[pos] & 0xFF;
+            if ((b0 & 1) != 0) {
+                int tag = b0 >>> 1;
+                fnum = tag >>> 4;
+                wt = tag & 0x0F;
+                pos += 1;
+            } else if ((b0 & 2) != 0) {
+                if (end - pos < 2) {
+                    throw new OmniBufException("omnibuf: truncated 2-byte tag in readOneofSubMsgView");
+                }
+                int u16 = Short.toUnsignedInt(PrefixVarint.getShortLE(packet, pos)) >>> 2;
+                fnum = u16 >>> 4;
+                wt = u16 & 0x0F;
+                pos += 2;
+            } else {
+                long tagPacked = decodeWideTag(packet, pos, end);
+                if (tagPacked < 0L) {
+                    throw new OmniBufException("omnibuf: malformed or truncated tag in readOneofSubMsgView");
+                }
+                pos += (int) (tagPacked >>> 33);
+                fnum = (int) ((tagPacked >>> 4) & 0x1FFF_FFFFL);
+                wt = (int) (tagPacked & 0x0FL);
+            }
+            if (fnum == 0) {
+                pos = validateField0(packet, pos, end, wt);
+                continue;
+            }
+
+            if (fnum == fieldNum && wt == WireType.WIRE_SUB_MSG) {
+                long slicePacked = PrefixVarint.readLengthSlicePacked(packet, pos, end, 0);
+                int sStart = (int) (slicePacked >>> 32);
+                int sEnd = (int) slicePacked;
+                int sLen = sEnd - sStart;
+                pos = sEnd;
+                if (merged != null) {
+                    OmniBufDecoder.validateMessage(packet, sStart, sLen, 1);
+                    mergedLen += sLen;
+                    if (mergedLen > UnmarshalOptions.DEFAULT_MAX_MESSAGE_BYTES) {
+                        throw new OmniBufException(
+                            "omnibuf: merged WireSubMsg length exceeds maxMessageBytes ("
+                                + UnmarshalOptions.DEFAULT_MAX_MESSAGE_BYTES + ")"
+                        );
+                    }
+                    merged.write(packet, sStart, sLen);
+                } else if (firstStart < 0) {
+                    firstStart = sStart;
+                    firstLen = sLen;
+                } else {
+                    OmniBufDecoder.validateMessage(packet, firstStart, firstLen, 1);
+                    OmniBufDecoder.validateMessage(packet, sStart, sLen, 1);
+                    mergedLen = (long) firstLen + (long) sLen;
+                    if (mergedLen > UnmarshalOptions.DEFAULT_MAX_MESSAGE_BYTES) {
+                        throw new OmniBufException(
+                            "omnibuf: merged WireSubMsg length exceeds maxMessageBytes ("
+                                + UnmarshalOptions.DEFAULT_MAX_MESSAGE_BYTES + ")"
+                        );
+                    }
+                    int initialCap = (int) Math.min(mergedLen + 32L, UnmarshalOptions.DEFAULT_MAX_MESSAGE_BYTES);
+                    merged = new ByteArrayOutputStream(initialCap);
+                    merged.write(packet, firstStart, firstLen);
+                    merged.write(packet, sStart, sLen);
+                }
+            } else {
+                int nextPos = skipValidatedHeader(packet, pos, end, wt);
+                if (nextPos < 0) {
+                    throw new OmniBufException("omnibuf: malformed or truncated field in readOneofSubMsgView");
+                }
+                for (int i = 0; i < oneofFieldNumbers.length; i++) {
+                    if (oneofFieldNumbers[i] == fnum
+                            && fnum != fieldNum
+                            && ((oneofWireMasks[i] >>> wt) & 1) != 0) {
+                        firstStart = -1;
+                        firstLen = 0;
+                        merged = null;
+                        mergedLen = 0L;
+                        break;
+                    }
+                }
+                pos = nextPos;
+            }
+        }
+
+        if (merged != null) {
+            byte[] combined = merged.toByteArray();
+            return new PacketView(combined, 0, combined.length);
+        }
+        return firstStart < 0 ? null : new PacketView(packet, firstStart, firstLen);
+    }
+
     private static PacketView readSubMsgViewMerged(
             byte[] packet,
             int pos,
@@ -962,7 +1050,15 @@ public final class OmniBufOpaque {
             int secondLen) {
         OmniBufDecoder.validateMessage(packet, firstStart, firstLen, 1);
         OmniBufDecoder.validateMessage(packet, secondStart, secondLen, 1);
-        ByteArrayOutputStream merged = new ByteArrayOutputStream(firstLen + secondLen + 32);
+        long totalLen = (long) firstLen + (long) secondLen;
+        if (totalLen > UnmarshalOptions.DEFAULT_MAX_MESSAGE_BYTES) {
+            throw new OmniBufException(
+                "omnibuf: merged WireSubMsg length exceeds maxMessageBytes ("
+                    + UnmarshalOptions.DEFAULT_MAX_MESSAGE_BYTES + ")"
+            );
+        }
+        int initialCap = (int) Math.min(totalLen + 32L, UnmarshalOptions.DEFAULT_MAX_MESSAGE_BYTES);
+        ByteArrayOutputStream merged = new ByteArrayOutputStream(initialCap);
         merged.write(packet, firstStart, firstLen);
         merged.write(packet, secondStart, secondLen);
 
@@ -1003,6 +1099,13 @@ public final class OmniBufOpaque {
                 int sEnd = (int) slicePacked;
                 int sLen = sEnd - sStart;
                 OmniBufDecoder.validateMessage(packet, sStart, sLen, 1);
+                totalLen += sLen;
+                if (totalLen > UnmarshalOptions.DEFAULT_MAX_MESSAGE_BYTES) {
+                    throw new OmniBufException(
+                        "omnibuf: merged WireSubMsg length exceeds maxMessageBytes ("
+                            + UnmarshalOptions.DEFAULT_MAX_MESSAGE_BYTES + ")"
+                    );
+                }
                 merged.write(packet, sStart, sLen);
                 pos = sEnd;
             } else {
@@ -1074,6 +1177,21 @@ public final class OmniBufOpaque {
         return slices == null ? Collections.emptyList() : slices;
     }
 
+    private static OmniBufException arrayElemMismatch(int expectedWT, int actualWT) {
+        return new OmniBufException(
+            "omnibuf: WireArray element type mismatch: expected "
+                + WireType.nameOf(expectedWT) + ", got " + WireType.nameOf(actualWT)
+        );
+    }
+
+    private static OmniBufException mapTypeMismatch(int expKeyWT, int expValWT, int actKeyWT, int actValWT) {
+        return new OmniBufException(
+            "omnibuf: WireMap key/value type mismatch: expected "
+                + WireType.nameOf(expKeyWT) + "/" + WireType.nameOf(expValWT)
+                + ", got " + WireType.nameOf(actKeyWT) + "/" + WireType.nameOf(actValWT)
+        );
+    }
+
     public static List<String> readStringList(byte[] packet, int offset, int length, int fieldNum) {
         List<OmniBufDecoder.Slice> bodies =
             collectContainerBodies(packet, offset, length, fieldNum, WireType.WIRE_ARRAY);
@@ -1085,8 +1203,7 @@ public final class OmniBufOpaque {
             OmniBufDecoder.ArrayHeader hdr =
                 OmniBufDecoder.parseArrayHeader(packet, body.offset(), body.end());
             if (hdr.elemWireType() != WireType.WIRE_STRING) {
-                OmniBufDecoder.validateArrayBody(packet, hdr, 1);
-                continue;
+                throw arrayElemMismatch(WireType.WIRE_STRING, hdr.elemWireType());
             }
             int p = hdr.payloadStart();
             int end = hdr.payloadEnd();
@@ -1115,8 +1232,7 @@ public final class OmniBufOpaque {
             OmniBufDecoder.ArrayHeader hdr =
                 OmniBufDecoder.parseArrayHeader(packet, body.offset(), body.end());
             if (hdr.elemWireType() != WireType.WIRE_BYTES) {
-                OmniBufDecoder.validateArrayBody(packet, hdr, 1);
-                continue;
+                throw arrayElemMismatch(WireType.WIRE_BYTES, hdr.elemWireType());
             }
             int p = hdr.payloadStart();
             int end = hdr.payloadEnd();
@@ -1145,8 +1261,7 @@ public final class OmniBufOpaque {
             OmniBufDecoder.ArrayHeader hdr =
                 OmniBufDecoder.parseArrayHeader(packet, body.offset(), body.end());
             if (hdr.elemWireType() != WireType.WIRE_UINT) {
-                OmniBufDecoder.validateArrayBody(packet, hdr, 1);
-                continue;
+                throw arrayElemMismatch(WireType.WIRE_UINT, hdr.elemWireType());
             }
             int p = hdr.payloadStart();
             int end = hdr.payloadEnd();
@@ -1173,8 +1288,7 @@ public final class OmniBufOpaque {
             OmniBufDecoder.ArrayHeader hdr =
                 OmniBufDecoder.parseArrayHeader(packet, body.offset(), body.end());
             if (hdr.elemWireType() != WireType.WIRE_UINT) {
-                OmniBufDecoder.validateArrayBody(packet, hdr, 1);
-                continue;
+                throw arrayElemMismatch(WireType.WIRE_UINT, hdr.elemWireType());
             }
             int p = hdr.payloadStart();
             int end = hdr.payloadEnd();
@@ -1201,8 +1315,7 @@ public final class OmniBufOpaque {
             OmniBufDecoder.ArrayHeader hdr =
                 OmniBufDecoder.parseArrayHeader(packet, body.offset(), body.end());
             if (hdr.elemWireType() != WireType.WIRE_SINT) {
-                OmniBufDecoder.validateArrayBody(packet, hdr, 1);
-                continue;
+                throw arrayElemMismatch(WireType.WIRE_SINT, hdr.elemWireType());
             }
             int p = hdr.payloadStart();
             int end = hdr.payloadEnd();
@@ -1229,8 +1342,7 @@ public final class OmniBufOpaque {
             OmniBufDecoder.ArrayHeader hdr =
                 OmniBufDecoder.parseArrayHeader(packet, body.offset(), body.end());
             if (hdr.elemWireType() != WireType.WIRE_SINT) {
-                OmniBufDecoder.validateArrayBody(packet, hdr, 1);
-                continue;
+                throw arrayElemMismatch(WireType.WIRE_SINT, hdr.elemWireType());
             }
             int p = hdr.payloadStart();
             int end = hdr.payloadEnd();
@@ -1257,8 +1369,7 @@ public final class OmniBufOpaque {
             OmniBufDecoder.ArrayHeader hdr =
                 OmniBufDecoder.parseArrayHeader(packet, body.offset(), body.end());
             if (hdr.elemWireType() != WireType.WIRE_BOOL_FALSE) {
-                OmniBufDecoder.validateArrayBody(packet, hdr, 1);
-                continue;
+                throw arrayElemMismatch(WireType.WIRE_BOOL_FALSE, hdr.elemWireType());
             }
             int p = hdr.payloadStart();
             for (int i = 0; i < hdr.count(); i++) {
@@ -1273,6 +1384,15 @@ public final class OmniBufOpaque {
     }
 
     public static List<Integer> readFixed32List(byte[] packet, int offset, int length, int fieldNum) {
+        return readFixed32ListWithWireType(packet, offset, length, fieldNum, WireType.WIRE_FIXED32);
+    }
+
+    public static List<Integer> readSfixed32List(byte[] packet, int offset, int length, int fieldNum) {
+        return readFixed32ListWithWireType(packet, offset, length, fieldNum, WireType.WIRE_SFIXED32);
+    }
+
+    private static List<Integer> readFixed32ListWithWireType(
+            byte[] packet, int offset, int length, int fieldNum, int expectedElemWT) {
         List<OmniBufDecoder.Slice> bodies =
             collectContainerBodies(packet, offset, length, fieldNum, WireType.WIRE_ARRAY);
         if (bodies.isEmpty()) {
@@ -1282,10 +1402,8 @@ public final class OmniBufOpaque {
         for (OmniBufDecoder.Slice body : bodies) {
             OmniBufDecoder.ArrayHeader hdr =
                 OmniBufDecoder.parseArrayHeader(packet, body.offset(), body.end());
-            if (hdr.elemWireType() != WireType.WIRE_FIXED32
-                    && hdr.elemWireType() != WireType.WIRE_SFIXED32) {
-                OmniBufDecoder.validateArrayBody(packet, hdr, 1);
-                continue;
+            if (hdr.elemWireType() != expectedElemWT) {
+                throw arrayElemMismatch(expectedElemWT, hdr.elemWireType());
             }
             int p = hdr.payloadStart();
             for (int i = 0; i < hdr.count(); i++) {
@@ -1296,6 +1414,15 @@ public final class OmniBufOpaque {
     }
 
     public static List<Long> readFixed64List(byte[] packet, int offset, int length, int fieldNum) {
+        return readFixed64ListWithWireType(packet, offset, length, fieldNum, WireType.WIRE_FIXED64);
+    }
+
+    public static List<Long> readSfixed64List(byte[] packet, int offset, int length, int fieldNum) {
+        return readFixed64ListWithWireType(packet, offset, length, fieldNum, WireType.WIRE_SFIXED64);
+    }
+
+    private static List<Long> readFixed64ListWithWireType(
+            byte[] packet, int offset, int length, int fieldNum, int expectedElemWT) {
         List<OmniBufDecoder.Slice> bodies =
             collectContainerBodies(packet, offset, length, fieldNum, WireType.WIRE_ARRAY);
         if (bodies.isEmpty()) {
@@ -1305,10 +1432,8 @@ public final class OmniBufOpaque {
         for (OmniBufDecoder.Slice body : bodies) {
             OmniBufDecoder.ArrayHeader hdr =
                 OmniBufDecoder.parseArrayHeader(packet, body.offset(), body.end());
-            if (hdr.elemWireType() != WireType.WIRE_FIXED64
-                    && hdr.elemWireType() != WireType.WIRE_SFIXED64) {
-                OmniBufDecoder.validateArrayBody(packet, hdr, 1);
-                continue;
+            if (hdr.elemWireType() != expectedElemWT) {
+                throw arrayElemMismatch(expectedElemWT, hdr.elemWireType());
             }
             int p = hdr.payloadStart();
             for (int i = 0; i < hdr.count(); i++) {
@@ -1329,8 +1454,7 @@ public final class OmniBufOpaque {
             OmniBufDecoder.ArrayHeader hdr =
                 OmniBufDecoder.parseArrayHeader(packet, body.offset(), body.end());
             if (hdr.elemWireType() != WireType.WIRE_FLOAT32) {
-                OmniBufDecoder.validateArrayBody(packet, hdr, 1);
-                continue;
+                throw arrayElemMismatch(WireType.WIRE_FLOAT32, hdr.elemWireType());
             }
             int p = hdr.payloadStart();
             for (int i = 0; i < hdr.count(); i++) {
@@ -1351,8 +1475,7 @@ public final class OmniBufOpaque {
             OmniBufDecoder.ArrayHeader hdr =
                 OmniBufDecoder.parseArrayHeader(packet, body.offset(), body.end());
             if (hdr.elemWireType() != WireType.WIRE_FLOAT64) {
-                OmniBufDecoder.validateArrayBody(packet, hdr, 1);
-                continue;
+                throw arrayElemMismatch(WireType.WIRE_FLOAT64, hdr.elemWireType());
             }
             int p = hdr.payloadStart();
             for (int i = 0; i < hdr.count(); i++) {
@@ -1373,8 +1496,7 @@ public final class OmniBufOpaque {
             OmniBufDecoder.ArrayHeader hdr =
                 OmniBufDecoder.parseArrayHeader(packet, body.offset(), body.end());
             if (hdr.elemWireType() != WireType.WIRE_SUB_MSG) {
-                OmniBufDecoder.validateArrayBody(packet, hdr, 1);
-                continue;
+                throw arrayElemMismatch(WireType.WIRE_SUB_MSG, hdr.elemWireType());
             }
             int p = hdr.payloadStart();
             int end = hdr.payloadEnd();
@@ -1404,8 +1526,7 @@ public final class OmniBufOpaque {
             OmniBufDecoder.MapHeader hdr =
                 OmniBufDecoder.parseMapHeader(packet, body.offset(), body.end());
             if (hdr.keyWireType() != WireType.WIRE_STRING || hdr.valWireType() != WireType.WIRE_UINT) {
-                OmniBufDecoder.validateMapBody(packet, hdr, 1);
-                continue;
+                throw mapTypeMismatch(WireType.WIRE_STRING, WireType.WIRE_UINT, hdr.keyWireType(), hdr.valWireType());
             }
             int p = hdr.payloadStart();
             int end = hdr.payloadEnd();
@@ -1428,7 +1549,7 @@ public final class OmniBufOpaque {
 
     /**
      * Reads and merges all {@code WireMap} occurrences for {@code fieldNum} matching
-     * {@code expectedKeyWT -> expectedValWT}, validating trailing bytes and mismatched containers.
+     * {@code expectedKeyWT -> expectedValWT}, throwing {@link OmniBufException} on type mismatch.
      */
     public static <K, V> Map<K, V> readMap(
             byte[] packet,
@@ -1451,8 +1572,7 @@ public final class OmniBufOpaque {
                 OmniBufDecoder.MapHeader hdr =
                     OmniBufDecoder.parseMapHeader(packet, body.offset(), body.end());
                 if (hdr.keyWireType() != expectedKeyWT || hdr.valWireType() != expectedValWT) {
-                    OmniBufDecoder.validateMapBody(packet, hdr, 1);
-                    continue;
+                    throw mapTypeMismatch(expectedKeyWT, expectedValWT, hdr.keyWireType(), hdr.valWireType());
                 }
                 int saved = dec.setSlice(hdr.payloadStart(), hdr.payloadEnd());
                 for (int i = 0; i < hdr.count(); i++) {

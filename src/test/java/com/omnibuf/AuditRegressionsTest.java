@@ -25,9 +25,12 @@ import com.omnibuf.pb.bench.PeerUpdateOmniBuf;
 import com.omnibuf.plugin.ProtocGenOmniBufJava;
 import com.omnibuf.wire.OmniBufDecoder;
 import com.omnibuf.wire.OmniBufEncoder;
+import com.omnibuf.wire.OmniBufOpaque;
 import com.omnibuf.wire.Utf8Validator;
 import com.omnibuf.wire.WireType;
 import java.io.StringWriter;
+import java.net.URL;
+import java.net.URLClassLoader;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
@@ -504,5 +507,286 @@ class AuditRegressionsTest {
             thrown instanceof OmniBufException || thrown instanceof IndexOutOfBoundsException,
             () -> "Expected OmniBufException or IndexOutOfBoundsException, got: " + thrown
         );
+    }
+
+    @OmniBufMessage(name = "PrimitiveArrayPojo")
+    public static final class PrimitiveArrayPojo {
+        @OmniBufField(id = 1, name = "ints", wire = com.omnibuf.annotation.WireKind.SINT)
+        public int[] ints;
+
+        @OmniBufField(id = 2, name = "longs", wire = com.omnibuf.annotation.WireKind.SINT)
+        public long[] longs;
+    }
+
+    // Audit §7.1: Collection ElementType / KeyType / ValueType mismatch must throw OmniBufException
+    @Test
+    void audit7_1_collectionHeaderTypeMismatchThrowsAcrossAllDecoders() {
+        // PeerUpdate field #7 is repeated string tags; send WireArray<WireUint> instead
+        OmniBufEncoder badArrEnc = new OmniBufEncoder();
+        badArrEnc.writeUint32List(7, List.of(1, 2, 3));
+        byte[] badArrPkt = badArrEnc.toByteArray();
+
+        assertThrows(OmniBufException.class, () -> PeerUpdateOmniBuf.unmarshal(badArrPkt));
+        assertThrows(
+            OmniBufException.class,
+            () -> OmniBufProtobuf.unmarshal(badArrPkt, com.omnibuf.pb.bench.PeerUpdate.getDefaultInstance())
+        );
+        assertThrows(
+            OmniBufException.class,
+            () -> OmniBufMapper.unmarshal(
+                badArrPkt, com.omnibuf.conformance.ConformanceModels.AnnotatedPeerUpdate.class
+            )
+        );
+        assertThrows(OmniBufException.class, () -> new OpaquePeerUpdate(badArrPkt).getTags());
+        assertThrows(
+            OmniBufException.class,
+            () -> OmniBufOpaque.readStringList(badArrPkt, 0, badArrPkt.length, 7)
+        );
+
+        // ConcreteCollectionsPojo field #2 is Map<String, Long> (WIRE_STRING -> WIRE_SINT/UINT);
+        // send WireMap<WireUint, WireString> instead
+        OmniBufEncoder badMapEnc = new OmniBufEncoder();
+        badMapEnc.beginTypedMap(2, WireType.WIRE_UINT, WireType.WIRE_STRING, 1);
+        badMapEnc.writeVarint(1L);
+        badMapEnc.writeStringElement("v");
+        badMapEnc.endTypedMap();
+        byte[] badMapPkt = badMapEnc.toByteArray();
+
+        assertThrows(
+            OmniBufException.class,
+            () -> OmniBufMapper.unmarshal(badMapPkt, ConcreteCollectionsPojo.class)
+        );
+        assertThrows(
+            OmniBufException.class,
+            () -> OmniBufOpaque.readMapStringUint64(badMapPkt, 0, badMapPkt.length, 2)
+        );
+    }
+
+    // Audit §7.2: OmniBufOpaque enforces exact WireFixed32/WireSfixed32 and WireFixed64/WireSfixed64 matching
+    @Test
+    void audit7_2_opaqueEnforcesExactFixedVsSfixedWireTypeMatching() {
+        OmniBufEncoder enc = new OmniBufEncoder();
+        enc.writeSfixed32(1, -12345);
+        enc.writeFixed32(2, 54321);
+        enc.writeSfixed64(3, -9876543210L);
+        enc.writeFixed64(4, 1234567890123L);
+        enc.writeFixed32List(5, WireType.WIRE_SFIXED32, List.of(-1, -2));
+        enc.writeFixed64List(6, WireType.WIRE_SFIXED64, List.of(-10L, -20L));
+        byte[] pkt = enc.toByteArray();
+
+        long[] idx = OmniBufOpaque.buildFieldIndex(pkt, 0, pkt.length, 8);
+
+        // Exact matches succeed
+        assertEquals(-12345, OmniBufOpaque.readSfixed32(pkt, 0, pkt.length, 1));
+        assertEquals(-12345, OmniBufOpaque.readSfixed32Indexed(idx, pkt, 0, pkt.length, 1));
+        assertEquals(54321, OmniBufOpaque.readFixed32(pkt, 0, pkt.length, 2));
+        assertEquals(54321, OmniBufOpaque.readFixed32Indexed(idx, pkt, 0, pkt.length, 2));
+        assertEquals(-9876543210L, OmniBufOpaque.readSfixed64(pkt, 0, pkt.length, 3));
+        assertEquals(-9876543210L, OmniBufOpaque.readSfixed64Indexed(idx, pkt, 0, pkt.length, 3));
+        assertEquals(1234567890123L, OmniBufOpaque.readFixed64(pkt, 0, pkt.length, 4));
+        assertEquals(1234567890123L, OmniBufOpaque.readFixed64Indexed(idx, pkt, 0, pkt.length, 4));
+
+        // Swapped fixed/sfixed scalar reads return default 0 (consistent with hasField == false)
+        assertFalse(OmniBufOpaque.hasField(pkt, 0, pkt.length, 1, 1 << WireType.WIRE_FIXED32));
+        assertEquals(0, OmniBufOpaque.readFixed32(pkt, 0, pkt.length, 1));
+        assertEquals(0, OmniBufOpaque.readFixed32Indexed(idx, pkt, 0, pkt.length, 1));
+        assertFalse(OmniBufOpaque.hasField(pkt, 0, pkt.length, 2, 1 << WireType.WIRE_SFIXED32));
+        assertEquals(0, OmniBufOpaque.readSfixed32(pkt, 0, pkt.length, 2));
+        assertEquals(0, OmniBufOpaque.readSfixed32Indexed(idx, pkt, 0, pkt.length, 2));
+        assertFalse(OmniBufOpaque.hasField(pkt, 0, pkt.length, 3, 1 << WireType.WIRE_FIXED64));
+        assertEquals(0L, OmniBufOpaque.readFixed64(pkt, 0, pkt.length, 3));
+        assertEquals(0L, OmniBufOpaque.readFixed64Indexed(idx, pkt, 0, pkt.length, 3));
+        assertFalse(OmniBufOpaque.hasField(pkt, 0, pkt.length, 4, 1 << WireType.WIRE_SFIXED64));
+        assertEquals(0L, OmniBufOpaque.readSfixed64(pkt, 0, pkt.length, 4));
+        assertEquals(0L, OmniBufOpaque.readSfixed64Indexed(idx, pkt, 0, pkt.length, 4));
+
+        // Swapped fixed/sfixed list reads throw OmniBufException
+        assertEquals(List.of(-1, -2), OmniBufOpaque.readSfixed32List(pkt, 0, pkt.length, 5));
+        assertThrows(OmniBufException.class, () -> OmniBufOpaque.readFixed32List(pkt, 0, pkt.length, 5));
+        assertEquals(List.of(-10L, -20L), OmniBufOpaque.readSfixed64List(pkt, 0, pkt.length, 6));
+        assertThrows(OmniBufException.class, () -> OmniBufOpaque.readFixed64List(pkt, 0, pkt.length, 6));
+    }
+
+    // Audit §7.3: Multi-chunk int[] / long[] decode on mutable POJO is linear and preserves all chunks
+    @Test
+    void audit7_3_mapperDecodesManyPrimitiveArrayChunksLinearly() {
+        int chunks = 4000;
+        OmniBufEncoder enc = new OmniBufEncoder(chunks * 16);
+        for (int i = 0; i < chunks; i++) {
+            enc.beginTypedArray(1, WireType.WIRE_SINT, 1);
+            enc.writeVarint(com.omnibuf.wire.PrefixVarint.encodeZigZag32(i - 2000));
+            enc.endTypedArray();
+            enc.beginTypedArray(2, WireType.WIRE_SINT, 1);
+            enc.writeVarint(com.omnibuf.wire.PrefixVarint.encodeZigZag64((long) i * 1000L - 500L));
+            enc.endTypedArray();
+        }
+        byte[] pkt = enc.toByteArray();
+
+        PrimitiveArrayPojo decoded = OmniBufMapper.unmarshal(pkt, PrimitiveArrayPojo.class);
+        assertEquals(chunks, decoded.ints.length);
+        assertEquals(chunks, decoded.longs.length);
+        for (int i = 0; i < chunks; i++) {
+            assertEquals(i - 2000, decoded.ints[i]);
+            assertEquals((long) i * 1000L - 500L, decoded.longs[i]);
+        }
+    }
+
+    // Audit §7.4: Opaque oneof submessage getter resets accumulated slices across intervening sibling
+    @Test
+    void audit7_4_opaqueOneofSubMsgResetsAcrossInterveningSibling(@TempDir Path tempDir) throws Exception {
+        DescriptorProto inner = DescriptorProto.newBuilder()
+            .setName("Payload")
+            .addField(
+                FieldDescriptorProto.newBuilder()
+                    .setName("a")
+                    .setNumber(1)
+                    .setLabel(FieldDescriptorProto.Label.LABEL_OPTIONAL)
+                    .setType(FieldDescriptorProto.Type.TYPE_STRING)
+            )
+            .addField(
+                FieldDescriptorProto.newBuilder()
+                    .setName("b")
+                    .setNumber(2)
+                    .setLabel(FieldDescriptorProto.Label.LABEL_OPTIONAL)
+                    .setType(FieldDescriptorProto.Type.TYPE_UINT32)
+            )
+            .build();
+
+        DescriptorProto holder = DescriptorProto.newBuilder()
+            .setName("OneofHolder")
+            .addOneofDecl(OneofDescriptorProto.newBuilder().setName("choice"))
+            .addField(
+                FieldDescriptorProto.newBuilder()
+                    .setName("sub_opt")
+                    .setNumber(1)
+                    .setLabel(FieldDescriptorProto.Label.LABEL_OPTIONAL)
+                    .setType(FieldDescriptorProto.Type.TYPE_MESSAGE)
+                    .setTypeName(".audit.oneof.Payload")
+                    .setOneofIndex(0)
+            )
+            .addField(
+                FieldDescriptorProto.newBuilder()
+                    .setName("num_opt")
+                    .setNumber(2)
+                    .setLabel(FieldDescriptorProto.Label.LABEL_OPTIONAL)
+                    .setType(FieldDescriptorProto.Type.TYPE_UINT32)
+                    .setOneofIndex(0)
+            )
+            .build();
+
+        FileDescriptorProto fileProto = FileDescriptorProto.newBuilder()
+            .setName("oneof_submsg.proto")
+            .setPackage("audit.oneof")
+            .setSyntax("proto3")
+            .setOptions(FileOptions.newBuilder().setJavaPackage("com.omnibuf.audit.oneof"))
+            .addMessageType(inner)
+            .addMessageType(holder)
+            .build();
+
+        CodeGeneratorResponse resp = ProtocGenOmniBufJava.generate(
+            CodeGeneratorRequest.newBuilder()
+                .addProtoFile(fileProto)
+                .addFileToGenerate("oneof_submsg.proto")
+                .build()
+        );
+        assertFalse(resp.hasError(), () -> "Unexpected plugin error: " + resp.getError());
+        assertCompilesCleanly(resp, tempDir);
+
+        // Wire: sub_opt{a="stale"} -> num_opt=99 -> sub_opt{b=42}
+        OmniBufEncoder switchedEnc = new OmniBufEncoder();
+        switchedEnc.beginSubMsg(1);
+        switchedEnc.writeString(1, "stale");
+        switchedEnc.endSubMsg();
+        switchedEnc.writeUint32(2, 99);
+        switchedEnc.beginSubMsg(1);
+        switchedEnc.writeUint32(2, 42);
+        switchedEnc.endSubMsg();
+        byte[] switchedPkt = switchedEnc.toByteArray();
+
+        // Wire: sub_opt{a="kept"} -> sub_opt{b=7} (no intervening sibling -> must merge)
+        OmniBufEncoder mergedEnc = new OmniBufEncoder();
+        mergedEnc.beginSubMsg(1);
+        mergedEnc.writeString(1, "kept");
+        mergedEnc.endSubMsg();
+        mergedEnc.beginSubMsg(1);
+        mergedEnc.writeUint32(2, 7);
+        mergedEnc.endSubMsg();
+        byte[] mergedPkt = mergedEnc.toByteArray();
+
+        Path classesDir = tempDir.resolve("classes");
+        try (URLClassLoader loader = new URLClassLoader(
+                new URL[] {classesDir.toUri().toURL()},
+                AuditRegressionsTest.class.getClassLoader())) {
+            Class<?> opaqueHolderCls = loader.loadClass("com.omnibuf.audit.oneof.OpaqueOneofHolder");
+            Class<?> opaquePayloadCls = loader.loadClass("com.omnibuf.audit.oneof.OpaquePayload");
+
+            Object switchedView = opaqueHolderCls.getConstructor(byte[].class).newInstance((Object) switchedPkt);
+            Object subSwitched = opaqueHolderCls.getMethod("getSubOpt").invoke(switchedView);
+            assertNotNull(subSwitched);
+            assertEquals("", opaquePayloadCls.getMethod("getA").invoke(subSwitched));
+            assertEquals(42, opaquePayloadCls.getMethod("getB").invoke(subSwitched));
+
+            Object mergedView = opaqueHolderCls.getConstructor(byte[].class).newInstance((Object) mergedPkt);
+            Object subMerged = opaqueHolderCls.getMethod("getSubOpt").invoke(mergedView);
+            assertNotNull(subMerged);
+            assertEquals("kept", opaquePayloadCls.getMethod("getA").invoke(subMerged));
+            assertEquals(7, opaquePayloadCls.getMethod("getB").invoke(subMerged));
+        }
+    }
+
+    // Audit §7.5: OmniBufOpaque lazy scalar getters throw on malformed framing / truncated trailing fields
+    @Test
+    void audit7_5_opaqueScalarGettersThrowOnTruncatedFraming() {
+        OmniBufEncoder enc = new OmniBufEncoder();
+        enc.writeUint32(1, 64512);
+        enc.writeTag(2, WireType.WIRE_STRING);
+        enc.writeVarint(50); // truncated string claiming 50 bytes
+        byte[] truncated = enc.toByteArray();
+
+        OpaquePeerUpdate view = new OpaquePeerUpdate(truncated);
+        assertThrows(OmniBufException.class, view::getAsn);
+        assertThrows(OmniBufException.class, view::getRouterId);
+        assertThrows(
+            OmniBufException.class,
+            () -> OmniBufOpaque.buildFieldIndex(truncated, 0, truncated.length, 16)
+        );
+    }
+
+    // Audit §7.6: Empty WireMap with ValueType=WireExtended rejected by OmniBufBlind; proto2 required rejected by plugin
+    @Test
+    void audit7_6_blindRejectsEmptyMapWithWireExtendedValueAndPluginRejectsProto2Required() {
+        // Field #1 WireMap: KeyWT=WireString(10), ValWT=WireExtended(15), Count=0 (0x01)
+        OmniBufEncoder extMapEnc = new OmniBufEncoder();
+        extMapEnc.writeTag(1, WireType.WIRE_MAP);
+        extMapEnc.writeVarint(3);
+        extMapEnc.writeRawBytes(new byte[] {WireType.WIRE_STRING, WireType.WIRE_EXTENDED, 0x01});
+        byte[] extMapPkt = extMapEnc.toByteArray();
+        assertThrows(OmniBufException.class, () -> OmniBufBlind.decodeBlind(extMapPkt));
+
+        // Proto2 LABEL_REQUIRED rejected by ProtocGenOmniBufJava
+        FileDescriptorProto reqFile = FileDescriptorProto.newBuilder()
+            .setName("bad_required.proto")
+            .setPackage("bad.req")
+            .setSyntax("proto2")
+            .addMessageType(
+                DescriptorProto.newBuilder()
+                    .setName("HasRequired")
+                    .addField(
+                        FieldDescriptorProto.newBuilder()
+                            .setName("must_exist")
+                            .setNumber(1)
+                            .setLabel(FieldDescriptorProto.Label.LABEL_REQUIRED)
+                            .setType(FieldDescriptorProto.Type.TYPE_UINT32)
+                    )
+            )
+            .build();
+        CodeGeneratorResponse resp = ProtocGenOmniBufJava.generate(
+            CodeGeneratorRequest.newBuilder()
+                .addProtoFile(reqFile)
+                .addFileToGenerate("bad_required.proto")
+                .build()
+        );
+        assertTrue(resp.hasError());
+        assertEquals(0, resp.getFileCount());
     }
 }

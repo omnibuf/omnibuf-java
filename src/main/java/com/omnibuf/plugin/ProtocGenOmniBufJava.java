@@ -476,6 +476,11 @@ public final class ProtocGenOmniBufJava {
                 "omnibuf: proto2 groups are not supported: " + qualifiedField
             );
         }
+        if (fd.getLabel() == Label.LABEL_REQUIRED) {
+            throw new PluginValidationException(
+                "omnibuf: proto2 required fields are not supported: " + qualifiedField
+            );
+        }
         if (fd.hasDefaultValue() && !isZeroProtoDefault(fd, enumRegistry)) {
             throw new PluginValidationException(
                 "omnibuf: custom non-zero proto2 default values are not supported on "
@@ -2305,10 +2310,18 @@ public final class ProtocGenOmniBufJava {
             sb.append("                ? null\n");
             sb.append("                : new ").append(subOpaque).append('(').append(subCodec).append(".marshal(d.dirty_").append(f.camelName()).append("));\n");
             sb.append("        }\n");
-            sb.append("        long[] idx = getOrBuildIndex();\n");
-            sb.append("        com.omnibuf.wire.OmniBufOpaque.PacketView view = idx != null\n");
-            sb.append("            ? com.omnibuf.wire.OmniBufOpaque.readSubMsgViewIndexed(idx, buffer, offset, length, ").append(fnum).append(")\n");
-            sb.append("            : com.omnibuf.wire.OmniBufOpaque.readSubMsgView(buffer, offset, length, ").append(fnum).append(");\n");
+            if (f.oneof() != null) {
+                sb.append("        com.omnibuf.wire.OmniBufOpaque.PacketView view = com.omnibuf.wire.OmniBufOpaque.readOneofSubMsgView(\n");
+                sb.append("            buffer, offset, length, ").append(fnum)
+                    .append(", ONEOF_").append(f.oneof().upperConstName()).append("_FIELDS, ONEOF_")
+                    .append(f.oneof().upperConstName()).append("_MASKS\n");
+                sb.append("        );\n");
+            } else {
+                sb.append("        long[] idx = getOrBuildIndex();\n");
+                sb.append("        com.omnibuf.wire.OmniBufOpaque.PacketView view = idx != null\n");
+                sb.append("            ? com.omnibuf.wire.OmniBufOpaque.readSubMsgViewIndexed(idx, buffer, offset, length, ").append(fnum).append(")\n");
+                sb.append("            : com.omnibuf.wire.OmniBufOpaque.readSubMsgView(buffer, offset, length, ").append(fnum).append(");\n");
+            }
             sb.append("        return view == null ? null : new ").append(subOpaque).append("(view);\n");
             sb.append("    }\n\n");
 
@@ -2588,8 +2601,10 @@ public final class ProtocGenOmniBufJava {
             case TYPE_INT32, TYPE_SINT32, TYPE_ENUM -> "readSint32";
             case TYPE_INT64, TYPE_SINT64 -> "readSint64";
             case TYPE_BOOL -> "readBool";
-            case TYPE_FIXED32, TYPE_SFIXED32 -> "readFixed32";
-            case TYPE_FIXED64, TYPE_SFIXED64 -> "readFixed64";
+            case TYPE_FIXED32 -> "readFixed32";
+            case TYPE_SFIXED32 -> "readSfixed32";
+            case TYPE_FIXED64 -> "readFixed64";
+            case TYPE_SFIXED64 -> "readSfixed64";
             case TYPE_FLOAT -> "readFloat32";
             case TYPE_DOUBLE -> "readFloat64";
             case TYPE_STRING -> "readString";
@@ -2607,8 +2622,10 @@ public final class ProtocGenOmniBufJava {
             case TYPE_INT32, TYPE_SINT32, TYPE_ENUM -> "readSint32List";
             case TYPE_INT64, TYPE_SINT64 -> "readSint64List";
             case TYPE_BOOL -> "readBoolList";
-            case TYPE_FIXED32, TYPE_SFIXED32 -> "readFixed32List";
-            case TYPE_FIXED64, TYPE_SFIXED64 -> "readFixed64List";
+            case TYPE_FIXED32 -> "readFixed32List";
+            case TYPE_SFIXED32 -> "readSfixed32List";
+            case TYPE_FIXED64 -> "readFixed64List";
+            case TYPE_SFIXED64 -> "readSfixed64List";
             case TYPE_FLOAT -> "readFloat32List";
             case TYPE_DOUBLE -> "readFloat64List";
             default -> throw new IllegalStateException("Unsupported opaque repeated: " + t);

@@ -135,8 +135,9 @@ class WireContainerAndOpaqueTest {
             OmniBufException.class,
             () -> OmniBufDecoder.validateMessage(small, 2, Integer.MAX_VALUE, 0)
         );
-        org.junit.jupiter.api.Assertions.assertFalse(
-            OmniBufOpaque.locateField(small, 2, Integer.MAX_VALUE, 1, 1).found()
+        assertThrows(
+            OmniBufException.class,
+            () -> OmniBufOpaque.locateField(small, 2, Integer.MAX_VALUE, 1, 1)
         );
         assertThrows(
             OmniBufException.class,
@@ -223,10 +224,17 @@ class WireContainerAndOpaqueTest {
 
         // 3. Corrupt Field #0 wire type (raw tag 0x01 -> fnum=0, wt=WIRE_UINT(0) instead of WIRE_SUB_MSG)
         byte[] badF0Packet = new byte[] {0x01, 0x03, 0x21, 0x55};
-        org.junit.jupiter.api.Assertions.assertFalse(
-            OmniBufOpaque.locateField(badF0Packet, 1, 1 << WireType.WIRE_UINT).found()
+        assertThrows(
+            OmniBufException.class,
+            () -> OmniBufOpaque.locateField(badF0Packet, 1, 1 << WireType.WIRE_UINT)
+        );
+        assertThrows(
+            OmniBufException.class,
+            () -> OmniBufOpaque.buildFieldIndex(badF0Packet, 0, badF0Packet.length, 16)
         );
         OpaquePeerUpdate badF0View = new OpaquePeerUpdate(badF0Packet);
+        assertThrows(OmniBufException.class, badF0View::getAsn);
+        assertThrows(OmniBufException.class, badF0View::getRouterId);
         assertThrows(OmniBufException.class, badF0View::getLocation);
         assertThrows(OmniBufException.class, badF0View::getTags);
         badF0View.setSequence(10L);

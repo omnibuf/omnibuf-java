@@ -96,6 +96,20 @@ public final class IntArrayList extends AbstractList<Integer> implements RandomA
         this.modCount++;
     }
 
+    public void addAll(int[] values) {
+        if (values == null || values.length == 0) {
+            return;
+        }
+        ensureAdditional(values.length);
+        System.arraycopy(values, 0, data, size, values.length);
+        size += values.length;
+        modCount++;
+    }
+
+    public int[] toIntArray() {
+        return size == 0 ? EMPTY : Arrays.copyOf(data, size);
+    }
+
     @Override
     public int size() {
         return size;

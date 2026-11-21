@@ -372,11 +372,10 @@ public final class OmniBufDecoder {
         }
         if (elemType != expectedElemWT) {
             this.limit = savedLimit;
-            validateArrayPayloadRaw(
-                buf, elemType, count, payloadStart, bodyEnd, depth + 1, maxNestingDepth, maxCollectionElements
+            throw new OmniBufException(
+                "omnibuf: WireArray element type mismatch: expected "
+                    + WireType.nameOf(expectedElemWT) + ", got " + WireType.nameOf(elemType)
             );
-            this.pos = bodyEnd;
-            return -1L;
         }
         return (((long) savedLimit) << 32) | (count & 0xFFFF_FFFFL);
     }
@@ -421,20 +420,11 @@ public final class OmniBufDecoder {
         int count = (int) countLong;
         if (keyWT != expectedKeyWT || valWT != expectedValWT) {
             this.limit = savedLimit;
-            int p = payloadStart;
-            for (int i = 0; i < count; i++) {
-                p = validateContainerEntry(
-                    buf, p, bodyEnd, keyWT, depth + 1, maxNestingDepth, maxCollectionElements
-                );
-                p = validateContainerEntry(
-                    buf, p, bodyEnd, valWT, depth + 1, maxNestingDepth, maxCollectionElements
-                );
-            }
-            if (p != bodyEnd) {
-                throw new OmniBufException("omnibuf: WireMap has trailing payload bytes");
-            }
-            this.pos = bodyEnd;
-            return -1L;
+            throw new OmniBufException(
+                "omnibuf: WireMap key/value type mismatch: expected "
+                    + WireType.nameOf(expectedKeyWT) + "/" + WireType.nameOf(expectedValWT)
+                    + ", got " + WireType.nameOf(keyWT) + "/" + WireType.nameOf(valWT)
+            );
         }
         return (((long) savedLimit) << 32) | (count & 0xFFFF_FFFFL);
     }

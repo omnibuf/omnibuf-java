@@ -521,7 +521,8 @@ public final class OmniBufMapper {
     private static final class RecordBuildState<T> {
         private final ClassCodec<T> codec;
         private final Object[] args;
-        private Map<Integer, List<Number>> primArrayAccum;
+        private Map<Integer, IntArrayList> intArrayAccum;
+        private Map<Integer, LongArrayList> longArrayAccum;
         private Map<Integer, RecordBuildState<?>> subRecordStates;
 
         RecordBuildState(ClassCodec<T> codec) {
@@ -579,36 +580,32 @@ public final class OmniBufMapper {
                     case BYTES_SCALAR -> args[compIdx] = dec.readBytes();
                     case ENUM_SCALAR -> args[compIdx] = slot.decodeEnumScalar(dec);
                     case INT_ARRAY -> {
-                        if (primArrayAccum == null) {
-                            primArrayAccum = new HashMap<>();
+                        if (intArrayAccum == null) {
+                            intArrayAccum = new HashMap<>();
                         }
-                        List<Number> acc = primArrayAccum.get(compIdx);
+                        IntArrayList acc = intArrayAccum.get(compIdx);
                         if (acc == null) {
-                            acc = new ArrayList<>();
+                            acc = new IntArrayList();
                             if (args[compIdx] instanceof int[] prev && prev.length > 0) {
-                                for (int v : prev) {
-                                    acc.add(v);
-                                }
+                                acc.addAll(prev);
                             }
-                            primArrayAccum.put(compIdx, acc);
+                            intArrayAccum.put(compIdx, acc);
                         }
-                        decodePrimitiveArrayIntoList(dec, slot, acc, depth);
+                        decodeIntArrayInto(dec, slot, acc, depth);
                     }
                     case LONG_ARRAY -> {
-                        if (primArrayAccum == null) {
-                            primArrayAccum = new HashMap<>();
+                        if (longArrayAccum == null) {
+                            longArrayAccum = new HashMap<>();
                         }
-                        List<Number> acc = primArrayAccum.get(compIdx);
+                        LongArrayList acc = longArrayAccum.get(compIdx);
                         if (acc == null) {
-                            acc = new ArrayList<>();
+                            acc = new LongArrayList();
                             if (args[compIdx] instanceof long[] prev && prev.length > 0) {
-                                for (long v : prev) {
-                                    acc.add(v);
-                                }
+                                acc.addAll(prev);
                             }
-                            primArrayAccum.put(compIdx, acc);
+                            longArrayAccum.put(compIdx, acc);
                         }
-                        decodePrimitiveArrayIntoList(dec, slot, acc, depth);
+                        decodeLongArrayInto(dec, slot, acc, depth);
                     }
                     case LIST -> {
                         List<Object> list = (List<Object>) args[compIdx];
@@ -654,23 +651,14 @@ public final class OmniBufMapper {
                     args[entry.getKey()] = entry.getValue().build();
                 }
             }
-            if (primArrayAccum != null) {
-                for (Map.Entry<Integer, List<Number>> entry : primArrayAccum.entrySet()) {
-                    int compIdx = entry.getKey();
-                    List<Number> nums = entry.getValue();
-                    if (codec.recordComponentsByIndex[compIdx].category == FieldCategory.INT_ARRAY) {
-                        int[] arr = new int[nums.size()];
-                        for (int i = 0; i < arr.length; i++) {
-                            arr[i] = nums.get(i).intValue();
-                        }
-                        args[compIdx] = arr;
-                    } else {
-                        long[] arr = new long[nums.size()];
-                        for (int i = 0; i < arr.length; i++) {
-                            arr[i] = nums.get(i).longValue();
-                        }
-                        args[compIdx] = arr;
-                    }
+            if (intArrayAccum != null) {
+                for (Map.Entry<Integer, IntArrayList> entry : intArrayAccum.entrySet()) {
+                    args[entry.getKey()] = entry.getValue().toIntArray();
+                }
+            }
+            if (longArrayAccum != null) {
+                for (Map.Entry<Integer, LongArrayList> entry : longArrayAccum.entrySet()) {
+                    args[entry.getKey()] = entry.getValue().toLongArray();
                 }
             }
             return codec.instantiateRecord(args);
@@ -1063,7 +1051,8 @@ public final class OmniBufMapper {
             int singleSubStart = 0;
             int singleSubEnd = 0;
             Map<Integer, RecordBuildState<?>> subRecordStates = null;
-            Map<Integer, List<Number>> primArrayAccum = null;
+            Map<Integer, IntArrayList> intArrayAccum = null;
+            Map<Integer, LongArrayList> longArrayAccum = null;
 
             while (dec.hasRemaining()) {
                 long tag = dec.readTag();
@@ -1088,12 +1077,19 @@ public final class OmniBufMapper {
                     case STRING_SCALAR -> args[compIdx] = dec.readString();
                     case BYTES_SCALAR -> args[compIdx] = dec.readBytes();
                     case ENUM_SCALAR -> args[compIdx] = slot.decodeEnumScalar(dec);
-                    case INT_ARRAY, LONG_ARRAY -> {
-                        if (primArrayAccum == null) {
-                            primArrayAccum = new HashMap<>();
+                    case INT_ARRAY -> {
+                        if (intArrayAccum == null) {
+                            intArrayAccum = new HashMap<>();
                         }
-                        List<Number> acc = primArrayAccum.computeIfAbsent(compIdx, k -> new ArrayList<>());
-                        decodePrimitiveArrayIntoList(dec, slot, acc, depth);
+                        IntArrayList acc = intArrayAccum.computeIfAbsent(compIdx, k -> new IntArrayList());
+                        decodeIntArrayInto(dec, slot, acc, depth);
+                    }
+                    case LONG_ARRAY -> {
+                        if (longArrayAccum == null) {
+                            longArrayAccum = new HashMap<>();
+                        }
+                        LongArrayList acc = longArrayAccum.computeIfAbsent(compIdx, k -> new LongArrayList());
+                        decodeLongArrayInto(dec, slot, acc, depth);
                     }
                     case LIST -> {
                         List<Object> list = (List<Object>) args[compIdx];
@@ -1145,23 +1141,14 @@ public final class OmniBufMapper {
                 }
             }
 
-            if (primArrayAccum != null) {
-                for (Map.Entry<Integer, List<Number>> entry : primArrayAccum.entrySet()) {
-                    int compIdx = entry.getKey();
-                    List<Number> nums = entry.getValue();
-                    if (recordComponentsByIndex[compIdx].category == FieldCategory.INT_ARRAY) {
-                        int[] arr = new int[nums.size()];
-                        for (int i = 0; i < arr.length; i++) {
-                            arr[i] = nums.get(i).intValue();
-                        }
-                        args[compIdx] = arr;
-                    } else {
-                        long[] arr = new long[nums.size()];
-                        for (int i = 0; i < arr.length; i++) {
-                            arr[i] = nums.get(i).longValue();
-                        }
-                        args[compIdx] = arr;
-                    }
+            if (intArrayAccum != null) {
+                for (Map.Entry<Integer, IntArrayList> entry : intArrayAccum.entrySet()) {
+                    args[entry.getKey()] = entry.getValue().toIntArray();
+                }
+            }
+            if (longArrayAccum != null) {
+                for (Map.Entry<Integer, LongArrayList> entry : longArrayAccum.entrySet()) {
+                    args[entry.getKey()] = entry.getValue().toLongArray();
                 }
             }
 
@@ -1190,6 +1177,8 @@ public final class OmniBufMapper {
             int singleRecStart = 0;
             int singleRecEnd = 0;
             Map<Integer, RecordBuildState<?>> recordSubStates = null;
+            Map<Integer, IntArrayList> intArrayAccum = null;
+            Map<Integer, LongArrayList> longArrayAccum = null;
 
             while (dec.hasRemaining()) {
                 long tag = dec.readTag();
@@ -1214,34 +1203,34 @@ public final class OmniBufMapper {
                     case BYTES_SCALAR -> slot.writeObject(target, dec.readBytes());
                     case ENUM_SCALAR -> slot.writeObject(target, slot.decodeEnumScalar(dec));
                     case INT_ARRAY -> {
-                        int[] prev = (int[]) slot.readObject(target);
-                        List<Number> acc = new ArrayList<>(prev == null ? 4 : prev.length + 4);
-                        if (prev != null) {
-                            for (int v : prev) {
-                                acc.add(v);
+                        if (intArrayAccum == null) {
+                            intArrayAccum = new HashMap<>();
+                        }
+                        IntArrayList acc = intArrayAccum.get(slot.slotIndex);
+                        if (acc == null) {
+                            acc = new IntArrayList();
+                            int[] prev = (int[]) slot.readObject(target);
+                            if (prev != null && prev.length > 0) {
+                                acc.addAll(prev);
                             }
+                            intArrayAccum.put(slot.slotIndex, acc);
                         }
-                        decodePrimitiveArrayIntoList(dec, slot, acc, depth);
-                        int[] next = new int[acc.size()];
-                        for (int i = 0; i < next.length; i++) {
-                            next[i] = acc.get(i).intValue();
-                        }
-                        slot.writeObject(target, next);
+                        decodeIntArrayInto(dec, slot, acc, depth);
                     }
                     case LONG_ARRAY -> {
-                        long[] prev = (long[]) slot.readObject(target);
-                        List<Number> acc = new ArrayList<>(prev == null ? 4 : prev.length + 4);
-                        if (prev != null) {
-                            for (long v : prev) {
-                                acc.add(v);
+                        if (longArrayAccum == null) {
+                            longArrayAccum = new HashMap<>();
+                        }
+                        LongArrayList acc = longArrayAccum.get(slot.slotIndex);
+                        if (acc == null) {
+                            acc = new LongArrayList();
+                            long[] prev = (long[]) slot.readObject(target);
+                            if (prev != null && prev.length > 0) {
+                                acc.addAll(prev);
                             }
+                            longArrayAccum.put(slot.slotIndex, acc);
                         }
-                        decodePrimitiveArrayIntoList(dec, slot, acc, depth);
-                        long[] next = new long[acc.size()];
-                        for (int i = 0; i < next.length; i++) {
-                            next[i] = acc.get(i).longValue();
-                        }
-                        slot.writeObject(target, next);
+                        decodeLongArrayInto(dec, slot, acc, depth);
                     }
                     case LIST -> {
                         List<Object> list = (List<Object>) slot.readObject(target);
@@ -1303,6 +1292,17 @@ public final class OmniBufMapper {
                             dec.endContainer(subSaved);
                         }
                     }
+                }
+            }
+
+            if (intArrayAccum != null) {
+                for (Map.Entry<Integer, IntArrayList> entry : intArrayAccum.entrySet()) {
+                    orderedFields[entry.getKey()].writeObject(target, entry.getValue().toIntArray());
+                }
+            }
+            if (longArrayAccum != null) {
+                for (Map.Entry<Integer, LongArrayList> entry : longArrayAccum.entrySet()) {
+                    orderedFields[entry.getKey()].writeObject(target, entry.getValue().toLongArray());
                 }
             }
 
@@ -1475,23 +1475,36 @@ public final class OmniBufMapper {
         }
     }
 
-    private static void decodePrimitiveArrayIntoList(
-            OmniBufDecoder dec, FieldDescriptorSlot slot, List<Number> target, int depth) {
+    private static void decodeIntArrayInto(
+            OmniBufDecoder dec, FieldDescriptorSlot slot, IntArrayList target, int depth) {
         long arrState = dec.beginArray(slot.elemWireType, depth);
-        if (arrState < 0L) {
-            return;
-        }
         int count = (int) arrState;
         int arrLimit = (int) (arrState >>> 32);
         if ((long) target.size() + count > dec.maxCollectionElements()) {
             throw new OmniBufException("omnibuf: accumulated WireArray count exceeds maxCollectionElements");
         }
-        for (int i = 0; i < count; i++) {
-            if (slot.category == FieldCategory.INT_ARRAY) {
-                target.add(decodeIntScalar(dec, slot.elemWireType));
-            } else {
-                target.add(decodeLongScalar(dec, slot.elemWireType));
-            }
+        switch (slot.elemWireType) {
+            case WireType.WIRE_UINT -> dec.readUint32Into(target, count);
+            case WireType.WIRE_SINT -> dec.readSint32Into(target, count);
+            case WireType.WIRE_FIXED32, WireType.WIRE_SFIXED32 -> dec.readFixed32Into(target, count);
+            default -> throw new OmniBufException("omnibuf: unsupported int[] element wire type");
+        }
+        dec.endContainer(arrLimit);
+    }
+
+    private static void decodeLongArrayInto(
+            OmniBufDecoder dec, FieldDescriptorSlot slot, LongArrayList target, int depth) {
+        long arrState = dec.beginArray(slot.elemWireType, depth);
+        int count = (int) arrState;
+        int arrLimit = (int) (arrState >>> 32);
+        if ((long) target.size() + count > dec.maxCollectionElements()) {
+            throw new OmniBufException("omnibuf: accumulated WireArray count exceeds maxCollectionElements");
+        }
+        switch (slot.elemWireType) {
+            case WireType.WIRE_UINT -> dec.readUint64Into(target, count);
+            case WireType.WIRE_SINT -> dec.readSint64Into(target, count);
+            case WireType.WIRE_FIXED64, WireType.WIRE_SFIXED64 -> dec.readFixed64Into(target, count);
+            default -> throw new OmniBufException("omnibuf: unsupported long[] element wire type");
         }
         dec.endContainer(arrLimit);
     }

@@ -96,6 +96,20 @@ public final class LongArrayList extends AbstractList<Long> implements RandomAcc
         this.modCount++;
     }
 
+    public void addAll(long[] values) {
+        if (values == null || values.length == 0) {
+            return;
+        }
+        ensureAdditional(values.length);
+        System.arraycopy(values, 0, data, size, values.length);
+        size += values.length;
+        modCount++;
+    }
+
+    public long[] toLongArray() {
+        return size == 0 ? EMPTY : Arrays.copyOf(data, size);
+    }
+
     @Override
     public int size() {
         return size;
