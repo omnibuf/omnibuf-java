@@ -204,14 +204,18 @@ public final class Utf8Validator {
     private static boolean isPureAscii(byte[] buf, int off, int len) {
         int end = off + len;
         if (len >= 8) {
+            if (len <= 16) {
+                return ((PrefixVarint.getLongLE(buf, off) | PrefixVarint.getLongLE(buf, end - 8))
+                    & 0x8080_8080_8080_8080L) == 0L;
+            }
+            long acc = PrefixVarint.getLongLE(buf, end - 8);
             int i = off;
-            do {
-                if ((PrefixVarint.getLongLE(buf, i) & 0x8080_8080_8080_8080L) != 0L) {
-                    return false;
-                }
+            int last = end - 8;
+            while (i < last) {
+                acc |= PrefixVarint.getLongLE(buf, i);
                 i += 8;
-            } while (i + 8 <= end);
-            return i == end || (PrefixVarint.getLongLE(buf, end - 8) & 0x8080_8080_8080_8080L) == 0L;
+            }
+            return (acc & 0x8080_8080_8080_8080L) == 0L;
         }
         if (len >= 4) {
             return ((PrefixVarint.getIntLE(buf, off) | PrefixVarint.getIntLE(buf, end - 4)) & 0x8080_8080) == 0;

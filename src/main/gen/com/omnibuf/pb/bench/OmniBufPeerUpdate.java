@@ -105,15 +105,15 @@ public final class OmniBufPeerUpdate {
     ArrayList<String> ensureTags(int minCap) {
         List<String> cur = this.tags;
         int cap = Math.min(minCap, 4096);
+        if (cur == null) {
+            ArrayList<String> al = new ArrayList<>(cap);
+            this.tags = al;
+            return al;
+        }
         if (cur instanceof ArrayList<String> al) {
             if (al.isEmpty() && cap > 10) {
                 al.ensureCapacity(cap);
             }
-            return al;
-        }
-        if (cur == null) {
-            ArrayList<String> al = new ArrayList<>(cap);
-            this.tags = al;
             return al;
         }
         ArrayList<String> al = new ArrayList<>(cur);
@@ -136,13 +136,13 @@ public final class OmniBufPeerUpdate {
     IntArrayList ensurePrefixes(int minCap) {
         List<Integer> cur = this.prefixes;
         int cap = Math.min(minCap, 4096);
-        if (cur instanceof IntArrayList il) {
-            il.ensureAdditional(cap);
-            return il;
-        }
         if (cur == null) {
             IntArrayList il = new IntArrayList(cap);
             this.prefixes = il;
+            return il;
+        }
+        if (cur instanceof IntArrayList il) {
+            il.ensureAdditional(cap);
             return il;
         }
         IntArrayList il = new IntArrayList(cur);
@@ -184,15 +184,15 @@ public final class OmniBufPeerUpdate {
     ArrayList<com.omnibuf.pb.bench.OmniBufNeighbor> ensureNeighbors(int minCap) {
         List<com.omnibuf.pb.bench.OmniBufNeighbor> cur = this.neighbors;
         int cap = Math.min(minCap, 4096);
+        if (cur == null) {
+            ArrayList<com.omnibuf.pb.bench.OmniBufNeighbor> al = new ArrayList<>(cap);
+            this.neighbors = al;
+            return al;
+        }
         if (cur instanceof ArrayList<com.omnibuf.pb.bench.OmniBufNeighbor> al) {
             if (al.isEmpty() && cap > 10) {
                 al.ensureCapacity(cap);
             }
-            return al;
-        }
-        if (cur == null) {
-            ArrayList<com.omnibuf.pb.bench.OmniBufNeighbor> al = new ArrayList<>(cap);
-            this.neighbors = al;
             return al;
         }
         ArrayList<com.omnibuf.pb.bench.OmniBufNeighbor> al = new ArrayList<>(cur);

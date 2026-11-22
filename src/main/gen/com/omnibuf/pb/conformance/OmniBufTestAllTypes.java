@@ -144,15 +144,15 @@ public final class OmniBufTestAllTypes {
     ArrayList<String> ensureF9StringArr(int minCap) {
         List<String> cur = this.f9StringArr;
         int cap = Math.min(minCap, 4096);
+        if (cur == null) {
+            ArrayList<String> al = new ArrayList<>(cap);
+            this.f9StringArr = al;
+            return al;
+        }
         if (cur instanceof ArrayList<String> al) {
             if (al.isEmpty() && cap > 10) {
                 al.ensureCapacity(cap);
             }
-            return al;
-        }
-        if (cur == null) {
-            ArrayList<String> al = new ArrayList<>(cap);
-            this.f9StringArr = al;
             return al;
         }
         ArrayList<String> al = new ArrayList<>(cur);
@@ -175,13 +175,13 @@ public final class OmniBufTestAllTypes {
     IntArrayList ensureF10Uint32Arr(int minCap) {
         List<Integer> cur = this.f10Uint32Arr;
         int cap = Math.min(minCap, 4096);
-        if (cur instanceof IntArrayList il) {
-            il.ensureAdditional(cap);
-            return il;
-        }
         if (cur == null) {
             IntArrayList il = new IntArrayList(cap);
             this.f10Uint32Arr = il;
+            return il;
+        }
+        if (cur instanceof IntArrayList il) {
+            il.ensureAdditional(cap);
             return il;
         }
         IntArrayList il = new IntArrayList(cur);
@@ -205,15 +205,15 @@ public final class OmniBufTestAllTypes {
     ArrayList<com.omnibuf.pb.conformance.OmniBufAllTypesSubMsg> ensureF11SubMsgArr(int minCap) {
         List<com.omnibuf.pb.conformance.OmniBufAllTypesSubMsg> cur = this.f11SubMsgArr;
         int cap = Math.min(minCap, 4096);
+        if (cur == null) {
+            ArrayList<com.omnibuf.pb.conformance.OmniBufAllTypesSubMsg> al = new ArrayList<>(cap);
+            this.f11SubMsgArr = al;
+            return al;
+        }
         if (cur instanceof ArrayList<com.omnibuf.pb.conformance.OmniBufAllTypesSubMsg> al) {
             if (al.isEmpty() && cap > 10) {
                 al.ensureCapacity(cap);
             }
-            return al;
-        }
-        if (cur == null) {
-            ArrayList<com.omnibuf.pb.conformance.OmniBufAllTypesSubMsg> al = new ArrayList<>(cap);
-            this.f11SubMsgArr = al;
             return al;
         }
         ArrayList<com.omnibuf.pb.conformance.OmniBufAllTypesSubMsg> al = new ArrayList<>(cur);

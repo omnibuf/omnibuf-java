@@ -135,6 +135,401 @@ public final class OmniBufDecoder {
         this.limit = savedLimit;
     }
 
+    public static OmniBufDecoder forSubSlice(
+            byte[] buf, int start, int end, int maxNestingDepth, int maxCollectionElements) {
+        OmniBufDecoder dec = new OmniBufDecoder(false);
+        dec.buf = buf;
+        dec.pos = start;
+        dec.limit = end;
+        dec.maxNestingDepth = maxNestingDepth;
+        dec.maxCollectionElements = maxCollectionElements;
+        return dec;
+    }
+
+    public static void throwMaxNestingDepth() {
+        throw new OmniBufException("omnibuf: nesting depth exceeds MaxNestingDepth");
+    }
+
+    public static void throwMaxCollectionElements() {
+        throw new OmniBufException("omnibuf: accumulated WireArray count exceeds maxCollectionElements");
+    }
+
+    public static void throwTrailingContainerBytes() {
+        throw new OmniBufException("omnibuf: container has trailing payload bytes");
+    }
+
+    public static void throwTruncatedFixed32() {
+        throw new OmniBufException("omnibuf: truncated fixed32");
+    }
+
+    public static void throwTruncatedFixed64() {
+        throw new OmniBufException("omnibuf: truncated fixed64");
+    }
+
+    public static void throwInvalidBool(int b) {
+        throw new OmniBufException("omnibuf: invalid boolean padding bits: " + b);
+    }
+
+    public static void throwField0RequiresSubMsg() {
+        throw new OmniBufException("omnibuf: Field #0 requires WireSubMsg");
+    }
+
+    public static long throwBadVarint(byte[] buf, int pos, int lim) {
+        PrefixVarint.decode(buf, pos, lim);
+        throw new OmniBufException("omnibuf: invalid prefix-varint at " + pos);
+    }
+
+    public static long readVarint9OrThrow(byte[] buf, int pos, int lim) {
+        if (pos < lim && buf[pos] == 0 && lim - pos >= 9) {
+            return PrefixVarint.getLongLE(buf, pos + 1);
+        }
+        return throwBadVarint(buf, pos, lim);
+    }
+
+    public static long readVarint4Or9(byte[] buf, int pos, int lim) {
+        if (pos < lim) {
+            int b0 = buf[pos] & 0xFF;
+            if ((b0 & 4) != 0 && lim - pos >= 4) {
+                return Integer.toUnsignedLong(PrefixVarint.getIntLE(buf, pos)) >>> 3;
+            }
+            if (b0 == 0 && lim - pos >= 9) {
+                return PrefixVarint.getLongLE(buf, pos + 1);
+            }
+        }
+        return throwBadVarint(buf, pos, lim);
+    }
+
+    public static long readStringSpan(byte[] buf, int pos, int lim) {
+        if (pos < lim) {
+            int b0 = buf[pos] & 0xFF;
+            if ((b0 & 1) != 0) {
+                int len = b0 >>> 1;
+                int start = pos + 1;
+                if (lim - start >= len) {
+                    return (((long) start) << 32) | ((start + len) & 0xFFFF_FFFFL);
+                }
+            }
+        }
+        return PrefixVarint.readLengthSlicePacked(buf, pos, lim, 0);
+    }
+
+    public static long readLengthSpanMin2(byte[] buf, int pos, int lim) {
+        if (pos < lim) {
+            int b0 = buf[pos] & 0xFF;
+            if ((b0 & 1) != 0) {
+                int len = b0 >>> 1;
+                int start = pos + 1;
+                if (len >= 2 && lim - start >= len) {
+                    return (((long) start) << 32) | ((start + len) & 0xFFFF_FFFFL);
+                }
+            }
+        }
+        return PrefixVarint.readLengthSlicePacked(buf, pos, lim, 2);
+    }
+
+    public static long readTagSlowSlice(byte[] buf, int pos, int lim) {
+        PrefixVarint.Decoded d = PrefixVarint.decode(buf, pos, lim);
+        long tag = d.value();
+        long fnum = tag >>> 4;
+        if (Long.compareUnsigned(fnum, WireType.MAX_FIELD_NUMBER) > 0) {
+            throw new OmniBufException("omnibuf: field number exceeds maximum: " + fnum);
+        }
+        if (fnum == 0L && ((int) (tag & 0x0FL)) != WireType.WIRE_SUB_MSG) {
+            throwField0RequiresSubMsg();
+        }
+        return tag;
+    }
+
+    public static long readArrayHeaderPacked(
+            byte[] buf,
+            int bodyStart,
+            int bodyEnd,
+            int expectedElemWT,
+            int depth,
+            int maxNestingDepth,
+            int maxCollectionElements) {
+        if (depth < maxNestingDepth && (buf[bodyStart] & 0xFF) == expectedElemWT) {
+            int b0 = buf[bodyStart + 1] & 0xFF;
+            if ((b0 & 1) != 0) {
+                int count = b0 >>> 1;
+                int payloadStart = bodyStart + 2;
+                int remaining = bodyEnd - payloadStart;
+                if (count > 0
+                        && count <= remaining
+                        && count <= maxCollectionElements
+                        && WireType.fixedElementWidth(expectedElemWT) == 0) {
+                    return (((long) payloadStart) << 32) | (count & 0xFFFF_FFFFL);
+                }
+            }
+        }
+        return readArrayHeaderPackedSlow(
+            buf, bodyStart, bodyEnd, expectedElemWT, depth, maxNestingDepth, maxCollectionElements
+        );
+    }
+
+    private static long readArrayHeaderPackedSlow(
+            byte[] buf,
+            int bodyStart,
+            int bodyEnd,
+            int expectedElemWT,
+            int depth,
+            int maxNestingDepth,
+            int maxCollectionElements) {
+        if (depth + 1 > maxNestingDepth) {
+            throw new OmniBufException("omnibuf: WireArray exceeds MaxNestingDepth");
+        }
+        int elemType = buf[bodyStart] & 0xFF;
+        if (!WireType.isValidArrayElemWireType(elemType)) {
+            throw new OmniBufException("omnibuf: invalid WireArray element type: " + elemType);
+        }
+        int cPos = bodyStart + 1;
+        long countLong;
+        int payloadStart;
+        int b0 = buf[cPos] & 0xFF;
+        if ((b0 & 1) != 0) {
+            countLong = b0 >>> 1;
+            payloadStart = cPos + 1;
+        } else {
+            PrefixVarint.Decoded d = PrefixVarint.decode(buf, cPos, bodyEnd);
+            countLong = d.value();
+            payloadStart = cPos + d.bytesRead();
+        }
+        int remaining = bodyEnd - payloadStart;
+        if (Long.compareUnsigned(countLong, remaining) > 0) {
+            throw new OmniBufException("omnibuf: WireArray count exceeds remaining payload bytes");
+        }
+        if (Long.compareUnsigned(countLong, maxCollectionElements) > 0) {
+            throw new OmniBufException(
+                "omnibuf: WireArray count " + countLong
+                    + " exceeds maxCollectionElements (" + maxCollectionElements + ")"
+            );
+        }
+        int count = (int) countLong;
+        int fixedWidth = WireType.fixedElementWidth(elemType);
+        if (fixedWidth > 0) {
+            if (remaining % fixedWidth != 0 || count != remaining / fixedWidth) {
+                throw new OmniBufException("omnibuf: WireArray fixed-width count/byte-length mismatch");
+            }
+        } else if (count == 0 && remaining != 0) {
+            throw new OmniBufException("omnibuf: empty WireArray has trailing payload bytes");
+        }
+        if (elemType != expectedElemWT) {
+            throw new OmniBufException(
+                "omnibuf: WireArray element type mismatch: expected "
+                    + WireType.nameOf(expectedElemWT) + ", got " + WireType.nameOf(elemType)
+            );
+        }
+        return (((long) payloadStart) << 32) | (count & 0xFFFF_FFFFL);
+    }
+
+    public static int skipOrValidateUnknownSlice(
+            byte[] buf,
+            int pos,
+            int lim,
+            int fieldNumber,
+            int wireType,
+            int depth,
+            int maxNestingDepth,
+            int maxCollectionElements) {
+        if (fieldNumber == 0) {
+            if (wireType != WireType.WIRE_SUB_MSG) {
+                throwField0RequiresSubMsg();
+            }
+            long packed = PrefixVarint.readLengthSlicePacked(buf, pos, lim, 0);
+            int start = (int) (packed >>> 32);
+            int end = (int) packed;
+            SchemaMeta.decode(buf, start, end - start, depth + 1, maxNestingDepth, maxCollectionElements);
+            return end;
+        }
+        return validateValue(buf, pos, lim, wireType, depth, maxNestingDepth, maxCollectionElements);
+    }
+
+    public static int readUint32SliceInto(byte[] b, int p, int lim, IntArrayList dst, int count) {
+        if (count > 0) {
+            dst.ensureAdditional(count);
+            int[] out = dst.rawArray();
+            int outIdx = dst.size();
+            for (int i = 0; i < count; i++) {
+                if (p < lim) {
+                    int b0 = b[p] & 0xFF;
+                    if ((b0 & 1) != 0) {
+                        out[outIdx + i] = b0 >>> 1;
+                        p += 1;
+                        continue;
+                    }
+                    if ((b0 & 2) != 0 && lim - p >= 2) {
+                        out[outIdx + i] = Short.toUnsignedInt(PrefixVarint.getShortLE(b, p)) >>> 2;
+                        p += 2;
+                        continue;
+                    }
+                    if ((b0 & 4) != 0 && lim - p >= 4) {
+                        out[outIdx + i] = PrefixVarint.getIntLE(b, p) >>> 3;
+                        p += 4;
+                        continue;
+                    }
+                    if (b0 == 0 && lim - p >= 9) {
+                        out[outIdx + i] = (int) PrefixVarint.getLongLE(b, p + 1);
+                        p += 9;
+                        continue;
+                    }
+                }
+                throwBadVarint(b, p, lim);
+            }
+            dst.setSizeUnchecked(outIdx + count);
+        }
+        return p;
+    }
+
+    public static int readSint32SliceInto(byte[] b, int p, int lim, IntArrayList dst, int count) {
+        if (count > 0) {
+            dst.ensureAdditional(count);
+            int[] out = dst.rawArray();
+            int outIdx = dst.size();
+            for (int i = 0; i < count; i++) {
+                if (p < lim) {
+                    int b0 = b[p] & 0xFF;
+                    if ((b0 & 1) != 0) {
+                        out[outIdx + i] = PrefixVarint.decodeZigZag32(b0 >>> 1);
+                        p += 1;
+                        continue;
+                    }
+                    if ((b0 & 2) != 0 && lim - p >= 2) {
+                        out[outIdx + i] = PrefixVarint.decodeZigZag32(
+                            Short.toUnsignedLong(PrefixVarint.getShortLE(b, p)) >>> 2
+                        );
+                        p += 2;
+                        continue;
+                    }
+                    if ((b0 & 4) != 0 && lim - p >= 4) {
+                        out[outIdx + i] = PrefixVarint.decodeZigZag32(
+                            Integer.toUnsignedLong(PrefixVarint.getIntLE(b, p)) >>> 3
+                        );
+                        p += 4;
+                        continue;
+                    }
+                    if (b0 == 0 && lim - p >= 9) {
+                        out[outIdx + i] = PrefixVarint.decodeZigZag32(PrefixVarint.getLongLE(b, p + 1));
+                        p += 9;
+                        continue;
+                    }
+                }
+                throwBadVarint(b, p, lim);
+            }
+            dst.setSizeUnchecked(outIdx + count);
+        }
+        return p;
+    }
+
+    public static int readFixed32SliceInto(byte[] b, int p, int lim, IntArrayList dst, int count) {
+        if (count > 0) {
+            if ((long) count * 4L > (long) (lim - p)) {
+                throw new OmniBufException("omnibuf: truncated fixed32 array");
+            }
+            dst.ensureAdditional(count);
+            int[] out = dst.rawArray();
+            int outIdx = dst.size();
+            for (int i = 0; i < count; i++) {
+                out[outIdx + i] = PrefixVarint.getIntLE(b, p);
+                p += 4;
+            }
+            dst.setSizeUnchecked(outIdx + count);
+        }
+        return p;
+    }
+
+    public static int readUint64SliceInto(byte[] b, int p, int lim, LongArrayList dst, int count) {
+        if (count > 0) {
+            dst.ensureAdditional(count);
+            long[] out = dst.rawArray();
+            int outIdx = dst.size();
+            for (int i = 0; i < count; i++) {
+                if (p < lim) {
+                    int b0 = b[p] & 0xFF;
+                    if ((b0 & 1) != 0) {
+                        out[outIdx + i] = b0 >>> 1;
+                        p += 1;
+                        continue;
+                    }
+                    if ((b0 & 2) != 0 && lim - p >= 2) {
+                        out[outIdx + i] = Short.toUnsignedLong(PrefixVarint.getShortLE(b, p)) >>> 2;
+                        p += 2;
+                        continue;
+                    }
+                    if ((b0 & 4) != 0 && lim - p >= 4) {
+                        out[outIdx + i] = Integer.toUnsignedLong(PrefixVarint.getIntLE(b, p)) >>> 3;
+                        p += 4;
+                        continue;
+                    }
+                    if (b0 == 0 && lim - p >= 9) {
+                        out[outIdx + i] = PrefixVarint.getLongLE(b, p + 1);
+                        p += 9;
+                        continue;
+                    }
+                }
+                throwBadVarint(b, p, lim);
+            }
+            dst.setSizeUnchecked(outIdx + count);
+        }
+        return p;
+    }
+
+    public static int readSint64SliceInto(byte[] b, int p, int lim, LongArrayList dst, int count) {
+        if (count > 0) {
+            dst.ensureAdditional(count);
+            long[] out = dst.rawArray();
+            int outIdx = dst.size();
+            for (int i = 0; i < count; i++) {
+                if (p < lim) {
+                    int b0 = b[p] & 0xFF;
+                    if ((b0 & 1) != 0) {
+                        out[outIdx + i] = PrefixVarint.decodeZigZag64(b0 >>> 1);
+                        p += 1;
+                        continue;
+                    }
+                    if ((b0 & 2) != 0 && lim - p >= 2) {
+                        out[outIdx + i] = PrefixVarint.decodeZigZag64(
+                            Short.toUnsignedLong(PrefixVarint.getShortLE(b, p)) >>> 2
+                        );
+                        p += 2;
+                        continue;
+                    }
+                    if ((b0 & 4) != 0 && lim - p >= 4) {
+                        out[outIdx + i] = PrefixVarint.decodeZigZag64(
+                            Integer.toUnsignedLong(PrefixVarint.getIntLE(b, p)) >>> 3
+                        );
+                        p += 4;
+                        continue;
+                    }
+                    if (b0 == 0 && lim - p >= 9) {
+                        out[outIdx + i] = PrefixVarint.decodeZigZag64(PrefixVarint.getLongLE(b, p + 1));
+                        p += 9;
+                        continue;
+                    }
+                }
+                throwBadVarint(b, p, lim);
+            }
+            dst.setSizeUnchecked(outIdx + count);
+        }
+        return p;
+    }
+
+    public static int readFixed64SliceInto(byte[] b, int p, int lim, LongArrayList dst, int count) {
+        if (count > 0) {
+            if ((long) count * 8L > (long) (lim - p)) {
+                throw new OmniBufException("omnibuf: truncated fixed64 array");
+            }
+            dst.ensureAdditional(count);
+            long[] out = dst.rawArray();
+            int outIdx = dst.size();
+            for (int i = 0; i < count; i++) {
+                out[outIdx + i] = PrefixVarint.getLongLE(b, p);
+                p += 8;
+            }
+            dst.setSizeUnchecked(outIdx + count);
+        }
+        return p;
+    }
+
     public boolean hasRemaining() {
         return pos < limit;
     }
@@ -142,26 +537,29 @@ public final class OmniBufDecoder {
     public long readVarint() {
         int p = this.pos;
         int lim = this.limit;
+        if (p < lim) {
+            int b0 = buf[p] & 0xFF;
+            if ((b0 & 1) != 0) {
+                this.pos = p + 1;
+                return b0 >>> 1;
+            }
+            if ((b0 & 2) != 0 && lim - p >= 2) {
+                long v = Short.toUnsignedLong(PrefixVarint.getShortLE(buf, p)) >>> 2;
+                this.pos = p + 2;
+                return v;
+            }
+        }
+        return readVarintSlow(p, lim);
+    }
+
+    private long readVarintSlow(int p, int lim) {
         if (p >= lim) {
             throw new OmniBufException("omnibuf: unexpected EOF reading prefix-varint");
         }
         int b0 = buf[p] & 0xFF;
-        if ((b0 & 1) != 0) {
-            this.pos = p + 1;
-            return b0 >>> 1;
-        }
         if ((b0 & 2) != 0) {
-            if (lim - p < 2) {
-                throw new OmniBufException("omnibuf: truncated 2-byte prefix-varint");
-            }
-            long v = Short.toUnsignedLong(PrefixVarint.getShortLE(buf, p)) >>> 2;
-            this.pos = p + 2;
-            return v;
+            throw new OmniBufException("omnibuf: truncated 2-byte prefix-varint");
         }
-        return readVarintSlow(p, lim, b0);
-    }
-
-    private long readVarintSlow(int p, int lim, int b0) {
         if ((b0 & 4) != 0) {
             if (lim - p < 4) {
                 throw new OmniBufException("omnibuf: truncated 4-byte prefix-varint");
@@ -190,19 +588,16 @@ public final class OmniBufDecoder {
             int b0 = buf[p] & 0xFF;
             if ((b0 & 1) != 0) {
                 int tag = b0 >>> 1;
-                if (tag < 16 && tag != WireType.WIRE_SUB_MSG) {
-                    throw new OmniBufException("omnibuf: Field #0 requires WireSubMsg");
+                if (tag >= 16 || tag == WireType.WIRE_SUB_MSG) {
+                    this.pos = p + 1;
+                    return tag;
                 }
-                this.pos = p + 1;
-                return tag;
-            }
-            if ((b0 & 2) != 0 && lim - p >= 2) {
+            } else if ((b0 & 2) != 0 && lim - p >= 2) {
                 int tag = Short.toUnsignedInt(PrefixVarint.getShortLE(buf, p)) >>> 2;
-                if (tag < 16 && tag != WireType.WIRE_SUB_MSG) {
-                    throw new OmniBufException("omnibuf: Field #0 requires WireSubMsg");
+                if (tag >= 16 || tag == WireType.WIRE_SUB_MSG) {
+                    this.pos = p + 2;
+                    return tag;
                 }
-                this.pos = p + 2;
-                return tag;
             }
         }
         return readTagSlow();
@@ -239,7 +634,7 @@ public final class OmniBufDecoder {
     public int readFixed32() {
         int p = this.pos;
         if (this.limit - p < 4) {
-            throw new OmniBufException("omnibuf: truncated fixed32");
+            throwTruncatedFixed32();
         }
         int v = PrefixVarint.getIntLE(buf, p);
         this.pos = p + 4;
@@ -249,7 +644,7 @@ public final class OmniBufDecoder {
     public long readFixed64() {
         int p = this.pos;
         if (this.limit - p < 8) {
-            throw new OmniBufException("omnibuf: truncated fixed64");
+            throwTruncatedFixed64();
         }
         long v = PrefixVarint.getLongLE(buf, p);
         this.pos = p + 8;

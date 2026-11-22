@@ -255,14 +255,15 @@ public final class PeerUpdateOmniBuf {
         if (data == null) {
             throw new com.omnibuf.OmniBufException("omnibuf: null packet buffer");
         }
-        com.omnibuf.wire.OmniBufDecoder dec = CodecPool.acquireDecoder(data, 0, data.length, options);
-        try {
-            OmniBufPeerUpdate out = new OmniBufPeerUpdate();
-            decodeFrom(dec, out, 0);
-            return out;
-        } finally {
-            CodecPool.releaseDecoder(dec);
+        UnmarshalOptions opts = options == null ? UnmarshalOptions.DEFAULT : options;
+        if (data.length > opts.maxMessageBytes()) {
+            throw new com.omnibuf.OmniBufException(
+                "omnibuf: packet length " + data.length + " exceeds maxMessageBytes (" + opts.maxMessageBytes() + ")"
+            );
         }
+        OmniBufPeerUpdate out = new OmniBufPeerUpdate();
+        decodeSlice(data, 0, data.length, out, 0, opts.maxNestingDepth(), opts.maxCollectionElements());
+        return out;
     }
 
     public static void unmarshal(byte[] data, OmniBufPeerUpdate target) {
@@ -276,158 +277,455 @@ public final class PeerUpdateOmniBuf {
         if (target == null) {
             throw new com.omnibuf.OmniBufException("omnibuf: null target instance");
         }
-        com.omnibuf.wire.OmniBufDecoder dec = CodecPool.acquireDecoder(data, 0, data.length, options);
-        try {
-            target.reset();
-            decodeFrom(dec, target, 0);
-        } finally {
-            CodecPool.releaseDecoder(dec);
+        UnmarshalOptions opts = options == null ? UnmarshalOptions.DEFAULT : options;
+        if (data.length > opts.maxMessageBytes()) {
+            throw new com.omnibuf.OmniBufException(
+                "omnibuf: packet length " + data.length + " exceeds maxMessageBytes (" + opts.maxMessageBytes() + ")"
+            );
         }
+        target.reset();
+        decodeSlice(data, 0, data.length, target, 0, opts.maxNestingDepth(), opts.maxCollectionElements());
     }
 
     public static void decodeInto(
             byte[] data, int offset, int length, OmniBufPeerUpdate target, int depth) {
-        com.omnibuf.wire.OmniBufDecoder dec = CodecPool.acquireDecoder(data, offset, length);
-        try {
-            decodeFrom(dec, target, depth);
-        } finally {
-            CodecPool.releaseDecoder(dec);
+        if (data == null) {
+            throw new com.omnibuf.OmniBufException("omnibuf: null packet buffer");
         }
+        if (offset < 0 || length < 0 || length > data.length - offset) {
+            throw new com.omnibuf.OmniBufException("omnibuf: packet slice out of bounds");
+        }
+        if (length > UnmarshalOptions.DEFAULT_MAX_MESSAGE_BYTES) {
+            throw new com.omnibuf.OmniBufException(
+                "omnibuf: packet length " + length + " exceeds maxMessageBytes (" + UnmarshalOptions.DEFAULT_MAX_MESSAGE_BYTES + ")"
+            );
+        }
+        decodeSlice(
+            data, offset, offset + length, target, depth,
+            UnmarshalOptions.DEFAULT_MAX_NESTING_DEPTH, UnmarshalOptions.DEFAULT_MAX_COLLECTION_ELEMENTS
+        );
     }
 
     public static void decodeFrom(com.omnibuf.wire.OmniBufDecoder dec, OmniBufPeerUpdate target, int depth) {
-        if (depth > dec.maxNestingDepth()) {
-            throw new com.omnibuf.OmniBufException("omnibuf: nesting depth exceeds MaxNestingDepth");
+        decodeSlice(
+            dec.buffer(), dec.position(), dec.limit(), target, depth,
+            dec.maxNestingDepth(), dec.maxCollectionElements()
+        );
+        dec.position(dec.limit());
+    }
+
+    public static void decodeSlice(
+            byte[] buf, int pos, int lim, OmniBufPeerUpdate target, int depth, int maxDepth, int maxElems) {
+        if (depth > maxDepth) {
+            com.omnibuf.wire.OmniBufDecoder.throwMaxNestingDepth();
         }
-        while (dec.hasRemaining()) {
-            long tag = dec.readTag();
-            int fnum = (int) (tag >>> 4);
-            int wt = (int) (tag & 0x0FL);
+        if (pos < lim && buf[pos] == (byte) 0x21) {
+            pos++;
+            long v;
+            {
+                int vb0 = pos < lim ? (buf[pos] & 0xFF) : 8;
+                if ((vb0 & 1) != 0) {
+                    v = vb0 >>> 1;
+                    pos += 1;
+                } else if ((vb0 & 2) != 0 && lim - pos >= 2) {
+                    v = Short.toUnsignedLong(PrefixVarint.getShortLE(buf, pos)) >>> 2;
+                    pos += 2;
+                } else {
+                    v = com.omnibuf.wire.OmniBufDecoder.readVarint4Or9(buf, pos, lim);
+                    pos += (vb0 == 0 ? 9 : 4);
+                }
+            }
+            target.asn = (int) v;
+        }
+        if (pos < lim && buf[pos] == (byte) 0x55) {
+            pos++;
+            {
+                long sp = com.omnibuf.wire.OmniBufDecoder.readStringSpan(buf, pos, lim);
+                int ss = (int) (sp >>> 32);
+                pos = (int) sp;
+                target.routerId = (com.omnibuf.wire.Utf8Validator.decodeStrictUnchecked(buf, ss, pos - ss));
+            }
+        }
+        if (pos < lim && (buf[pos] | 2) == (byte) 0x67) {
+            target.active = (buf[pos++] & 2) != 0;
+        }
+        if (pos < lim && buf[pos] == (byte) 0x81) {
+            pos++;
+            long v;
+            {
+                int vb0 = pos < lim ? (buf[pos] & 0xFF) : 8;
+                if ((vb0 & 1) != 0) {
+                    v = vb0 >>> 1;
+                    pos += 1;
+                } else if ((vb0 & 2) != 0 && lim - pos >= 2) {
+                    v = Short.toUnsignedLong(PrefixVarint.getShortLE(buf, pos)) >>> 2;
+                    pos += 2;
+                } else {
+                    v = com.omnibuf.wire.OmniBufDecoder.readVarint4Or9(buf, pos, lim);
+                    pos += (vb0 == 0 ? 9 : 4);
+                }
+            }
+            target.uptimeSec = v;
+        }
+        if (pos < lim && buf[pos] == (byte) 0xa3) {
+            pos++;
+            long v;
+            {
+                int vb0 = pos < lim ? (buf[pos] & 0xFF) : 8;
+                if ((vb0 & 1) != 0) {
+                    v = vb0 >>> 1;
+                    pos += 1;
+                } else if ((vb0 & 2) != 0 && lim - pos >= 2) {
+                    v = Short.toUnsignedLong(PrefixVarint.getShortLE(buf, pos)) >>> 2;
+                    pos += 2;
+                } else {
+                    v = com.omnibuf.wire.OmniBufDecoder.readVarint4Or9(buf, pos, lim);
+                    pos += (vb0 == 0 ? 9 : 4);
+                }
+            }
+            target.rssiDbm = PrefixVarint.decodeZigZag32(v);
+        }
+        if (lim - pos >= 9 && buf[pos] == (byte) 0xd3) {
+            target.cpuLoad = Double.longBitsToDouble(PrefixVarint.getLongLE(buf, pos + 1));
+            pos += 9;
+        }
+        if (pos < lim && buf[pos] == (byte) 0xfb) {
+            pos++;
+            long pk_arrStart = com.omnibuf.wire.OmniBufDecoder.readLengthSpanMin2(buf, pos, lim);
+            int arrStart = (int) (pk_arrStart >>> 32);
+            int arrEnd = (int) pk_arrStart;
+            pos = arrEnd;
+            long arrHdr = com.omnibuf.wire.OmniBufDecoder.readArrayHeaderPacked(buf, arrStart, arrEnd, WireType.WIRE_STRING, depth, maxDepth, maxElems);
+            int ap = (int) (arrHdr >>> 32);
+            int count = (int) arrHdr;
+            var list = target.ensureTags(count);
+            if ((long) list.size() + count > maxElems) {
+                com.omnibuf.wire.OmniBufDecoder.throwMaxCollectionElements();
+            }
+            for (int i = 0; i < count; i++) {
+                {
+                    long sp = com.omnibuf.wire.OmniBufDecoder.readStringSpan(buf, ap, arrEnd);
+                    int ss = (int) (sp >>> 32);
+                    ap = (int) sp;
+                    list.add(com.omnibuf.wire.Utf8Validator.decodeStrictUnchecked(buf, ss, ap - ss));
+                }
+            }
+            if (ap != arrEnd) {
+                com.omnibuf.wire.OmniBufDecoder.throwTrailingContainerBytes();
+            }
+        }
+        if (lim - pos >= 2 && PrefixVarint.getShortLE(buf, pos) == (short) 0x236) {
+            pos += 2;
+            long pk_arrStart = com.omnibuf.wire.OmniBufDecoder.readLengthSpanMin2(buf, pos, lim);
+            int arrStart = (int) (pk_arrStart >>> 32);
+            int arrEnd = (int) pk_arrStart;
+            pos = arrEnd;
+            long arrHdr = com.omnibuf.wire.OmniBufDecoder.readArrayHeaderPacked(buf, arrStart, arrEnd, WireType.WIRE_UINT, depth, maxDepth, maxElems);
+            int ap = (int) (arrHdr >>> 32);
+            int count = (int) arrHdr;
+            var list = target.ensurePrefixes(count);
+            if ((long) list.size() + count > maxElems) {
+                com.omnibuf.wire.OmniBufDecoder.throwMaxCollectionElements();
+            }
+            ap = com.omnibuf.wire.OmniBufDecoder.readUint32SliceInto(buf, ap, arrEnd, list, count);
+            if (ap != arrEnd) {
+                com.omnibuf.wire.OmniBufDecoder.throwTrailingContainerBytes();
+            }
+        }
+        if (lim - pos >= 2 && PrefixVarint.getShortLE(buf, pos) == (short) 0x272) {
+            pos += 2;
+            long pk_subStart = com.omnibuf.wire.OmniBufDecoder.readStringSpan(buf, pos, lim);
+            int subStart = (int) (pk_subStart >>> 32);
+            int subEnd = (int) pk_subStart;
+            pos = subEnd;
+            com.omnibuf.pb.bench.OmniBufLocation sub = target.location;
+            if (sub == null) {
+                sub = new com.omnibuf.pb.bench.OmniBufLocation();
+                target.location = sub;
+            }
+            com.omnibuf.pb.bench.LocationOmniBuf.decodeSlice(buf, subStart, subEnd, sub, depth + 1, maxDepth, maxElems);
+        }
+        if (lim - pos >= 2 && PrefixVarint.getShortLE(buf, pos) == (short) 0x2b6) {
+            pos += 2;
+            long pk_arrStart = com.omnibuf.wire.OmniBufDecoder.readLengthSpanMin2(buf, pos, lim);
+            int arrStart = (int) (pk_arrStart >>> 32);
+            int arrEnd = (int) pk_arrStart;
+            pos = arrEnd;
+            long arrHdr = com.omnibuf.wire.OmniBufDecoder.readArrayHeaderPacked(buf, arrStart, arrEnd, WireType.WIRE_SUB_MSG, depth, maxDepth, maxElems);
+            int ap = (int) (arrHdr >>> 32);
+            int count = (int) arrHdr;
+            var list = target.ensureNeighbors(count);
+            if ((long) list.size() + count > maxElems) {
+                com.omnibuf.wire.OmniBufDecoder.throwMaxCollectionElements();
+            }
+            for (int i = 0; i < count; i++) {
+                long pk_es = com.omnibuf.wire.OmniBufDecoder.readStringSpan(buf, ap, arrEnd);
+                int es = (int) (pk_es >>> 32);
+                int ee = (int) pk_es;
+                ap = ee;
+                com.omnibuf.pb.bench.OmniBufNeighbor elem = new com.omnibuf.pb.bench.OmniBufNeighbor();
+                com.omnibuf.pb.bench.NeighborOmniBuf.decodeSlice(buf, es, ee, elem, depth + 2, maxDepth, maxElems);
+                list.add(elem);
+            }
+            if (ap != arrEnd) {
+                com.omnibuf.wire.OmniBufDecoder.throwTrailingContainerBytes();
+            }
+        }
+        if (lim - pos >= 2 && PrefixVarint.getShortLE(buf, pos) == (short) 0x2c2) {
+            pos += 2;
+            long v;
+            {
+                int vb0 = pos < lim ? (buf[pos] & 0xFF) : 8;
+                if ((vb0 & 1) != 0) {
+                    v = vb0 >>> 1;
+                    pos += 1;
+                } else if ((vb0 & 2) != 0 && lim - pos >= 2) {
+                    v = Short.toUnsignedLong(PrefixVarint.getShortLE(buf, pos)) >>> 2;
+                    pos += 2;
+                } else {
+                    v = com.omnibuf.wire.OmniBufDecoder.readVarint4Or9(buf, pos, lim);
+                    pos += (vb0 == 0 ? 9 : 4);
+                }
+            }
+            target.sequence = v;
+        }
+        if (pos < lim) {
+            decodeSliceSlow(buf, pos, lim, target, depth, maxDepth, maxElems);
+        }
+    }
+
+    private static void decodeSliceSlow(
+            byte[] buf, int pos, int lim, OmniBufPeerUpdate target, int depth, int maxDepth, int maxElems) {
+        while (pos < lim) {
+            int b0 = buf[pos] & 0xFF;
+            int fnum;
+            int wt;
+            if ((b0 & 1) != 0) {
+                pos++;
+                fnum = b0 >>> 5;
+                wt = (b0 >>> 1) & 0x0F;
+            } else if ((b0 & 2) != 0 && lim - pos >= 2) {
+                int tag2 = Short.toUnsignedInt(PrefixVarint.getShortLE(buf, pos)) >>> 2;
+                pos += 2;
+                fnum = tag2 >>> 4;
+                wt = tag2 & 0x0F;
+            } else {
+                long tagSlow = com.omnibuf.wire.OmniBufDecoder.readTagSlowSlice(buf, pos, lim);
+                pos += PrefixVarint.widthFromLeadingByte(b0);
+                fnum = (int) (tagSlow >>> 4);
+                wt = (int) (tagSlow & 0x0FL);
+            }
             switch (fnum) {
-                case 0 -> dec.skipOrValidateUnknown(0, wt, depth);
+                case 0 -> pos = com.omnibuf.wire.OmniBufDecoder.skipOrValidateUnknownSlice(buf, pos, lim, 0, wt, depth, maxDepth, maxElems);
                 case 1 -> {
                     if (wt == WireType.WIRE_UINT) {
-                        target.asn = dec.readUint32();
+                        long v;
+                        {
+                            int vb0 = pos < lim ? (buf[pos] & 0xFF) : 8;
+                            if ((vb0 & 1) != 0) {
+                                v = vb0 >>> 1;
+                                pos += 1;
+                            } else if ((vb0 & 2) != 0 && lim - pos >= 2) {
+                                v = Short.toUnsignedLong(PrefixVarint.getShortLE(buf, pos)) >>> 2;
+                                pos += 2;
+                            } else {
+                                v = com.omnibuf.wire.OmniBufDecoder.readVarint4Or9(buf, pos, lim);
+                                pos += (vb0 == 0 ? 9 : 4);
+                            }
+                        }
+                        target.asn = (int) v;
                     } else {
-                        dec.skipOrValidateUnknown(fnum, wt, depth);
+                        pos = com.omnibuf.wire.OmniBufDecoder.skipOrValidateUnknownSlice(buf, pos, lim, fnum, wt, depth, maxDepth, maxElems);
                     }
                 }
                 case 2 -> {
                     if (wt == WireType.WIRE_STRING) {
-                        target.routerId = dec.readString();
+                        {
+                            long sp = com.omnibuf.wire.OmniBufDecoder.readStringSpan(buf, pos, lim);
+                            int ss = (int) (sp >>> 32);
+                            pos = (int) sp;
+                            target.routerId = (com.omnibuf.wire.Utf8Validator.decodeStrictUnchecked(buf, ss, pos - ss));
+                        }
                     } else {
-                        dec.skipOrValidateUnknown(fnum, wt, depth);
+                        pos = com.omnibuf.wire.OmniBufDecoder.skipOrValidateUnknownSlice(buf, pos, lim, fnum, wt, depth, maxDepth, maxElems);
                     }
                 }
                 case 3 -> {
                     if (wt == WireType.WIRE_BOOL_FALSE || wt == WireType.WIRE_BOOL_TRUE) {
                         target.active = (wt == WireType.WIRE_BOOL_TRUE);
                     } else {
-                        dec.skipOrValidateUnknown(fnum, wt, depth);
+                        pos = com.omnibuf.wire.OmniBufDecoder.skipOrValidateUnknownSlice(buf, pos, lim, fnum, wt, depth, maxDepth, maxElems);
                     }
                 }
                 case 4 -> {
                     if (wt == WireType.WIRE_UINT) {
-                        target.uptimeSec = dec.readUint64();
+                        long v;
+                        {
+                            int vb0 = pos < lim ? (buf[pos] & 0xFF) : 8;
+                            if ((vb0 & 1) != 0) {
+                                v = vb0 >>> 1;
+                                pos += 1;
+                            } else if ((vb0 & 2) != 0 && lim - pos >= 2) {
+                                v = Short.toUnsignedLong(PrefixVarint.getShortLE(buf, pos)) >>> 2;
+                                pos += 2;
+                            } else {
+                                v = com.omnibuf.wire.OmniBufDecoder.readVarint4Or9(buf, pos, lim);
+                                pos += (vb0 == 0 ? 9 : 4);
+                            }
+                        }
+                        target.uptimeSec = v;
                     } else {
-                        dec.skipOrValidateUnknown(fnum, wt, depth);
+                        pos = com.omnibuf.wire.OmniBufDecoder.skipOrValidateUnknownSlice(buf, pos, lim, fnum, wt, depth, maxDepth, maxElems);
                     }
                 }
                 case 5 -> {
                     if (wt == WireType.WIRE_SINT) {
-                        target.rssiDbm = dec.readSint32();
+                        long v;
+                        {
+                            int vb0 = pos < lim ? (buf[pos] & 0xFF) : 8;
+                            if ((vb0 & 1) != 0) {
+                                v = vb0 >>> 1;
+                                pos += 1;
+                            } else if ((vb0 & 2) != 0 && lim - pos >= 2) {
+                                v = Short.toUnsignedLong(PrefixVarint.getShortLE(buf, pos)) >>> 2;
+                                pos += 2;
+                            } else {
+                                v = com.omnibuf.wire.OmniBufDecoder.readVarint4Or9(buf, pos, lim);
+                                pos += (vb0 == 0 ? 9 : 4);
+                            }
+                        }
+                        target.rssiDbm = PrefixVarint.decodeZigZag32(v);
                     } else {
-                        dec.skipOrValidateUnknown(fnum, wt, depth);
+                        pos = com.omnibuf.wire.OmniBufDecoder.skipOrValidateUnknownSlice(buf, pos, lim, fnum, wt, depth, maxDepth, maxElems);
                     }
                 }
                 case 6 -> {
                     if (wt == WireType.WIRE_FLOAT64) {
-                        target.cpuLoad = dec.readFloat64();
+                        if (lim - pos < 8) {
+                            com.omnibuf.wire.OmniBufDecoder.throwTruncatedFixed64();
+                        }
+                        target.cpuLoad = Double.longBitsToDouble(PrefixVarint.getLongLE(buf, pos));
+                        pos += 8;
                     } else {
-                        dec.skipOrValidateUnknown(fnum, wt, depth);
+                        pos = com.omnibuf.wire.OmniBufDecoder.skipOrValidateUnknownSlice(buf, pos, lim, fnum, wt, depth, maxDepth, maxElems);
                     }
                 }
                 case 7 -> {
                     if (wt != WireType.WIRE_ARRAY) {
-                        dec.skipOrValidateUnknown(fnum, wt, depth);
+                        pos = com.omnibuf.wire.OmniBufDecoder.skipOrValidateUnknownSlice(buf, pos, lim, fnum, wt, depth, maxDepth, maxElems);
                     } else {
-                        long arrState = dec.beginArray(WireType.WIRE_STRING, depth);
-                        if (arrState >= 0L) {
-                            int count = (int) arrState;
-                            int arrLimit = (int) (arrState >>> 32);
-                            var list = target.ensureTags(count);
-                            if ((long) list.size() + count > dec.maxCollectionElements()) {
-                                throw new com.omnibuf.OmniBufException("omnibuf: accumulated WireArray count exceeds maxCollectionElements");
+                        long pk_arrStart = com.omnibuf.wire.OmniBufDecoder.readLengthSpanMin2(buf, pos, lim);
+                        int arrStart = (int) (pk_arrStart >>> 32);
+                        int arrEnd = (int) pk_arrStart;
+                        pos = arrEnd;
+                        long arrHdr = com.omnibuf.wire.OmniBufDecoder.readArrayHeaderPacked(buf, arrStart, arrEnd, WireType.WIRE_STRING, depth, maxDepth, maxElems);
+                        int ap = (int) (arrHdr >>> 32);
+                        int count = (int) arrHdr;
+                        var list = target.ensureTags(count);
+                        if ((long) list.size() + count > maxElems) {
+                            com.omnibuf.wire.OmniBufDecoder.throwMaxCollectionElements();
+                        }
+                        for (int i = 0; i < count; i++) {
+                            {
+                                long sp = com.omnibuf.wire.OmniBufDecoder.readStringSpan(buf, ap, arrEnd);
+                                int ss = (int) (sp >>> 32);
+                                ap = (int) sp;
+                                list.add(com.omnibuf.wire.Utf8Validator.decodeStrictUnchecked(buf, ss, ap - ss));
                             }
-                            for (int i = 0; i < count; i++) {
-                                list.add(dec.readString());
-                            }
-                            dec.endContainer(arrLimit);
+                        }
+                        if (ap != arrEnd) {
+                            com.omnibuf.wire.OmniBufDecoder.throwTrailingContainerBytes();
                         }
                     }
                 }
                 case 8 -> {
                     if (wt != WireType.WIRE_ARRAY) {
-                        dec.skipOrValidateUnknown(fnum, wt, depth);
+                        pos = com.omnibuf.wire.OmniBufDecoder.skipOrValidateUnknownSlice(buf, pos, lim, fnum, wt, depth, maxDepth, maxElems);
                     } else {
-                        long arrState = dec.beginArray(WireType.WIRE_UINT, depth);
-                        if (arrState >= 0L) {
-                            int count = (int) arrState;
-                            int arrLimit = (int) (arrState >>> 32);
-                            var list = target.ensurePrefixes(count);
-                            if ((long) list.size() + count > dec.maxCollectionElements()) {
-                                throw new com.omnibuf.OmniBufException("omnibuf: accumulated WireArray count exceeds maxCollectionElements");
-                            }
-                            dec.readUint32Into(list, count);
-                            dec.endContainer(arrLimit);
+                        long pk_arrStart = com.omnibuf.wire.OmniBufDecoder.readLengthSpanMin2(buf, pos, lim);
+                        int arrStart = (int) (pk_arrStart >>> 32);
+                        int arrEnd = (int) pk_arrStart;
+                        pos = arrEnd;
+                        long arrHdr = com.omnibuf.wire.OmniBufDecoder.readArrayHeaderPacked(buf, arrStart, arrEnd, WireType.WIRE_UINT, depth, maxDepth, maxElems);
+                        int ap = (int) (arrHdr >>> 32);
+                        int count = (int) arrHdr;
+                        var list = target.ensurePrefixes(count);
+                        if ((long) list.size() + count > maxElems) {
+                            com.omnibuf.wire.OmniBufDecoder.throwMaxCollectionElements();
+                        }
+                        ap = com.omnibuf.wire.OmniBufDecoder.readUint32SliceInto(buf, ap, arrEnd, list, count);
+                        if (ap != arrEnd) {
+                            com.omnibuf.wire.OmniBufDecoder.throwTrailingContainerBytes();
                         }
                     }
                 }
                 case 9 -> {
                     if (wt == WireType.WIRE_SUB_MSG) {
-                        int subLimit = dec.readLengthPrefixedLimit(0);
+                        long pk_subStart = com.omnibuf.wire.OmniBufDecoder.readStringSpan(buf, pos, lim);
+                        int subStart = (int) (pk_subStart >>> 32);
+                        int subEnd = (int) pk_subStart;
+                        pos = subEnd;
                         com.omnibuf.pb.bench.OmniBufLocation sub = target.location;
                         if (sub == null) {
                             sub = new com.omnibuf.pb.bench.OmniBufLocation();
                             target.location = sub;
                         }
-                        com.omnibuf.pb.bench.LocationOmniBuf.decodeFrom(dec, sub, depth + 1);
-                        dec.endContainer(subLimit);
+                        com.omnibuf.pb.bench.LocationOmniBuf.decodeSlice(buf, subStart, subEnd, sub, depth + 1, maxDepth, maxElems);
                     } else {
-                        dec.skipOrValidateUnknown(fnum, wt, depth);
+                        pos = com.omnibuf.wire.OmniBufDecoder.skipOrValidateUnknownSlice(buf, pos, lim, fnum, wt, depth, maxDepth, maxElems);
                     }
                 }
                 case 10 -> {
                     if (wt != WireType.WIRE_ARRAY) {
-                        dec.skipOrValidateUnknown(fnum, wt, depth);
+                        pos = com.omnibuf.wire.OmniBufDecoder.skipOrValidateUnknownSlice(buf, pos, lim, fnum, wt, depth, maxDepth, maxElems);
                     } else {
-                        long arrState = dec.beginArray(WireType.WIRE_SUB_MSG, depth);
-                        if (arrState >= 0L) {
-                            int count = (int) arrState;
-                            int arrLimit = (int) (arrState >>> 32);
-                            var list = target.ensureNeighbors(count);
-                            if ((long) list.size() + count > dec.maxCollectionElements()) {
-                                throw new com.omnibuf.OmniBufException("omnibuf: accumulated WireArray count exceeds maxCollectionElements");
-                            }
-                            for (int i = 0; i < count; i++) {
-                                int elemLimit = dec.readLengthPrefixedLimit(0);
-                                com.omnibuf.pb.bench.OmniBufNeighbor elem = new com.omnibuf.pb.bench.OmniBufNeighbor();
-                                com.omnibuf.pb.bench.NeighborOmniBuf.decodeFrom(dec, elem, depth + 2);
-                                dec.endContainer(elemLimit);
-                                list.add(elem);
-                            }
-                            dec.endContainer(arrLimit);
+                        long pk_arrStart = com.omnibuf.wire.OmniBufDecoder.readLengthSpanMin2(buf, pos, lim);
+                        int arrStart = (int) (pk_arrStart >>> 32);
+                        int arrEnd = (int) pk_arrStart;
+                        pos = arrEnd;
+                        long arrHdr = com.omnibuf.wire.OmniBufDecoder.readArrayHeaderPacked(buf, arrStart, arrEnd, WireType.WIRE_SUB_MSG, depth, maxDepth, maxElems);
+                        int ap = (int) (arrHdr >>> 32);
+                        int count = (int) arrHdr;
+                        var list = target.ensureNeighbors(count);
+                        if ((long) list.size() + count > maxElems) {
+                            com.omnibuf.wire.OmniBufDecoder.throwMaxCollectionElements();
+                        }
+                        for (int i = 0; i < count; i++) {
+                            long pk_es = com.omnibuf.wire.OmniBufDecoder.readStringSpan(buf, ap, arrEnd);
+                            int es = (int) (pk_es >>> 32);
+                            int ee = (int) pk_es;
+                            ap = ee;
+                            com.omnibuf.pb.bench.OmniBufNeighbor elem = new com.omnibuf.pb.bench.OmniBufNeighbor();
+                            com.omnibuf.pb.bench.NeighborOmniBuf.decodeSlice(buf, es, ee, elem, depth + 2, maxDepth, maxElems);
+                            list.add(elem);
+                        }
+                        if (ap != arrEnd) {
+                            com.omnibuf.wire.OmniBufDecoder.throwTrailingContainerBytes();
                         }
                     }
                 }
                 case 11 -> {
                     if (wt == WireType.WIRE_UINT) {
-                        target.sequence = dec.readUint64();
+                        long v;
+                        {
+                            int vb0 = pos < lim ? (buf[pos] & 0xFF) : 8;
+                            if ((vb0 & 1) != 0) {
+                                v = vb0 >>> 1;
+                                pos += 1;
+                            } else if ((vb0 & 2) != 0 && lim - pos >= 2) {
+                                v = Short.toUnsignedLong(PrefixVarint.getShortLE(buf, pos)) >>> 2;
+                                pos += 2;
+                            } else {
+                                v = com.omnibuf.wire.OmniBufDecoder.readVarint4Or9(buf, pos, lim);
+                                pos += (vb0 == 0 ? 9 : 4);
+                            }
+                        }
+                        target.sequence = v;
                     } else {
-                        dec.skipOrValidateUnknown(fnum, wt, depth);
+                        pos = com.omnibuf.wire.OmniBufDecoder.skipOrValidateUnknownSlice(buf, pos, lim, fnum, wt, depth, maxDepth, maxElems);
                     }
                 }
-                default -> dec.skipOrValidateUnknown(fnum, wt, depth);
+                default -> pos = com.omnibuf.wire.OmniBufDecoder.skipOrValidateUnknownSlice(buf, pos, lim, fnum, wt, depth, maxDepth, maxElems);
             }
         }
     }

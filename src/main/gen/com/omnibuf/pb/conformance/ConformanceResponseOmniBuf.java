@@ -7,6 +7,7 @@ import com.omnibuf.MarshalOptions;
 import com.omnibuf.SchemaMeta;
 import com.omnibuf.UnmarshalOptions;
 import com.omnibuf.wire.CodecPool;
+import com.omnibuf.wire.PrefixVarint;
 import com.omnibuf.wire.WireType;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
@@ -155,14 +156,15 @@ public final class ConformanceResponseOmniBuf {
         if (data == null) {
             throw new com.omnibuf.OmniBufException("omnibuf: null packet buffer");
         }
-        com.omnibuf.wire.OmniBufDecoder dec = CodecPool.acquireDecoder(data, 0, data.length, options);
-        try {
-            OmniBufConformanceResponse out = new OmniBufConformanceResponse();
-            decodeFrom(dec, out, 0);
-            return out;
-        } finally {
-            CodecPool.releaseDecoder(dec);
+        UnmarshalOptions opts = options == null ? UnmarshalOptions.DEFAULT : options;
+        if (data.length > opts.maxMessageBytes()) {
+            throw new com.omnibuf.OmniBufException(
+                "omnibuf: packet length " + data.length + " exceeds maxMessageBytes (" + opts.maxMessageBytes() + ")"
+            );
         }
+        OmniBufConformanceResponse out = new OmniBufConformanceResponse();
+        decodeSlice(data, 0, data.length, out, 0, opts.maxNestingDepth(), opts.maxCollectionElements());
+        return out;
     }
 
     public static void unmarshal(byte[] data, OmniBufConformanceResponse target) {
@@ -176,78 +178,201 @@ public final class ConformanceResponseOmniBuf {
         if (target == null) {
             throw new com.omnibuf.OmniBufException("omnibuf: null target instance");
         }
-        com.omnibuf.wire.OmniBufDecoder dec = CodecPool.acquireDecoder(data, 0, data.length, options);
-        try {
-            target.reset();
-            decodeFrom(dec, target, 0);
-        } finally {
-            CodecPool.releaseDecoder(dec);
+        UnmarshalOptions opts = options == null ? UnmarshalOptions.DEFAULT : options;
+        if (data.length > opts.maxMessageBytes()) {
+            throw new com.omnibuf.OmniBufException(
+                "omnibuf: packet length " + data.length + " exceeds maxMessageBytes (" + opts.maxMessageBytes() + ")"
+            );
         }
+        target.reset();
+        decodeSlice(data, 0, data.length, target, 0, opts.maxNestingDepth(), opts.maxCollectionElements());
     }
 
     public static void decodeInto(
             byte[] data, int offset, int length, OmniBufConformanceResponse target, int depth) {
-        com.omnibuf.wire.OmniBufDecoder dec = CodecPool.acquireDecoder(data, offset, length);
-        try {
-            decodeFrom(dec, target, depth);
-        } finally {
-            CodecPool.releaseDecoder(dec);
+        if (data == null) {
+            throw new com.omnibuf.OmniBufException("omnibuf: null packet buffer");
         }
+        if (offset < 0 || length < 0 || length > data.length - offset) {
+            throw new com.omnibuf.OmniBufException("omnibuf: packet slice out of bounds");
+        }
+        if (length > UnmarshalOptions.DEFAULT_MAX_MESSAGE_BYTES) {
+            throw new com.omnibuf.OmniBufException(
+                "omnibuf: packet length " + length + " exceeds maxMessageBytes (" + UnmarshalOptions.DEFAULT_MAX_MESSAGE_BYTES + ")"
+            );
+        }
+        decodeSlice(
+            data, offset, offset + length, target, depth,
+            UnmarshalOptions.DEFAULT_MAX_NESTING_DEPTH, UnmarshalOptions.DEFAULT_MAX_COLLECTION_ELEMENTS
+        );
     }
 
     public static void decodeFrom(com.omnibuf.wire.OmniBufDecoder dec, OmniBufConformanceResponse target, int depth) {
-        if (depth > dec.maxNestingDepth()) {
-            throw new com.omnibuf.OmniBufException("omnibuf: nesting depth exceeds MaxNestingDepth");
+        decodeSlice(
+            dec.buffer(), dec.position(), dec.limit(), target, depth,
+            dec.maxNestingDepth(), dec.maxCollectionElements()
+        );
+        dec.position(dec.limit());
+    }
+
+    public static void decodeSlice(
+            byte[] buf, int pos, int lim, OmniBufConformanceResponse target, int depth, int maxDepth, int maxElems) {
+        if (depth > maxDepth) {
+            com.omnibuf.wire.OmniBufDecoder.throwMaxNestingDepth();
         }
-        while (dec.hasRemaining()) {
-            long tag = dec.readTag();
-            int fnum = (int) (tag >>> 4);
-            int wt = (int) (tag & 0x0FL);
+        if (pos < lim && buf[pos] == (byte) 0x35) {
+            pos++;
+            {
+                long sp = com.omnibuf.wire.OmniBufDecoder.readStringSpan(buf, pos, lim);
+                int ss = (int) (sp >>> 32);
+                pos = (int) sp;
+                target.parseError = (com.omnibuf.wire.Utf8Validator.decodeStrictUnchecked(buf, ss, pos - ss));
+            }
+        }
+        if (pos < lim && buf[pos] == (byte) 0x55) {
+            pos++;
+            {
+                long sp = com.omnibuf.wire.OmniBufDecoder.readStringSpan(buf, pos, lim);
+                int ss = (int) (sp >>> 32);
+                pos = (int) sp;
+                target.serializeError = (com.omnibuf.wire.Utf8Validator.decodeStrictUnchecked(buf, ss, pos - ss));
+            }
+        }
+        if (pos < lim && buf[pos] == (byte) 0x75) {
+            pos++;
+            {
+                long sp = com.omnibuf.wire.OmniBufDecoder.readStringSpan(buf, pos, lim);
+                int ss = (int) (sp >>> 32);
+                pos = (int) sp;
+                target.runtimeError = (com.omnibuf.wire.Utf8Validator.decodeStrictUnchecked(buf, ss, pos - ss));
+            }
+        }
+        if (pos < lim && buf[pos] == (byte) 0x95) {
+            pos++;
+            {
+                long sp = com.omnibuf.wire.OmniBufDecoder.readStringSpan(buf, pos, lim);
+                int ss = (int) (sp >>> 32);
+                pos = (int) sp;
+                target.skipped = (com.omnibuf.wire.Utf8Validator.decodeStrictUnchecked(buf, ss, pos - ss));
+            }
+        }
+        if (pos < lim && buf[pos] == (byte) 0xb7) {
+            pos++;
+            long bpk = PrefixVarint.readLengthSlicePacked(buf, pos, lim, 0);
+            int bs = (int) (bpk >>> 32);
+            int be = (int) bpk;
+            pos = be;
+            target.omnibufPayload = bs == be ? new byte[0] : java.util.Arrays.copyOfRange(buf, bs, be);
+        }
+        if (pos < lim && buf[pos] == (byte) 0xd5) {
+            pos++;
+            {
+                long sp = com.omnibuf.wire.OmniBufDecoder.readStringSpan(buf, pos, lim);
+                int ss = (int) (sp >>> 32);
+                pos = (int) sp;
+                target.jsonPayload = (com.omnibuf.wire.Utf8Validator.decodeStrictUnchecked(buf, ss, pos - ss));
+            }
+        }
+        if (pos < lim) {
+            decodeSliceSlow(buf, pos, lim, target, depth, maxDepth, maxElems);
+        }
+    }
+
+    private static void decodeSliceSlow(
+            byte[] buf, int pos, int lim, OmniBufConformanceResponse target, int depth, int maxDepth, int maxElems) {
+        while (pos < lim) {
+            int b0 = buf[pos] & 0xFF;
+            int fnum;
+            int wt;
+            if ((b0 & 1) != 0) {
+                pos++;
+                fnum = b0 >>> 5;
+                wt = (b0 >>> 1) & 0x0F;
+            } else if ((b0 & 2) != 0 && lim - pos >= 2) {
+                int tag2 = Short.toUnsignedInt(PrefixVarint.getShortLE(buf, pos)) >>> 2;
+                pos += 2;
+                fnum = tag2 >>> 4;
+                wt = tag2 & 0x0F;
+            } else {
+                long tagSlow = com.omnibuf.wire.OmniBufDecoder.readTagSlowSlice(buf, pos, lim);
+                pos += PrefixVarint.widthFromLeadingByte(b0);
+                fnum = (int) (tagSlow >>> 4);
+                wt = (int) (tagSlow & 0x0FL);
+            }
             switch (fnum) {
-                case 0 -> dec.skipOrValidateUnknown(0, wt, depth);
+                case 0 -> pos = com.omnibuf.wire.OmniBufDecoder.skipOrValidateUnknownSlice(buf, pos, lim, 0, wt, depth, maxDepth, maxElems);
                 case 1 -> {
                     if (wt == WireType.WIRE_STRING) {
-                        target.parseError = dec.readString();
+                        {
+                            long sp = com.omnibuf.wire.OmniBufDecoder.readStringSpan(buf, pos, lim);
+                            int ss = (int) (sp >>> 32);
+                            pos = (int) sp;
+                            target.parseError = (com.omnibuf.wire.Utf8Validator.decodeStrictUnchecked(buf, ss, pos - ss));
+                        }
                     } else {
-                        dec.skipOrValidateUnknown(fnum, wt, depth);
+                        pos = com.omnibuf.wire.OmniBufDecoder.skipOrValidateUnknownSlice(buf, pos, lim, fnum, wt, depth, maxDepth, maxElems);
                     }
                 }
                 case 2 -> {
                     if (wt == WireType.WIRE_STRING) {
-                        target.serializeError = dec.readString();
+                        {
+                            long sp = com.omnibuf.wire.OmniBufDecoder.readStringSpan(buf, pos, lim);
+                            int ss = (int) (sp >>> 32);
+                            pos = (int) sp;
+                            target.serializeError = (com.omnibuf.wire.Utf8Validator.decodeStrictUnchecked(buf, ss, pos - ss));
+                        }
                     } else {
-                        dec.skipOrValidateUnknown(fnum, wt, depth);
+                        pos = com.omnibuf.wire.OmniBufDecoder.skipOrValidateUnknownSlice(buf, pos, lim, fnum, wt, depth, maxDepth, maxElems);
                     }
                 }
                 case 3 -> {
                     if (wt == WireType.WIRE_STRING) {
-                        target.runtimeError = dec.readString();
+                        {
+                            long sp = com.omnibuf.wire.OmniBufDecoder.readStringSpan(buf, pos, lim);
+                            int ss = (int) (sp >>> 32);
+                            pos = (int) sp;
+                            target.runtimeError = (com.omnibuf.wire.Utf8Validator.decodeStrictUnchecked(buf, ss, pos - ss));
+                        }
                     } else {
-                        dec.skipOrValidateUnknown(fnum, wt, depth);
+                        pos = com.omnibuf.wire.OmniBufDecoder.skipOrValidateUnknownSlice(buf, pos, lim, fnum, wt, depth, maxDepth, maxElems);
                     }
                 }
                 case 4 -> {
                     if (wt == WireType.WIRE_STRING) {
-                        target.skipped = dec.readString();
+                        {
+                            long sp = com.omnibuf.wire.OmniBufDecoder.readStringSpan(buf, pos, lim);
+                            int ss = (int) (sp >>> 32);
+                            pos = (int) sp;
+                            target.skipped = (com.omnibuf.wire.Utf8Validator.decodeStrictUnchecked(buf, ss, pos - ss));
+                        }
                     } else {
-                        dec.skipOrValidateUnknown(fnum, wt, depth);
+                        pos = com.omnibuf.wire.OmniBufDecoder.skipOrValidateUnknownSlice(buf, pos, lim, fnum, wt, depth, maxDepth, maxElems);
                     }
                 }
                 case 5 -> {
                     if (wt == WireType.WIRE_BYTES) {
-                        target.omnibufPayload = dec.readBytes();
+                        long bpk = PrefixVarint.readLengthSlicePacked(buf, pos, lim, 0);
+                        int bs = (int) (bpk >>> 32);
+                        int be = (int) bpk;
+                        pos = be;
+                        target.omnibufPayload = bs == be ? new byte[0] : java.util.Arrays.copyOfRange(buf, bs, be);
                     } else {
-                        dec.skipOrValidateUnknown(fnum, wt, depth);
+                        pos = com.omnibuf.wire.OmniBufDecoder.skipOrValidateUnknownSlice(buf, pos, lim, fnum, wt, depth, maxDepth, maxElems);
                     }
                 }
                 case 6 -> {
                     if (wt == WireType.WIRE_STRING) {
-                        target.jsonPayload = dec.readString();
+                        {
+                            long sp = com.omnibuf.wire.OmniBufDecoder.readStringSpan(buf, pos, lim);
+                            int ss = (int) (sp >>> 32);
+                            pos = (int) sp;
+                            target.jsonPayload = (com.omnibuf.wire.Utf8Validator.decodeStrictUnchecked(buf, ss, pos - ss));
+                        }
                     } else {
-                        dec.skipOrValidateUnknown(fnum, wt, depth);
+                        pos = com.omnibuf.wire.OmniBufDecoder.skipOrValidateUnknownSlice(buf, pos, lim, fnum, wt, depth, maxDepth, maxElems);
                     }
                 }
-                default -> dec.skipOrValidateUnknown(fnum, wt, depth);
+                default -> pos = com.omnibuf.wire.OmniBufDecoder.skipOrValidateUnknownSlice(buf, pos, lim, fnum, wt, depth, maxDepth, maxElems);
             }
         }
     }

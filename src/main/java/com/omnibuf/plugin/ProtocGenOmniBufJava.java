@@ -706,13 +706,13 @@ public final class ProtocGenOmniBufJava {
                     sb.append("    IntArrayList ensure").append(f.pascalName()).append("(int minCap) {\n");
                     sb.append("        ").append(fType).append(" cur = this.").append(f.camelName()).append(";\n");
                     sb.append("        int cap = Math.min(minCap, 4096);\n");
-                    sb.append("        if (cur instanceof IntArrayList il) {\n");
-                    sb.append("            il.ensureAdditional(cap);\n");
-                    sb.append("            return il;\n");
-                    sb.append("        }\n");
                     sb.append("        if (cur == null) {\n");
                     sb.append("            IntArrayList il = new IntArrayList(cap);\n");
                     sb.append("            this.").append(f.camelName()).append(" = il;\n");
+                    sb.append("            return il;\n");
+                    sb.append("        }\n");
+                    sb.append("        if (cur instanceof IntArrayList il) {\n");
+                    sb.append("            il.ensureAdditional(cap);\n");
                     sb.append("            return il;\n");
                     sb.append("        }\n");
                     sb.append("        IntArrayList il = new IntArrayList(cur);\n");
@@ -731,13 +731,13 @@ public final class ProtocGenOmniBufJava {
                     sb.append("    LongArrayList ensure").append(f.pascalName()).append("(int minCap) {\n");
                     sb.append("        ").append(fType).append(" cur = this.").append(f.camelName()).append(";\n");
                     sb.append("        int cap = Math.min(minCap, 4096);\n");
-                    sb.append("        if (cur instanceof LongArrayList ll) {\n");
-                    sb.append("            ll.ensureAdditional(cap);\n");
-                    sb.append("            return ll;\n");
-                    sb.append("        }\n");
                     sb.append("        if (cur == null) {\n");
                     sb.append("            LongArrayList ll = new LongArrayList(cap);\n");
                     sb.append("            this.").append(f.camelName()).append(" = ll;\n");
+                    sb.append("            return ll;\n");
+                    sb.append("        }\n");
+                    sb.append("        if (cur instanceof LongArrayList ll) {\n");
+                    sb.append("            ll.ensureAdditional(cap);\n");
                     sb.append("            return ll;\n");
                     sb.append("        }\n");
                     sb.append("        LongArrayList ll = new LongArrayList(cur);\n");
@@ -758,15 +758,15 @@ public final class ProtocGenOmniBufJava {
                     sb.append("    ").append(arrListType).append(" ensure").append(f.pascalName()).append("(int minCap) {\n");
                     sb.append("        ").append(fType).append(" cur = this.").append(f.camelName()).append(";\n");
                     sb.append("        int cap = Math.min(minCap, 4096);\n");
+                    sb.append("        if (cur == null) {\n");
+                    sb.append("            ").append(arrListType).append(" al = new ArrayList<>(cap);\n");
+                    sb.append("            this.").append(f.camelName()).append(" = al;\n");
+                    sb.append("            return al;\n");
+                    sb.append("        }\n");
                     sb.append("        if (cur instanceof ").append(arrListType).append(" al) {\n");
                     sb.append("            if (al.isEmpty() && cap > 10) {\n");
                     sb.append("                al.ensureCapacity(cap);\n");
                     sb.append("            }\n");
-                    sb.append("            return al;\n");
-                    sb.append("        }\n");
-                    sb.append("        if (cur == null) {\n");
-                    sb.append("            ").append(arrListType).append(" al = new ArrayList<>(cap);\n");
-                    sb.append("            this.").append(f.camelName()).append(" = al;\n");
                     sb.append("            return al;\n");
                     sb.append("        }\n");
                     sb.append("        ").append(arrListType).append(" al = new ArrayList<>(cur);\n");
@@ -915,9 +915,7 @@ public final class ProtocGenOmniBufJava {
         sb.append("import com.omnibuf.SchemaMeta;\n");
         sb.append("import com.omnibuf.UnmarshalOptions;\n");
         sb.append("import com.omnibuf.wire.CodecPool;\n");
-        if (needsCodecPrefixVarintImport(fields)) {
-            sb.append("import com.omnibuf.wire.PrefixVarint;\n");
-        }
+        sb.append("import com.omnibuf.wire.PrefixVarint;\n");
         boolean hasSubMessageFields = false;
         for (ResolvedField f : fields) {
             if (f.subMessage() != null) {
@@ -1181,14 +1179,15 @@ public final class ProtocGenOmniBufJava {
         sb.append("        if (data == null) {\n");
         sb.append("            throw new com.omnibuf.OmniBufException(\"omnibuf: null packet buffer\");\n");
         sb.append("        }\n");
-        sb.append("        com.omnibuf.wire.OmniBufDecoder dec = CodecPool.acquireDecoder(data, 0, data.length, options);\n");
-        sb.append("        try {\n");
-        sb.append("            ").append(info.modelClass()).append(" out = new ").append(info.modelClass()).append("();\n");
-        sb.append("            decodeFrom(dec, out, 0);\n");
-        sb.append("            return out;\n");
-        sb.append("        } finally {\n");
-        sb.append("            CodecPool.releaseDecoder(dec);\n");
+        sb.append("        UnmarshalOptions opts = options == null ? UnmarshalOptions.DEFAULT : options;\n");
+        sb.append("        if (data.length > opts.maxMessageBytes()) {\n");
+        sb.append("            throw new com.omnibuf.OmniBufException(\n");
+        sb.append("                \"omnibuf: packet length \" + data.length + \" exceeds maxMessageBytes (\" + opts.maxMessageBytes() + \")\"\n");
+        sb.append("            );\n");
         sb.append("        }\n");
+        sb.append("        ").append(info.modelClass()).append(" out = new ").append(info.modelClass()).append("();\n");
+        sb.append("        decodeSlice(data, 0, data.length, out, 0, opts.maxNestingDepth(), opts.maxCollectionElements());\n");
+        sb.append("        return out;\n");
         sb.append("    }\n\n");
 
         sb.append("    public static void unmarshal(byte[] data, ").append(info.modelClass()).append(" target) {\n");
@@ -1204,43 +1203,103 @@ public final class ProtocGenOmniBufJava {
         sb.append("        if (target == null) {\n");
         sb.append("            throw new com.omnibuf.OmniBufException(\"omnibuf: null target instance\");\n");
         sb.append("        }\n");
-        sb.append("        com.omnibuf.wire.OmniBufDecoder dec = CodecPool.acquireDecoder(data, 0, data.length, options);\n");
-        sb.append("        try {\n");
-        sb.append("            target.reset();\n");
-        sb.append("            decodeFrom(dec, target, 0);\n");
-        sb.append("        } finally {\n");
-        sb.append("            CodecPool.releaseDecoder(dec);\n");
+        sb.append("        UnmarshalOptions opts = options == null ? UnmarshalOptions.DEFAULT : options;\n");
+        sb.append("        if (data.length > opts.maxMessageBytes()) {\n");
+        sb.append("            throw new com.omnibuf.OmniBufException(\n");
+        sb.append("                \"omnibuf: packet length \" + data.length + \" exceeds maxMessageBytes (\" + opts.maxMessageBytes() + \")\"\n");
+        sb.append("            );\n");
         sb.append("        }\n");
+        sb.append("        target.reset();\n");
+        sb.append("        decodeSlice(data, 0, data.length, target, 0, opts.maxNestingDepth(), opts.maxCollectionElements());\n");
         sb.append("    }\n\n");
 
         sb.append("    public static void decodeInto(\n");
         sb.append("            byte[] data, int offset, int length, ")
             .append(info.modelClass())
             .append(" target, int depth) {\n");
-        sb.append("        com.omnibuf.wire.OmniBufDecoder dec = CodecPool.acquireDecoder(data, offset, length);\n");
-        sb.append("        try {\n");
-        sb.append("            decodeFrom(dec, target, depth);\n");
-        sb.append("        } finally {\n");
-        sb.append("            CodecPool.releaseDecoder(dec);\n");
+        sb.append("        if (data == null) {\n");
+        sb.append("            throw new com.omnibuf.OmniBufException(\"omnibuf: null packet buffer\");\n");
         sb.append("        }\n");
+        sb.append("        if (offset < 0 || length < 0 || length > data.length - offset) {\n");
+        sb.append("            throw new com.omnibuf.OmniBufException(\"omnibuf: packet slice out of bounds\");\n");
+        sb.append("        }\n");
+        sb.append("        if (length > UnmarshalOptions.DEFAULT_MAX_MESSAGE_BYTES) {\n");
+        sb.append("            throw new com.omnibuf.OmniBufException(\n");
+        sb.append("                \"omnibuf: packet length \" + length + \" exceeds maxMessageBytes (\" + UnmarshalOptions.DEFAULT_MAX_MESSAGE_BYTES + \")\"\n");
+        sb.append("            );\n");
+        sb.append("        }\n");
+        sb.append("        decodeSlice(\n");
+        sb.append("            data, offset, offset + length, target, depth,\n");
+        sb.append("            UnmarshalOptions.DEFAULT_MAX_NESTING_DEPTH, UnmarshalOptions.DEFAULT_MAX_COLLECTION_ELEMENTS\n");
+        sb.append("        );\n");
         sb.append("    }\n\n");
 
         sb.append("    public static void decodeFrom(com.omnibuf.wire.OmniBufDecoder dec, ")
             .append(info.modelClass())
             .append(" target, int depth) {\n");
-        sb.append("        if (depth > dec.maxNestingDepth()) {\n");
-        sb.append("            throw new com.omnibuf.OmniBufException(\"omnibuf: nesting depth exceeds MaxNestingDepth\");\n");
+        sb.append("        decodeSlice(\n");
+        sb.append("            dec.buffer(), dec.position(), dec.limit(), target, depth,\n");
+        sb.append("            dec.maxNestingDepth(), dec.maxCollectionElements()\n");
+        sb.append("        );\n");
+        sb.append("        dec.position(dec.limit());\n");
+        sb.append("    }\n\n");
+
+        boolean emitSequentialFastPath = resolved.oneofs().isEmpty() && !fields.isEmpty() && fields.size() <= 16;
+        if (emitSequentialFastPath) {
+            for (ResolvedField f : fields) {
+                if (f.isMap() || f.number() >= 1024) {
+                    emitSequentialFastPath = false;
+                    break;
+                }
+            }
+        }
+
+        sb.append("    public static void decodeSlice(\n");
+        sb.append("            byte[] buf, int pos, int lim, ")
+            .append(info.modelClass())
+            .append(" target, int depth, int maxDepth, int maxElems) {\n");
+        sb.append("        if (depth > maxDepth) {\n");
+        sb.append("            com.omnibuf.wire.OmniBufDecoder.throwMaxNestingDepth();\n");
         sb.append("        }\n");
-        sb.append("        while (dec.hasRemaining()) {\n");
-        sb.append("            long tag = dec.readTag();\n");
-        sb.append("            int fnum = (int) (tag >>> 4);\n");
-        sb.append("            int wt = (int) (tag & 0x0FL);\n");
+        if (emitSequentialFastPath) {
+            for (ResolvedField f : fields) {
+                emitSequentialFieldDecode(sb, f);
+            }
+            sb.append("        if (pos < lim) {\n");
+            sb.append("            decodeSliceSlow(buf, pos, lim, target, depth, maxDepth, maxElems);\n");
+            sb.append("        }\n");
+            sb.append("    }\n\n");
+
+            sb.append("    private static void decodeSliceSlow(\n");
+            sb.append("            byte[] buf, int pos, int lim, ")
+                .append(info.modelClass())
+                .append(" target, int depth, int maxDepth, int maxElems) {\n");
+        }
+        sb.append("        while (pos < lim) {\n");
+        sb.append("            int b0 = buf[pos] & 0xFF;\n");
+        sb.append("            int fnum;\n");
+        sb.append("            int wt;\n");
+        sb.append("            if ((b0 & 1) != 0) {\n");
+        sb.append("                pos++;\n");
+        sb.append("                fnum = b0 >>> 5;\n");
+        sb.append("                wt = (b0 >>> 1) & 0x0F;\n");
+        sb.append("            } else if ((b0 & 2) != 0 && lim - pos >= 2) {\n");
+        sb.append("                int tag2 = Short.toUnsignedInt(PrefixVarint.getShortLE(buf, pos)) >>> 2;\n");
+        sb.append("                pos += 2;\n");
+        sb.append("                fnum = tag2 >>> 4;\n");
+        sb.append("                wt = tag2 & 0x0F;\n");
+        sb.append("            } else {\n");
+        sb.append("                long tagSlow = com.omnibuf.wire.OmniBufDecoder.readTagSlowSlice(buf, pos, lim);\n");
+        sb.append("                pos += PrefixVarint.widthFromLeadingByte(b0);\n");
+        sb.append("                fnum = (int) (tagSlow >>> 4);\n");
+        sb.append("                wt = (int) (tagSlow & 0x0FL);\n");
+        sb.append("            }\n");
         sb.append("            switch (fnum) {\n");
-        sb.append("                case 0 -> dec.skipOrValidateUnknown(0, wt, depth);\n");
+        sb.append("                case 0 -> pos = com.omnibuf.wire.OmniBufDecoder.skipOrValidateUnknownSlice(buf, pos, lim, 0, wt, depth, maxDepth, maxElems);\n");
         for (ResolvedField f : fields) {
             emitFieldDecodeCase(sb, f);
         }
-        sb.append("                default -> dec.skipOrValidateUnknown(fnum, wt, depth);\n");
+        sb.append("                default -> pos = com.omnibuf.wire.OmniBufDecoder.skipOrValidateUnknownSlice(buf, pos, lim, fnum, wt, depth, maxDepth, maxElems);\n");
         sb.append("            }\n");
         sb.append("        }\n");
         sb.append("    }\n");
@@ -1743,6 +1802,269 @@ public final class ProtocGenOmniBufJava {
         }
     }
 
+    private static void emitInlineVarintRead(StringBuilder sb, String varName, String posVar, String limVar, String indent) {
+        sb.append(indent).append("long ").append(varName).append(";\n");
+        sb.append(indent).append("{\n");
+        sb.append(indent).append("    int vb0 = ").append(posVar).append(" < ").append(limVar).append(" ? (buf[").append(posVar).append("] & 0xFF) : 8;\n");
+        sb.append(indent).append("    if ((vb0 & 1) != 0) {\n");
+        sb.append(indent).append("        ").append(varName).append(" = vb0 >>> 1;\n");
+        sb.append(indent).append("        ").append(posVar).append(" += 1;\n");
+        sb.append(indent).append("    } else if ((vb0 & 2) != 0 && ").append(limVar).append(" - ").append(posVar).append(" >= 2) {\n");
+        sb.append(indent).append("        ").append(varName).append(" = Short.toUnsignedLong(PrefixVarint.getShortLE(buf, ").append(posVar).append(")) >>> 2;\n");
+        sb.append(indent).append("        ").append(posVar).append(" += 2;\n");
+        sb.append(indent).append("    } else {\n");
+        sb.append(indent).append("        ").append(varName).append(" = com.omnibuf.wire.OmniBufDecoder.readVarint4Or9(buf, ").append(posVar).append(", ").append(limVar).append(");\n");
+        sb.append(indent).append("        ").append(posVar).append(" += (vb0 == 0 ? 9 : 4);\n");
+        sb.append(indent).append("    }\n");
+        sb.append(indent).append("}\n");
+    }
+
+    private static void emitInlineStringRead(StringBuilder sb, String targetAssign, String posVar, String limVar, String indent) {
+        sb.append(indent).append("{\n");
+        sb.append(indent).append("    long sp = com.omnibuf.wire.OmniBufDecoder.readStringSpan(buf, ").append(posVar).append(", ").append(limVar).append(");\n");
+        sb.append(indent).append("    int ss = (int) (sp >>> 32);\n");
+        sb.append(indent).append("    ").append(posVar).append(" = (int) sp;\n");
+        sb.append(indent).append("    ").append(targetAssign).append("(com.omnibuf.wire.Utf8Validator.decodeStrictUnchecked(buf, ss, ").append(posVar).append(" - ss));\n");
+        sb.append(indent).append("}\n");
+    }
+
+    private static void emitInlineLengthSlice(
+            StringBuilder sb, String startVar, String endVar, String posVar, String limVar, int minLen, String indent) {
+        String helper = minLen == 0
+            ? "com.omnibuf.wire.OmniBufDecoder.readStringSpan"
+            : (minLen == 2 ? "com.omnibuf.wire.OmniBufDecoder.readLengthSpanMin2" : null);
+        if (helper != null) {
+            sb.append(indent).append("long pk_").append(startVar).append(" = ").append(helper)
+                .append("(buf, ").append(posVar).append(", ").append(limVar).append(");\n");
+        } else {
+            sb.append(indent).append("long pk_").append(startVar).append(" = PrefixVarint.readLengthSlicePacked(buf, ")
+                .append(posVar).append(", ").append(limVar).append(", ").append(minLen).append(");\n");
+        }
+        sb.append(indent).append("int ").append(startVar).append(" = (int) (pk_").append(startVar).append(" >>> 32);\n");
+        sb.append(indent).append("int ").append(endVar).append(" = (int) pk_").append(startVar).append(";\n");
+        sb.append(indent).append(posVar).append(" = ").append(endVar).append(";\n");
+    }
+
+    private static void emitSequentialFieldDecode(StringBuilder sb, ResolvedField f) {
+        int fnum = f.number();
+        if (f.isRepeated()) {
+            int wt = WireType.WIRE_ARRAY;
+            if (fnum < 8) {
+                sb.append("        if (pos < lim && buf[pos] == ").append(tag1BLiteral(fnum, wt)).append(") {\n");
+                sb.append("            pos++;\n");
+            } else {
+                sb.append("        if (lim - pos >= 2 && PrefixVarint.getShortLE(buf, pos) == ").append(tag2BLiteral(fnum, wt)).append(") {\n");
+                sb.append("            pos += 2;\n");
+            }
+            String elemWireConst = wireTypeConst(f.proto().getType());
+            emitInlineLengthSlice(sb, "arrStart", "arrEnd", "pos", "lim", 2, "            ");
+            sb.append("            long arrHdr = com.omnibuf.wire.OmniBufDecoder.readArrayHeaderPacked(buf, arrStart, arrEnd, ")
+                .append(elemWireConst).append(", depth, maxDepth, maxElems);\n");
+            sb.append("            int ap = (int) (arrHdr >>> 32);\n");
+            sb.append("            int count = (int) arrHdr;\n");
+            sb.append("            var list = target.ensure").append(f.pascalName()).append("(count);\n");
+            sb.append("            if ((long) list.size() + count > maxElems) {\n");
+            sb.append("                com.omnibuf.wire.OmniBufDecoder.throwMaxCollectionElements();\n");
+            sb.append("            }\n");
+            String bulkSlice = bulkRepeatedSliceMethod(f.proto().getType());
+            if (bulkSlice != null) {
+                sb.append("            ap = com.omnibuf.wire.OmniBufDecoder.").append(bulkSlice).append("(buf, ap, arrEnd, list, count);\n");
+            } else {
+                sb.append("            for (int i = 0; i < count; i++) {\n");
+                switch (f.proto().getType()) {
+                    case TYPE_MESSAGE -> {
+                        String subModel = f.subMessage().qualifiedModel();
+                        String subCodec = f.subMessage().qualifiedCodec();
+                        emitInlineLengthSlice(sb, "es", "ee", "ap", "arrEnd", 0, "                ");
+                        sb.append("                ").append(subModel).append(" elem = new ").append(subModel).append("();\n");
+                        sb.append("                ").append(subCodec).append(".decodeSlice(buf, es, ee, elem, depth + 2, maxDepth, maxElems);\n");
+                        sb.append("                list.add(elem);\n");
+                    }
+                    case TYPE_STRING -> emitInlineStringRead(sb, "list.add", "ap", "arrEnd", "                ");
+                    case TYPE_BYTES -> {
+                        sb.append("                long bpk = PrefixVarint.readLengthSlicePacked(buf, ap, arrEnd, 0);\n");
+                        sb.append("                int bs = (int) (bpk >>> 32);\n");
+                        sb.append("                int be = (int) bpk;\n");
+                        sb.append("                ap = be;\n");
+                        sb.append("                list.add(bs == be ? new byte[0] : java.util.Arrays.copyOfRange(buf, bs, be));\n");
+                    }
+                    case TYPE_BOOL -> {
+                        sb.append("                int bb = buf[ap++] & 0xFF;\n");
+                        sb.append("                if (bb > 1) {\n");
+                        sb.append("                    com.omnibuf.wire.OmniBufDecoder.throwInvalidBool(bb);\n");
+                        sb.append("                }\n");
+                        sb.append("                list.add(bb == 1);\n");
+                    }
+                    case TYPE_FLOAT -> {
+                        sb.append("                list.add(Float.intBitsToFloat(PrefixVarint.getIntLE(buf, ap)));\n");
+                        sb.append("                ap += 4;\n");
+                    }
+                    case TYPE_DOUBLE -> {
+                        sb.append("                list.add(Double.longBitsToDouble(PrefixVarint.getLongLE(buf, ap)));\n");
+                        sb.append("                ap += 8;\n");
+                    }
+                    default -> throw new IllegalStateException("Unsupported repeated decode type: " + f.proto().getType());
+                }
+                sb.append("            }\n");
+            }
+            sb.append("            if (ap != arrEnd) {\n");
+            sb.append("                com.omnibuf.wire.OmniBufDecoder.throwTrailingContainerBytes();\n");
+            sb.append("            }\n");
+            sb.append("        }\n");
+            return;
+        }
+
+        if (f.proto().getType() == Type.TYPE_BOOL) {
+            if (fnum < 8) {
+                sb.append("        if (pos < lim && (buf[pos] | 2) == ").append(tag1BLiteral(fnum, WireType.WIRE_BOOL_TRUE)).append(") {\n");
+                if (f.hasExplicitScalarPresence()) {
+                    sb.append("            target.has_").append(f.camelName()).append(" = true;\n");
+                }
+                sb.append("            target.").append(f.camelName()).append(" = (buf[pos++] & 2) != 0;\n");
+                sb.append("        }\n");
+            } else {
+                sb.append("        if (lim - pos >= 2 && (PrefixVarint.getShortLE(buf, pos) | 4) == ").append(tag2BLiteral(fnum, WireType.WIRE_BOOL_TRUE)).append(") {\n");
+                if (f.hasExplicitScalarPresence()) {
+                    sb.append("            target.has_").append(f.camelName()).append(" = true;\n");
+                }
+                sb.append("            target.").append(f.camelName()).append(" = (PrefixVarint.getShortLE(buf, pos) & 4) != 0;\n");
+                sb.append("            pos += 2;\n");
+                sb.append("        }\n");
+            }
+            return;
+        }
+
+        int wt = wireTypeInt(f.proto().getType());
+        Type ft = f.proto().getType();
+        int fixedBytes = switch (ft) {
+            case TYPE_FIXED32, TYPE_SFIXED32, TYPE_FLOAT -> 4;
+            case TYPE_FIXED64, TYPE_SFIXED64, TYPE_DOUBLE -> 8;
+            default -> 0;
+        };
+        if (fixedBytes > 0) {
+            int tagLen = fnum < 8 ? 1 : 2;
+            if (fnum < 8) {
+                sb.append("        if (lim - pos >= ").append(tagLen + fixedBytes)
+                    .append(" && buf[pos] == ").append(tag1BLiteral(fnum, wt)).append(") {\n");
+            } else {
+                sb.append("        if (lim - pos >= ").append(tagLen + fixedBytes)
+                    .append(" && PrefixVarint.getShortLE(buf, pos) == ").append(tag2BLiteral(fnum, wt)).append(") {\n");
+            }
+            if (f.hasExplicitScalarPresence()) {
+                sb.append("            target.has_").append(f.camelName()).append(" = true;\n");
+            }
+            String fieldAssign = "target." + f.camelName() + " = ";
+            switch (ft) {
+                case TYPE_FIXED32, TYPE_SFIXED32 ->
+                    sb.append("            ").append(fieldAssign).append("PrefixVarint.getIntLE(buf, pos + ").append(tagLen).append(");\n");
+                case TYPE_FLOAT ->
+                    sb.append("            ").append(fieldAssign).append("Float.intBitsToFloat(PrefixVarint.getIntLE(buf, pos + ").append(tagLen).append("));\n");
+                case TYPE_FIXED64, TYPE_SFIXED64 ->
+                    sb.append("            ").append(fieldAssign).append("PrefixVarint.getLongLE(buf, pos + ").append(tagLen).append(");\n");
+                case TYPE_DOUBLE ->
+                    sb.append("            ").append(fieldAssign).append("Double.longBitsToDouble(PrefixVarint.getLongLE(buf, pos + ").append(tagLen).append("));\n");
+                default -> throw new IllegalStateException("Unexpected fixed type: " + ft);
+            }
+            sb.append("            pos += ").append(tagLen + fixedBytes).append(";\n");
+            sb.append("        }\n");
+            return;
+        }
+        if (fnum < 8) {
+            sb.append("        if (pos < lim && buf[pos] == ").append(tag1BLiteral(fnum, wt)).append(") {\n");
+            sb.append("            pos++;\n");
+        } else {
+            sb.append("        if (lim - pos >= 2 && PrefixVarint.getShortLE(buf, pos) == ").append(tag2BLiteral(fnum, wt)).append(") {\n");
+            sb.append("            pos += 2;\n");
+        }
+
+        if (f.proto().getType() == Type.TYPE_MESSAGE) {
+            String subModel = f.subMessage().qualifiedModel();
+            String subCodec = f.subMessage().qualifiedCodec();
+            emitInlineLengthSlice(sb, "subStart", "subEnd", "pos", "lim", 0, "            ");
+            sb.append("            ").append(subModel).append(" sub = target.").append(f.camelName()).append(";\n");
+            sb.append("            if (sub == null) {\n");
+            sb.append("                sub = new ").append(subModel).append("();\n");
+            sb.append("                target.").append(f.camelName()).append(" = sub;\n");
+            sb.append("            }\n");
+            sb.append("            ").append(subCodec).append(".decodeSlice(buf, subStart, subEnd, sub, depth + 1, maxDepth, maxElems);\n");
+            sb.append("        }\n");
+            return;
+        }
+
+        if (f.hasExplicitScalarPresence()) {
+            sb.append("            target.has_").append(f.camelName()).append(" = true;\n");
+        }
+        String fieldAssign = "target." + f.camelName() + " = ";
+        switch (f.proto().getType()) {
+            case TYPE_UINT32 -> {
+                emitInlineVarintRead(sb, "v", "pos", "lim", "            ");
+                sb.append("            ").append(fieldAssign).append("(int) v;\n");
+            }
+            case TYPE_UINT64 -> {
+                emitInlineVarintRead(sb, "v", "pos", "lim", "            ");
+                sb.append("            ").append(fieldAssign).append("v;\n");
+            }
+            case TYPE_INT32, TYPE_SINT32, TYPE_ENUM -> {
+                emitInlineVarintRead(sb, "v", "pos", "lim", "            ");
+                sb.append("            ").append(fieldAssign).append("PrefixVarint.decodeZigZag32(v);\n");
+            }
+            case TYPE_INT64, TYPE_SINT64 -> {
+                emitInlineVarintRead(sb, "v", "pos", "lim", "            ");
+                sb.append("            ").append(fieldAssign).append("PrefixVarint.decodeZigZag64(v);\n");
+            }
+            case TYPE_FIXED32, TYPE_SFIXED32 -> {
+                sb.append("            if (lim - pos < 4) {\n");
+                sb.append("                com.omnibuf.wire.OmniBufDecoder.throwTruncatedFixed32();\n");
+                sb.append("            }\n");
+                sb.append("            ").append(fieldAssign).append("PrefixVarint.getIntLE(buf, pos);\n");
+                sb.append("            pos += 4;\n");
+            }
+            case TYPE_FLOAT -> {
+                sb.append("            if (lim - pos < 4) {\n");
+                sb.append("                com.omnibuf.wire.OmniBufDecoder.throwTruncatedFixed32();\n");
+                sb.append("            }\n");
+                sb.append("            ").append(fieldAssign).append("Float.intBitsToFloat(PrefixVarint.getIntLE(buf, pos));\n");
+                sb.append("            pos += 4;\n");
+            }
+            case TYPE_FIXED64, TYPE_SFIXED64 -> {
+                sb.append("            if (lim - pos < 8) {\n");
+                sb.append("                com.omnibuf.wire.OmniBufDecoder.throwTruncatedFixed64();\n");
+                sb.append("            }\n");
+                sb.append("            ").append(fieldAssign).append("PrefixVarint.getLongLE(buf, pos);\n");
+                sb.append("            pos += 8;\n");
+            }
+            case TYPE_DOUBLE -> {
+                sb.append("            if (lim - pos < 8) {\n");
+                sb.append("                com.omnibuf.wire.OmniBufDecoder.throwTruncatedFixed64();\n");
+                sb.append("            }\n");
+                sb.append("            ").append(fieldAssign).append("Double.longBitsToDouble(PrefixVarint.getLongLE(buf, pos));\n");
+                sb.append("            pos += 8;\n");
+            }
+            case TYPE_STRING -> emitInlineStringRead(sb, fieldAssign, "pos", "lim", "            ");
+            case TYPE_BYTES -> {
+                sb.append("            long bpk = PrefixVarint.readLengthSlicePacked(buf, pos, lim, 0);\n");
+                sb.append("            int bs = (int) (bpk >>> 32);\n");
+                sb.append("            int be = (int) bpk;\n");
+                sb.append("            pos = be;\n");
+                sb.append("            ").append(fieldAssign).append("bs == be ? new byte[0] : java.util.Arrays.copyOfRange(buf, bs, be);\n");
+            }
+            default -> throw new IllegalStateException("Unsupported singular decode type: " + f.proto().getType());
+        }
+        sb.append("        }\n");
+    }
+
+    private static String bulkRepeatedSliceMethod(Type t) {
+        return switch (t) {
+            case TYPE_UINT32 -> "readUint32SliceInto";
+            case TYPE_INT32, TYPE_SINT32, TYPE_ENUM -> "readSint32SliceInto";
+            case TYPE_FIXED32, TYPE_SFIXED32 -> "readFixed32SliceInto";
+            case TYPE_UINT64 -> "readUint64SliceInto";
+            case TYPE_INT64, TYPE_SINT64 -> "readSint64SliceInto";
+            case TYPE_FIXED64, TYPE_SFIXED64 -> "readFixed64SliceInto";
+            default -> null;
+        };
+    }
+
     private static void emitFieldDecodeCase(StringBuilder sb, ResolvedField f) {
         int fnum = f.number();
         sb.append("                case ").append(fnum).append(" -> {\n");
@@ -1753,15 +2075,15 @@ public final class ProtocGenOmniBufJava {
             String keyWT = wireTypeConst(f.mapKeyProto().getType());
             String valWT = wireTypeConst(f.mapValProto().getType());
             sb.append("                    if (wt != WireType.WIRE_MAP) {\n");
-            sb.append("                        dec.skipOrValidateUnknown(fnum, wt, depth);\n");
+            sb.append("                        pos = com.omnibuf.wire.OmniBufDecoder.skipOrValidateUnknownSlice(buf, pos, lim, fnum, wt, depth, maxDepth, maxElems);\n");
             sb.append("                    } else {\n");
+            sb.append("                        com.omnibuf.wire.OmniBufDecoder dec = com.omnibuf.wire.OmniBufDecoder.forSubSlice(buf, pos, lim, maxDepth, maxElems);\n");
             sb.append("                        long mapState = dec.beginMap(")
                 .append(keyWT).append(", ").append(valWT).append(", depth);\n");
             sb.append("                        if (mapState >= 0L) {\n");
             sb.append("                            int count = (int) mapState;\n");
             sb.append("                            int mapLimit = (int) (mapState >>> 32);\n");
             sb.append("                            var map = target.ensure").append(f.pascalName()).append("(count);\n");
-            sb.append("                            int maxElems = dec.maxCollectionElements();\n");
             sb.append("                            for (int i = 0; i < count; i++) {\n");
             sb.append("                                ").append(kBox).append(" k = ")
                 .append(arrayElementReadExpr(f.mapKeyProto().getType())).append(";\n");
@@ -1783,6 +2105,7 @@ public final class ProtocGenOmniBufJava {
             sb.append("                            }\n");
             sb.append("                            dec.endContainer(mapLimit);\n");
             sb.append("                        }\n");
+            sb.append("                        pos = dec.position();\n");
             sb.append("                    }\n");
             sb.append("                }\n");
             return;
@@ -1791,35 +2114,60 @@ public final class ProtocGenOmniBufJava {
         if (f.isRepeated()) {
             String elemWireConst = wireTypeConst(f.proto().getType());
             sb.append("                    if (wt != WireType.WIRE_ARRAY) {\n");
-            sb.append("                        dec.skipOrValidateUnknown(fnum, wt, depth);\n");
+            sb.append("                        pos = com.omnibuf.wire.OmniBufDecoder.skipOrValidateUnknownSlice(buf, pos, lim, fnum, wt, depth, maxDepth, maxElems);\n");
             sb.append("                    } else {\n");
-            sb.append("                        long arrState = dec.beginArray(").append(elemWireConst).append(", depth);\n");
-            sb.append("                        if (arrState >= 0L) {\n");
-            sb.append("                            int count = (int) arrState;\n");
-            sb.append("                            int arrLimit = (int) (arrState >>> 32);\n");
-            sb.append("                            var list = target.ensure").append(f.pascalName()).append("(count);\n");
-            sb.append("                            if ((long) list.size() + count > dec.maxCollectionElements()) {\n");
-            sb.append("                                throw new com.omnibuf.OmniBufException(\"omnibuf: accumulated WireArray count exceeds maxCollectionElements\");\n");
-            sb.append("                            }\n");
-            String bulkRead = bulkRepeatedReadMethod(f.proto().getType());
-            if (bulkRead != null) {
-                sb.append("                            dec.").append(bulkRead).append("(list, count);\n");
+            emitInlineLengthSlice(sb, "arrStart", "arrEnd", "pos", "lim", 2, "                        ");
+            sb.append("                        long arrHdr = com.omnibuf.wire.OmniBufDecoder.readArrayHeaderPacked(buf, arrStart, arrEnd, ")
+                .append(elemWireConst).append(", depth, maxDepth, maxElems);\n");
+            sb.append("                        int ap = (int) (arrHdr >>> 32);\n");
+            sb.append("                        int count = (int) arrHdr;\n");
+            sb.append("                        var list = target.ensure").append(f.pascalName()).append("(count);\n");
+            sb.append("                        if ((long) list.size() + count > maxElems) {\n");
+            sb.append("                            com.omnibuf.wire.OmniBufDecoder.throwMaxCollectionElements();\n");
+            sb.append("                        }\n");
+            String bulkSlice = bulkRepeatedSliceMethod(f.proto().getType());
+            if (bulkSlice != null) {
+                sb.append("                        ap = com.omnibuf.wire.OmniBufDecoder.").append(bulkSlice).append("(buf, ap, arrEnd, list, count);\n");
             } else {
-                sb.append("                            for (int i = 0; i < count; i++) {\n");
-                if (f.proto().getType() == Type.TYPE_MESSAGE) {
-                    String subModel = f.subMessage().qualifiedModel();
-                    String subCodec = f.subMessage().qualifiedCodec();
-                    sb.append("                                int elemLimit = dec.readLengthPrefixedLimit(0);\n");
-                    sb.append("                                ").append(subModel).append(" elem = new ").append(subModel).append("();\n");
-                    sb.append("                                ").append(subCodec).append(".decodeFrom(dec, elem, depth + 2);\n");
-                    sb.append("                                dec.endContainer(elemLimit);\n");
-                    sb.append("                                list.add(elem);\n");
-                } else {
-                    sb.append("                                list.add(").append(arrayElementReadExpr(f.proto().getType())).append(");\n");
+                sb.append("                        for (int i = 0; i < count; i++) {\n");
+                switch (f.proto().getType()) {
+                    case TYPE_MESSAGE -> {
+                        String subModel = f.subMessage().qualifiedModel();
+                        String subCodec = f.subMessage().qualifiedCodec();
+                        emitInlineLengthSlice(sb, "es", "ee", "ap", "arrEnd", 0, "                            ");
+                        sb.append("                            ").append(subModel).append(" elem = new ").append(subModel).append("();\n");
+                        sb.append("                            ").append(subCodec).append(".decodeSlice(buf, es, ee, elem, depth + 2, maxDepth, maxElems);\n");
+                        sb.append("                            list.add(elem);\n");
+                    }
+                    case TYPE_STRING -> emitInlineStringRead(sb, "list.add", "ap", "arrEnd", "                            ");
+                    case TYPE_BYTES -> {
+                        sb.append("                            long bpk = PrefixVarint.readLengthSlicePacked(buf, ap, arrEnd, 0);\n");
+                        sb.append("                            int bs = (int) (bpk >>> 32);\n");
+                        sb.append("                            int be = (int) bpk;\n");
+                        sb.append("                            ap = be;\n");
+                        sb.append("                            list.add(bs == be ? new byte[0] : java.util.Arrays.copyOfRange(buf, bs, be));\n");
+                    }
+                    case TYPE_BOOL -> {
+                        sb.append("                            int bb = buf[ap++] & 0xFF;\n");
+                        sb.append("                            if (bb > 1) {\n");
+                        sb.append("                                com.omnibuf.wire.OmniBufDecoder.throwInvalidBool(bb);\n");
+                        sb.append("                            }\n");
+                        sb.append("                            list.add(bb == 1);\n");
+                    }
+                    case TYPE_FLOAT -> {
+                        sb.append("                            list.add(Float.intBitsToFloat(PrefixVarint.getIntLE(buf, ap)));\n");
+                        sb.append("                            ap += 4;\n");
+                    }
+                    case TYPE_DOUBLE -> {
+                        sb.append("                            list.add(Double.longBitsToDouble(PrefixVarint.getLongLE(buf, ap)));\n");
+                        sb.append("                            ap += 8;\n");
+                    }
+                    default -> throw new IllegalStateException("Unsupported repeated decode type: " + f.proto().getType());
                 }
-                sb.append("                            }\n");
+                sb.append("                        }\n");
             }
-            sb.append("                            dec.endContainer(arrLimit);\n");
+            sb.append("                        if (ap != arrEnd) {\n");
+            sb.append("                            com.omnibuf.wire.OmniBufDecoder.throwTrailingContainerBytes();\n");
             sb.append("                        }\n");
             sb.append("                    }\n");
             sb.append("                }\n");
@@ -1836,7 +2184,7 @@ public final class ProtocGenOmniBufJava {
             }
             sb.append("                        target.").append(f.camelName()).append(" = (wt == WireType.WIRE_BOOL_TRUE);\n");
             sb.append("                    } else {\n");
-            sb.append("                        dec.skipOrValidateUnknown(fnum, wt, depth);\n");
+            sb.append("                        pos = com.omnibuf.wire.OmniBufDecoder.skipOrValidateUnknownSlice(buf, pos, lim, fnum, wt, depth, maxDepth, maxElems);\n");
             sb.append("                    }\n");
             sb.append("                }\n");
             return;
@@ -1846,7 +2194,7 @@ public final class ProtocGenOmniBufJava {
             String subModel = f.subMessage().qualifiedModel();
             String subCodec = f.subMessage().qualifiedCodec();
             sb.append("                    if (wt == WireType.WIRE_SUB_MSG) {\n");
-            sb.append("                        int subLimit = dec.readLengthPrefixedLimit(0);\n");
+            emitInlineLengthSlice(sb, "subStart", "subEnd", "pos", "lim", 0, "                        ");
             if (f.oneof() != null) {
                 sb.append("                        target.prepare").append(f.oneof().pascalName())
                     .append('(').append(fnum).append(");\n");
@@ -1856,10 +2204,9 @@ public final class ProtocGenOmniBufJava {
             sb.append("                            sub = new ").append(subModel).append("();\n");
             sb.append("                            target.").append(f.camelName()).append(" = sub;\n");
             sb.append("                        }\n");
-            sb.append("                        ").append(subCodec).append(".decodeFrom(dec, sub, depth + 1);\n");
-            sb.append("                        dec.endContainer(subLimit);\n");
+            sb.append("                        ").append(subCodec).append(".decodeSlice(buf, subStart, subEnd, sub, depth + 1, maxDepth, maxElems);\n");
             sb.append("                    } else {\n");
-            sb.append("                        dec.skipOrValidateUnknown(fnum, wt, depth);\n");
+            sb.append("                        pos = com.omnibuf.wire.OmniBufDecoder.skipOrValidateUnknownSlice(buf, pos, lim, fnum, wt, depth, maxDepth, maxElems);\n");
             sb.append("                    }\n");
             sb.append("                }\n");
             return;
@@ -1873,13 +2220,64 @@ public final class ProtocGenOmniBufJava {
         } else if (f.hasExplicitScalarPresence()) {
             sb.append("                        target.has_").append(f.camelName()).append(" = true;\n");
         }
-        sb.append("                        target.")
-            .append(f.camelName())
-            .append(" = ")
-            .append(singularReadExpr(f.proto().getType()))
-            .append(";\n");
+        String fieldAssign = "target." + f.camelName() + " = ";
+        switch (f.proto().getType()) {
+            case TYPE_UINT32 -> {
+                emitInlineVarintRead(sb, "v", "pos", "lim", "                        ");
+                sb.append("                        ").append(fieldAssign).append("(int) v;\n");
+            }
+            case TYPE_UINT64 -> {
+                emitInlineVarintRead(sb, "v", "pos", "lim", "                        ");
+                sb.append("                        ").append(fieldAssign).append("v;\n");
+            }
+            case TYPE_INT32, TYPE_SINT32, TYPE_ENUM -> {
+                emitInlineVarintRead(sb, "v", "pos", "lim", "                        ");
+                sb.append("                        ").append(fieldAssign).append("PrefixVarint.decodeZigZag32(v);\n");
+            }
+            case TYPE_INT64, TYPE_SINT64 -> {
+                emitInlineVarintRead(sb, "v", "pos", "lim", "                        ");
+                sb.append("                        ").append(fieldAssign).append("PrefixVarint.decodeZigZag64(v);\n");
+            }
+            case TYPE_FIXED32, TYPE_SFIXED32 -> {
+                sb.append("                        if (lim - pos < 4) {\n");
+                sb.append("                            com.omnibuf.wire.OmniBufDecoder.throwTruncatedFixed32();\n");
+                sb.append("                        }\n");
+                sb.append("                        ").append(fieldAssign).append("PrefixVarint.getIntLE(buf, pos);\n");
+                sb.append("                        pos += 4;\n");
+            }
+            case TYPE_FLOAT -> {
+                sb.append("                        if (lim - pos < 4) {\n");
+                sb.append("                            com.omnibuf.wire.OmniBufDecoder.throwTruncatedFixed32();\n");
+                sb.append("                        }\n");
+                sb.append("                        ").append(fieldAssign).append("Float.intBitsToFloat(PrefixVarint.getIntLE(buf, pos));\n");
+                sb.append("                        pos += 4;\n");
+            }
+            case TYPE_FIXED64, TYPE_SFIXED64 -> {
+                sb.append("                        if (lim - pos < 8) {\n");
+                sb.append("                            com.omnibuf.wire.OmniBufDecoder.throwTruncatedFixed64();\n");
+                sb.append("                        }\n");
+                sb.append("                        ").append(fieldAssign).append("PrefixVarint.getLongLE(buf, pos);\n");
+                sb.append("                        pos += 8;\n");
+            }
+            case TYPE_DOUBLE -> {
+                sb.append("                        if (lim - pos < 8) {\n");
+                sb.append("                            com.omnibuf.wire.OmniBufDecoder.throwTruncatedFixed64();\n");
+                sb.append("                        }\n");
+                sb.append("                        ").append(fieldAssign).append("Double.longBitsToDouble(PrefixVarint.getLongLE(buf, pos));\n");
+                sb.append("                        pos += 8;\n");
+            }
+            case TYPE_STRING -> emitInlineStringRead(sb, fieldAssign, "pos", "lim", "                        ");
+            case TYPE_BYTES -> {
+                sb.append("                        long bpk = PrefixVarint.readLengthSlicePacked(buf, pos, lim, 0);\n");
+                sb.append("                        int bs = (int) (bpk >>> 32);\n");
+                sb.append("                        int be = (int) bpk;\n");
+                sb.append("                        pos = be;\n");
+                sb.append("                        ").append(fieldAssign).append("bs == be ? new byte[0] : java.util.Arrays.copyOfRange(buf, bs, be);\n");
+            }
+            default -> throw new IllegalStateException("Unsupported singular decode type: " + f.proto().getType());
+        }
         sb.append("                    } else {\n");
-        sb.append("                        dec.skipOrValidateUnknown(fnum, wt, depth);\n");
+        sb.append("                        pos = com.omnibuf.wire.OmniBufDecoder.skipOrValidateUnknownSlice(buf, pos, lim, fnum, wt, depth, maxDepth, maxElems);\n");
         sb.append("                    }\n");
         sb.append("                }\n");
     }
