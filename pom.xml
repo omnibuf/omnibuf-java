@@ -42,7 +42,7 @@
     <maven.compiler.release>21</maven.compiler.release>
     <protobuf.version>4.35.1</protobuf.version>
     <jackson.version>2.23.0</jackson.version>
-    <msgpack.jackson.version>0.9.8</msgpack.jackson.version>
+    <msgpack.jackson.version>0.9.12</msgpack.jackson.version>
     <flatbuffers.version>25.2.10</flatbuffers.version>
     <junit.version>5.11.4</junit.version>
   </properties>
