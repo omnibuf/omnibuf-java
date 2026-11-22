@@ -110,19 +110,7 @@ PeerUpdate restored = OmniBufProtobuf.unmarshal(packet, PeerUpdate.getDefaultIns
 
 ## Benchmarks
 
-Measured on Apple M1 Pro (`darwin-arm64`, OpenJDK 21.0.13) using the canonical 11-field `PeerUpdate` workload (`just bench`, structured output in `testdata/benchmarks.json`):
-
-| Category | OmniBuf (Generated) | OmniBuf (@OmniBufField) | Protobuf (protobuf-java) | FlatBuffers | JSON (Jackson) | MessagePack (Jackson) |
-| :--- | ---: | ---: | ---: | ---: | ---: | ---: |
-| **Wire Size** | **366 B** | **366 B** | 341 B | 600 B | 803 B | 626 B |
-| **Full Message Encode Speed** | **315 ns/op** | 662 ns/op | 364 ns/op | 1,021 ns/op | 1,559 ns/op | 2,401 ns/op |
-| **Full Message Decode Speed** | **1,045 ns/op** | 1,056 ns/op | 1,520 ns/op | 1,061 ns/op | 2,950 ns/op | 4,346 ns/op |
-| **Read a Single Nested Field** | 127 ns/op | n/a | 1,036 ns/op | **24 ns/op** | 2,607 ns/op | 3,991 ns/op |
-| **Selective Single-Field Mutation** | **294 ns/op** | n/a | 1,454 ns/op | 1,453 ns/op | 4,166 ns/op | 6,453 ns/op |
-| **Large Embedded Message Encode** | 5,044 ns/op | 5,211 ns/op | **4,384 ns/op** | 77,382 ns/op | 62,896 ns/op | 116,427 ns/op |
-| **Embedded Message Growth** | **3,020 ns/op** | n/a | 24,464 ns/op | 46,102 ns/op | 48,786 ns/op | 87,759 ns/op |
-
-`BenchmarkMain` evaluates six categories across `OmniBuf (Generated)`, `OmniBuf (@OmniBufField)`, `OmniBuf (Protobuf)`, `Protobuf (protobuf-java)`, `FlatBuffers`, `MessagePack (Jackson)`, and `JSON (Jackson)`, adding `Large Embedded Message Encode` and `Embedded Message Growth` stress workloads. Run `just bench --smoke` for a fast parity check across all six categories.
+Java benchmark results, methodology, and cross-language comparisons live at [omnibuf.com/benchmarks?lang=java](https://omnibuf.com/benchmarks?lang=java) (all languages at [omnibuf.com/benchmarks](https://omnibuf.com/benchmarks)). Run `just bench` to regenerate [`testdata/benchmarks.json`](testdata/benchmarks.json), or `just bench --smoke` for a quick parity check.
 
 ## Development Recipes
 
