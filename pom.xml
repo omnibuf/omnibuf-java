@@ -40,7 +40,7 @@
   <properties>
     <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
     <maven.compiler.release>21</maven.compiler.release>
-    <protobuf.version>4.35.1</protobuf.version>
+    <protobuf.version>4.36.2</protobuf.version>
     <jackson.version>2.23.0</jackson.version>
     <msgpack.jackson.version>0.9.8</msgpack.jackson.version>
     <flatbuffers.version>25.2.10</flatbuffers.version>
