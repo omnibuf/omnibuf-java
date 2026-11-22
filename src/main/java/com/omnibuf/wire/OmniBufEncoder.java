@@ -507,11 +507,13 @@ public final class OmniBufEncoder {
         while (srcOff < n) {
             int chunk = Math.min(CHAR_SCRATCH_SIZE, n - srcOff);
             int srcEnd = srcOff + chunk;
-            if (srcEnd < n
-                    && Character.isHighSurrogate(s.charAt(srcEnd - 1))
-                    && Character.isLowSurrogate(s.charAt(srcEnd))) {
-                chunk--;
-                srcEnd--;
+            if (srcEnd < n && Character.isHighSurrogate(s.charAt(srcEnd - 1))) {
+                if (Character.isLowSurrogate(s.charAt(srcEnd))) {
+                    chunk--;
+                    srcEnd--;
+                } else {
+                    throw new OmniBufException("omnibuf: unpaired UTF-16 surrogate in WireString");
+                }
             }
             s.getChars(srcOff, srcEnd, scratch, 0);
             cb.position(0).limit(chunk);
@@ -519,6 +521,9 @@ public final class OmniBufEncoder {
             for (;;) {
                 CoderResult cr = enc.encode(cb, bb, endOfInput);
                 if (cr.isUnderflow()) {
+                    if (cb.hasRemaining()) {
+                        throw new OmniBufException("omnibuf: unpaired UTF-16 surrogate in WireString");
+                    }
                     break;
                 }
                 if (cr.isOverflow()) {

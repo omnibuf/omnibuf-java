@@ -34,7 +34,7 @@ public final class Utf8Validator {
         }
         int end = off + len;
         int i = off;
-        while (i + 8 <= end && (PrefixVarint.getLongLE(buf, i) & 0x8080_8080_8080_8080L) == 0L) {
+        while (end - i >= 8 && (PrefixVarint.getLongLE(buf, i) & 0x8080_8080_8080_8080L) == 0L) {
             i += 8;
         }
         return isValidUtf8Slow(buf, i, end);
@@ -61,7 +61,7 @@ public final class Utf8Validator {
                     return false;
                 }
             } else if (u0 <= 0xEF) {
-                if (i + 1 >= end) {
+                if (end - i < 2) {
                     return false;
                 }
                 int b1 = buf[i++] & 0xFF;
@@ -78,7 +78,7 @@ public final class Utf8Validator {
                     return false;
                 }
             } else if (u0 <= 0xF4) {
-                if (i + 2 >= end) {
+                if (end - i < 3) {
                     return false;
                 }
                 int b1 = buf[i++] & 0xFF;

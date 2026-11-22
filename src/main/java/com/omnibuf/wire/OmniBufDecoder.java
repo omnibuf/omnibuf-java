@@ -189,7 +189,7 @@ public final class OmniBufDecoder {
     public static long readVarint4Or9(byte[] buf, int pos, int lim) {
         if (pos < lim) {
             int b0 = buf[pos] & 0xFF;
-            if ((b0 & 4) != 0 && lim - pos >= 4) {
+            if ((b0 & 7) == 4 && lim - pos >= 4) {
                 return Integer.toUnsignedLong(PrefixVarint.getIntLE(buf, pos)) >>> 3;
             }
             if (b0 == 0 && lim - pos >= 9) {

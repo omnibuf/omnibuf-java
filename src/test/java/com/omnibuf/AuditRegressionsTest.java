@@ -35,6 +35,7 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.BitSet;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.LinkedList;
@@ -788,5 +789,219 @@ class AuditRegressionsTest {
         );
         assertTrue(resp.hasError());
         assertEquals(0, resp.getFileCount());
+    }
+
+    // Audit Finding 1: OmniBufOpaque.spliceFieldsIntoBitSet must not allocate 64 MiB BitSet for clean/unknown max field numbers
+    @Test
+    void auditFinding1_spliceFieldsBitSetDoesNotAmplifyMemoryOnMaxFieldNumber() {
+        int maxFieldNum = WireType.MAX_FIELD_NUMBER; // 536_870_911 (9-byte tag)
+        OmniBufEncoder enc = new OmniBufEncoder();
+        enc.writeUint32(maxFieldNum, 42);
+        enc.writeUint32(70, 1);
+        byte[] packet = enc.toByteArray();
+
+        BitSet dirty = new BitSet();
+        dirty.set(70);
+        dirty.set(71);
+
+        byte[] spliced = null;
+        for (int i = 0; i < 16; i++) {
+            spliced = OmniBufOpaque.spliceFields(
+                packet,
+                0,
+                packet.length,
+                dirty,
+                71,
+                (out, fnum) -> {
+                    if (fnum == 70) {
+                        out.writeUint32(70, 2);
+                    } else if (fnum == 71) {
+                        out.writeUint32(71, 3);
+                    }
+                },
+                null
+            );
+        }
+
+        assertNotNull(spliced);
+        assertEquals(42, OmniBufOpaque.readUint32(spliced, 0, spliced.length, maxFieldNum));
+        assertEquals(2, OmniBufOpaque.readUint32(spliced, 0, spliced.length, 70));
+        assertEquals(3, OmniBufOpaque.readUint32(spliced, 0, spliced.length, 71));
+    }
+
+    // Audit Finding 2: Unpaired high surrogate at 2048-char chunk boundary must throw, never silently drop
+    @Test
+    void auditFinding2_writeLargeStringStreamedRejectsUnpairedHighSurrogateAt2048Boundary() {
+        String prefix2047 = "a".repeat(2047);
+
+        // Unpaired high surrogate at index 2047 followed by non-low-surrogate 'b' at index 2048
+        String unpairedAtBoundary = prefix2047 + "\uD800b";
+        OmniBufEncoder enc1 = new OmniBufEncoder();
+        assertThrows(OmniBufException.class, () -> enc1.writeString(1, unpairedAtBoundary));
+
+        // Unpaired high surrogate at exact end of 2048-char chunk
+        String unpairedAtEnd = prefix2047 + "\uD800";
+        OmniBufEncoder enc2 = new OmniBufEncoder();
+        assertThrows(OmniBufException.class, () -> enc2.writeString(1, unpairedAtEnd));
+
+        // Valid surrogate pair straddling the 2048-char boundary (2047 + 2048) must round-trip cleanly
+        String validPairAtBoundary = prefix2047 + "\uD83D\uDE00z";
+        OmniBufEncoder enc3 = new OmniBufEncoder();
+        enc3.writeString(1, validPairAtBoundary);
+        byte[] pkt = enc3.toByteArray();
+        assertEquals(validPairAtBoundary, OmniBufOpaque.readString(pkt, 0, pkt.length, 1));
+    }
+
+    // Audit Finding 3: Accumulated maxCollectionElements enforced across concatenated segments in OmniBufOpaque & SchemaMeta
+    @Test
+    void auditFinding3_accumulatedMaxCollectionElementsEnforcedAcrossConcatenatedSegments() {
+        // 1) OmniBufOpaque concatenated WireArray segments (3 + 3 = 6 elements)
+        OmniBufEncoder arrEnc = new OmniBufEncoder();
+        arrEnc.writeUint32List(1, List.of(10, 20, 30));
+        arrEnc.writeUint32List(1, List.of(40, 50, 60));
+        arrEnc.writeStringList(2, List.of("a", "b", "c"));
+        arrEnc.writeStringList(2, List.of("d", "e", "f"));
+        arrEnc.writeFixed32List(3, WireType.WIRE_FIXED32, List.of(1, 2, 3));
+        arrEnc.writeFixed32List(3, WireType.WIRE_FIXED32, List.of(4, 5, 6));
+        byte[] arrPkt = arrEnc.toByteArray();
+
+        assertThrows(OmniBufException.class, () -> OmniBufOpaque.readUint32List(arrPkt, 0, arrPkt.length, 1, 5));
+        assertEquals(List.of(10, 20, 30, 40, 50, 60), OmniBufOpaque.readUint32List(arrPkt, 0, arrPkt.length, 1, 6));
+        assertThrows(OmniBufException.class, () -> OmniBufOpaque.readStringList(arrPkt, 0, arrPkt.length, 2, 5));
+        assertEquals(List.of("a", "b", "c", "d", "e", "f"), OmniBufOpaque.readStringList(arrPkt, 0, arrPkt.length, 2, 6));
+        assertThrows(OmniBufException.class, () -> OmniBufOpaque.readFixed32List(arrPkt, 0, arrPkt.length, 3, 5));
+        assertEquals(List.of(1, 2, 3, 4, 5, 6), OmniBufOpaque.readFixed32List(arrPkt, 0, arrPkt.length, 3, 6));
+
+        // 2) OmniBufOpaque concatenated WireMap segments (2 + 2 = 4 distinct keys)
+        OmniBufEncoder mapEnc = new OmniBufEncoder();
+        mapEnc.writeMapStringUint64(4, Map.of("k1", 1L, "k2", 2L), true);
+        mapEnc.writeMapStringUint64(4, Map.of("k3", 3L, "k4", 4L), true);
+        // Overlapping keys across segments (2 + 2 = 2 distinct keys)
+        mapEnc.writeMapStringUint64(5, Map.of("dup1", 1L, "dup2", 2L), true);
+        mapEnc.writeMapStringUint64(5, Map.of("dup1", 10L, "dup2", 20L), true);
+        byte[] mapPkt = mapEnc.toByteArray();
+
+        assertThrows(OmniBufException.class, () -> OmniBufOpaque.readMapStringUint64(mapPkt, 0, mapPkt.length, 4, 3));
+        assertEquals(
+            Map.of("k1", 1L, "k2", 2L, "k3", 3L, "k4", 4L),
+            OmniBufOpaque.readMapStringUint64(mapPkt, 0, mapPkt.length, 4, 4)
+        );
+        assertEquals(
+            Map.of("dup1", 10L, "dup2", 20L),
+            OmniBufOpaque.readMapStringUint64(mapPkt, 0, mapPkt.length, 5, 2)
+        );
+
+        assertThrows(
+            OmniBufException.class,
+            () -> OmniBufOpaque.readMap(
+                mapPkt, 0, mapPkt.length, 4,
+                WireType.WIRE_STRING, WireType.WIRE_UINT,
+                OmniBufDecoder::readString, OmniBufDecoder::readVarint, 3
+            )
+        );
+        assertEquals(
+            Map.of("k1", 1L, "k2", 2L, "k3", 3L, "k4", 4L),
+            OmniBufOpaque.readMap(
+                mapPkt, 0, mapPkt.length, 4,
+                WireType.WIRE_STRING, WireType.WIRE_UINT,
+                OmniBufDecoder::readString, OmniBufDecoder::readVarint, 4
+            )
+        );
+
+        // 3) SchemaMeta concatenated field #2 (fields) and field #3 (children) maps
+        OmniBufEncoder schemaFieldsEnc = new OmniBufEncoder();
+        schemaFieldsEnc.beginTypedMap(2, WireType.WIRE_UINT, WireType.WIRE_STRING, 2);
+        schemaFieldsEnc.writeVarint(1);
+        schemaFieldsEnc.writeStringElement("a");
+        schemaFieldsEnc.writeVarint(2);
+        schemaFieldsEnc.writeStringElement("b");
+        schemaFieldsEnc.endTypedMap();
+        schemaFieldsEnc.beginTypedMap(2, WireType.WIRE_UINT, WireType.WIRE_STRING, 2);
+        schemaFieldsEnc.writeVarint(3);
+        schemaFieldsEnc.writeStringElement("c");
+        schemaFieldsEnc.writeVarint(4);
+        schemaFieldsEnc.writeStringElement("d");
+        schemaFieldsEnc.endTypedMap();
+        byte[] schemaFieldsBody = schemaFieldsEnc.toByteArray();
+
+        assertThrows(
+            OmniBufException.class,
+            () -> SchemaMeta.decode(schemaFieldsBody, 0, schemaFieldsBody.length, 1, 32, 3)
+        );
+        SchemaMeta decodedFields = SchemaMeta.decode(schemaFieldsBody, 0, schemaFieldsBody.length, 1, 32, 4);
+        assertEquals(Map.of(1, "a", 2, "b", 3, "c", 4, "d"), decodedFields.fields());
+
+        OmniBufEncoder schemaChildrenEnc = new OmniBufEncoder();
+        schemaChildrenEnc.beginTypedMap(3, WireType.WIRE_UINT, WireType.WIRE_SUB_MSG, 2);
+        schemaChildrenEnc.writeVarint(1);
+        schemaChildrenEnc.beginInlineSubMsg();
+        schemaChildrenEnc.writeString(1, "Child1");
+        schemaChildrenEnc.endInlineSubMsg();
+        schemaChildrenEnc.writeVarint(2);
+        schemaChildrenEnc.beginInlineSubMsg();
+        schemaChildrenEnc.writeString(1, "Child2");
+        schemaChildrenEnc.endInlineSubMsg();
+        schemaChildrenEnc.endTypedMap();
+        schemaChildrenEnc.beginTypedMap(3, WireType.WIRE_UINT, WireType.WIRE_SUB_MSG, 2);
+        schemaChildrenEnc.writeVarint(3);
+        schemaChildrenEnc.beginInlineSubMsg();
+        schemaChildrenEnc.writeString(1, "Child3");
+        schemaChildrenEnc.endInlineSubMsg();
+        schemaChildrenEnc.writeVarint(4);
+        schemaChildrenEnc.beginInlineSubMsg();
+        schemaChildrenEnc.writeString(1, "Child4");
+        schemaChildrenEnc.endInlineSubMsg();
+        schemaChildrenEnc.endTypedMap();
+        byte[] schemaChildrenBody = schemaChildrenEnc.toByteArray();
+
+        assertThrows(
+            OmniBufException.class,
+            () -> SchemaMeta.decode(schemaChildrenBody, 0, schemaChildrenBody.length, 1, 32, 3)
+        );
+        SchemaMeta decodedChildren = SchemaMeta.decode(schemaChildrenBody, 0, schemaChildrenBody.length, 1, 32, 4);
+        assertEquals(4, decodedChildren.children().size());
+    }
+
+    // Audit Finding 4: Utf8Validator overflow-safe bounds checks
+    @Test
+    void auditFinding4_utf8ValidatorHandlesTruncatedMultiByteSequencesCleanly() {
+        // 8-byte ASCII prefix followed by truncated 3-byte and 4-byte UTF-8 sequences
+        byte[] trunc3 = new byte[] {'a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', (byte) 0xE2, (byte) 0x82};
+        byte[] valid3 = new byte[] {'a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', (byte) 0xE2, (byte) 0x82, (byte) 0xAC};
+        byte[] trunc4 = new byte[] {'a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', (byte) 0xF0, (byte) 0x9F, (byte) 0x98};
+        byte[] valid4 = new byte[] {
+            'a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', (byte) 0xF0, (byte) 0x9F, (byte) 0x98, (byte) 0x80
+        };
+
+        assertFalse(Utf8Validator.isValidUtf8(trunc3, 0, trunc3.length));
+        assertTrue(Utf8Validator.isValidUtf8(valid3, 0, valid3.length));
+        assertFalse(Utf8Validator.isValidUtf8(trunc4, 0, trunc4.length));
+        assertTrue(Utf8Validator.isValidUtf8(valid4, 0, valid4.length));
+    }
+
+    // Audit Finding 5: OmniBufDecoder.readVarint4Or9 rejects 1-byte and 2-byte prefix-varints with bit 2 set
+    @Test
+    void auditFinding5_readVarint4Or9RequiresExact4ByteOr9BytePrefix() {
+        // 1-byte varint with bit 2 set (b0 = 0x05 -> bits 0..2 = 101)
+        byte[] oneByte = new byte[] {0x05, 0x00, 0x00, 0x00};
+        assertThrows(OmniBufException.class, () -> OmniBufDecoder.readVarint4Or9(oneByte, 0, oneByte.length));
+
+        // 2-byte varint with bit 2 set (b0 = 0x06 -> bits 0..2 = 110)
+        byte[] twoByte = new byte[] {0x06, 0x01, 0x00, 0x00};
+        assertThrows(OmniBufException.class, () -> OmniBufDecoder.readVarint4Or9(twoByte, 0, twoByte.length));
+
+        // Valid 4-byte varint: value = 16_384 -> (16_384 << 3) | 4
+        OmniBufEncoder enc4 = new OmniBufEncoder();
+        enc4.writeVarint(16_384L);
+        byte[] fourByte = enc4.toByteArray();
+        assertEquals(4, fourByte.length);
+        assertEquals(16_384L, OmniBufDecoder.readVarint4Or9(fourByte, 0, fourByte.length));
+
+        // Valid 9-byte varint: value = 1L << 40
+        OmniBufEncoder enc9 = new OmniBufEncoder();
+        enc9.writeVarint(1L << 40);
+        byte[] nineByte = enc9.toByteArray();
+        assertEquals(9, nineByte.length);
+        assertEquals(1L << 40, OmniBufDecoder.readVarint4Or9(nineByte, 0, nineByte.length));
     }
 }

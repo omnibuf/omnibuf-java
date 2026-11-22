@@ -259,7 +259,13 @@ public final class SchemaMeta {
                         p += kd.bytesRead();
                         OmniBufDecoder.Slice ns = OmniBufDecoder.readLengthSlice(data, p, mapEnd, 0);
                         String fieldName = Utf8Validator.decodeStrict(data, ns.offset(), ns.length());
-                        fields.put((int) k64, fieldName);
+                        int key = (int) k64;
+                        if (!fields.containsKey(key) && fields.size() >= maxCollectionElements) {
+                            throw new OmniBufException(
+                                "omnibuf: accumulated WireMap count exceeds maxCollectionElements"
+                            );
+                        }
+                        fields.put(key, fieldName);
                         p = ns.end();
                     }
                     if (p != mapEnd) {
@@ -312,6 +318,11 @@ public final class SchemaMeta {
                         } else {
                             for (Map.Entry<Integer, SchemaMeta> entry : mapChildren.entrySet()) {
                                 int key = entry.getKey();
+                                if (!children.containsKey(key) && children.size() >= maxCollectionElements) {
+                                    throw new OmniBufException(
+                                        "omnibuf: accumulated WireMap count exceeds maxCollectionElements"
+                                    );
+                                }
                                 children.put(key, merge(children.get(key), entry.getValue()));
                             }
                         }

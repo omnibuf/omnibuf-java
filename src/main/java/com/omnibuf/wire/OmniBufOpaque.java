@@ -1192,7 +1192,33 @@ public final class OmniBufOpaque {
         );
     }
 
+    private static void checkMaxCollectionElements(int maxCollectionElements) {
+        if (maxCollectionElements < 0) {
+            throw new OmniBufException(
+                "omnibuf: maxCollectionElements must be non-negative: " + maxCollectionElements
+            );
+        }
+    }
+
+    private static void checkArrayAccumulatedCount(int currentSize, int nextCount, int maxCollectionElements) {
+        if ((long) currentSize + nextCount > maxCollectionElements) {
+            throw new OmniBufException("omnibuf: accumulated WireArray count exceeds maxCollectionElements");
+        }
+    }
+
+    private static <K> void checkMapAccumulatedEntry(Map<K, ?> out, K key, int maxCollectionElements) {
+        if (!out.containsKey(key) && out.size() >= maxCollectionElements) {
+            throw new OmniBufException("omnibuf: accumulated WireMap count exceeds maxCollectionElements");
+        }
+    }
+
     public static List<String> readStringList(byte[] packet, int offset, int length, int fieldNum) {
+        return readStringList(packet, offset, length, fieldNum, UnmarshalOptions.DEFAULT_MAX_COLLECTION_ELEMENTS);
+    }
+
+    public static List<String> readStringList(
+            byte[] packet, int offset, int length, int fieldNum, int maxCollectionElements) {
+        checkMaxCollectionElements(maxCollectionElements);
         List<OmniBufDecoder.Slice> bodies =
             collectContainerBodies(packet, offset, length, fieldNum, WireType.WIRE_ARRAY);
         if (bodies.isEmpty()) {
@@ -1201,10 +1227,11 @@ public final class OmniBufOpaque {
         List<String> out = new ArrayList<>();
         for (OmniBufDecoder.Slice body : bodies) {
             OmniBufDecoder.ArrayHeader hdr =
-                OmniBufDecoder.parseArrayHeader(packet, body.offset(), body.end());
+                OmniBufDecoder.parseArrayHeader(packet, body.offset(), body.end(), maxCollectionElements);
             if (hdr.elemWireType() != WireType.WIRE_STRING) {
                 throw arrayElemMismatch(WireType.WIRE_STRING, hdr.elemWireType());
             }
+            checkArrayAccumulatedCount(out.size(), hdr.count(), maxCollectionElements);
             int p = hdr.payloadStart();
             int end = hdr.payloadEnd();
             for (int i = 0; i < hdr.count(); i++) {
@@ -1222,6 +1249,12 @@ public final class OmniBufOpaque {
     }
 
     public static List<byte[]> readBytesList(byte[] packet, int offset, int length, int fieldNum) {
+        return readBytesList(packet, offset, length, fieldNum, UnmarshalOptions.DEFAULT_MAX_COLLECTION_ELEMENTS);
+    }
+
+    public static List<byte[]> readBytesList(
+            byte[] packet, int offset, int length, int fieldNum, int maxCollectionElements) {
+        checkMaxCollectionElements(maxCollectionElements);
         List<OmniBufDecoder.Slice> bodies =
             collectContainerBodies(packet, offset, length, fieldNum, WireType.WIRE_ARRAY);
         if (bodies.isEmpty()) {
@@ -1230,10 +1263,11 @@ public final class OmniBufOpaque {
         List<byte[]> out = new ArrayList<>();
         for (OmniBufDecoder.Slice body : bodies) {
             OmniBufDecoder.ArrayHeader hdr =
-                OmniBufDecoder.parseArrayHeader(packet, body.offset(), body.end());
+                OmniBufDecoder.parseArrayHeader(packet, body.offset(), body.end(), maxCollectionElements);
             if (hdr.elemWireType() != WireType.WIRE_BYTES) {
                 throw arrayElemMismatch(WireType.WIRE_BYTES, hdr.elemWireType());
             }
+            checkArrayAccumulatedCount(out.size(), hdr.count(), maxCollectionElements);
             int p = hdr.payloadStart();
             int end = hdr.payloadEnd();
             for (int i = 0; i < hdr.count(); i++) {
@@ -1251,6 +1285,12 @@ public final class OmniBufOpaque {
     }
 
     public static List<Integer> readUint32List(byte[] packet, int offset, int length, int fieldNum) {
+        return readUint32List(packet, offset, length, fieldNum, UnmarshalOptions.DEFAULT_MAX_COLLECTION_ELEMENTS);
+    }
+
+    public static List<Integer> readUint32List(
+            byte[] packet, int offset, int length, int fieldNum, int maxCollectionElements) {
+        checkMaxCollectionElements(maxCollectionElements);
         List<OmniBufDecoder.Slice> bodies =
             collectContainerBodies(packet, offset, length, fieldNum, WireType.WIRE_ARRAY);
         if (bodies.isEmpty()) {
@@ -1259,10 +1299,11 @@ public final class OmniBufOpaque {
         List<Integer> out = new ArrayList<>();
         for (OmniBufDecoder.Slice body : bodies) {
             OmniBufDecoder.ArrayHeader hdr =
-                OmniBufDecoder.parseArrayHeader(packet, body.offset(), body.end());
+                OmniBufDecoder.parseArrayHeader(packet, body.offset(), body.end(), maxCollectionElements);
             if (hdr.elemWireType() != WireType.WIRE_UINT) {
                 throw arrayElemMismatch(WireType.WIRE_UINT, hdr.elemWireType());
             }
+            checkArrayAccumulatedCount(out.size(), hdr.count(), maxCollectionElements);
             int p = hdr.payloadStart();
             int end = hdr.payloadEnd();
             for (int i = 0; i < hdr.count(); i++) {
@@ -1278,6 +1319,12 @@ public final class OmniBufOpaque {
     }
 
     public static List<Long> readUint64List(byte[] packet, int offset, int length, int fieldNum) {
+        return readUint64List(packet, offset, length, fieldNum, UnmarshalOptions.DEFAULT_MAX_COLLECTION_ELEMENTS);
+    }
+
+    public static List<Long> readUint64List(
+            byte[] packet, int offset, int length, int fieldNum, int maxCollectionElements) {
+        checkMaxCollectionElements(maxCollectionElements);
         List<OmniBufDecoder.Slice> bodies =
             collectContainerBodies(packet, offset, length, fieldNum, WireType.WIRE_ARRAY);
         if (bodies.isEmpty()) {
@@ -1286,10 +1333,11 @@ public final class OmniBufOpaque {
         List<Long> out = new ArrayList<>();
         for (OmniBufDecoder.Slice body : bodies) {
             OmniBufDecoder.ArrayHeader hdr =
-                OmniBufDecoder.parseArrayHeader(packet, body.offset(), body.end());
+                OmniBufDecoder.parseArrayHeader(packet, body.offset(), body.end(), maxCollectionElements);
             if (hdr.elemWireType() != WireType.WIRE_UINT) {
                 throw arrayElemMismatch(WireType.WIRE_UINT, hdr.elemWireType());
             }
+            checkArrayAccumulatedCount(out.size(), hdr.count(), maxCollectionElements);
             int p = hdr.payloadStart();
             int end = hdr.payloadEnd();
             for (int i = 0; i < hdr.count(); i++) {
@@ -1305,6 +1353,12 @@ public final class OmniBufOpaque {
     }
 
     public static List<Integer> readSint32List(byte[] packet, int offset, int length, int fieldNum) {
+        return readSint32List(packet, offset, length, fieldNum, UnmarshalOptions.DEFAULT_MAX_COLLECTION_ELEMENTS);
+    }
+
+    public static List<Integer> readSint32List(
+            byte[] packet, int offset, int length, int fieldNum, int maxCollectionElements) {
+        checkMaxCollectionElements(maxCollectionElements);
         List<OmniBufDecoder.Slice> bodies =
             collectContainerBodies(packet, offset, length, fieldNum, WireType.WIRE_ARRAY);
         if (bodies.isEmpty()) {
@@ -1313,10 +1367,11 @@ public final class OmniBufOpaque {
         List<Integer> out = new ArrayList<>();
         for (OmniBufDecoder.Slice body : bodies) {
             OmniBufDecoder.ArrayHeader hdr =
-                OmniBufDecoder.parseArrayHeader(packet, body.offset(), body.end());
+                OmniBufDecoder.parseArrayHeader(packet, body.offset(), body.end(), maxCollectionElements);
             if (hdr.elemWireType() != WireType.WIRE_SINT) {
                 throw arrayElemMismatch(WireType.WIRE_SINT, hdr.elemWireType());
             }
+            checkArrayAccumulatedCount(out.size(), hdr.count(), maxCollectionElements);
             int p = hdr.payloadStart();
             int end = hdr.payloadEnd();
             for (int i = 0; i < hdr.count(); i++) {
@@ -1332,6 +1387,12 @@ public final class OmniBufOpaque {
     }
 
     public static List<Long> readSint64List(byte[] packet, int offset, int length, int fieldNum) {
+        return readSint64List(packet, offset, length, fieldNum, UnmarshalOptions.DEFAULT_MAX_COLLECTION_ELEMENTS);
+    }
+
+    public static List<Long> readSint64List(
+            byte[] packet, int offset, int length, int fieldNum, int maxCollectionElements) {
+        checkMaxCollectionElements(maxCollectionElements);
         List<OmniBufDecoder.Slice> bodies =
             collectContainerBodies(packet, offset, length, fieldNum, WireType.WIRE_ARRAY);
         if (bodies.isEmpty()) {
@@ -1340,10 +1401,11 @@ public final class OmniBufOpaque {
         List<Long> out = new ArrayList<>();
         for (OmniBufDecoder.Slice body : bodies) {
             OmniBufDecoder.ArrayHeader hdr =
-                OmniBufDecoder.parseArrayHeader(packet, body.offset(), body.end());
+                OmniBufDecoder.parseArrayHeader(packet, body.offset(), body.end(), maxCollectionElements);
             if (hdr.elemWireType() != WireType.WIRE_SINT) {
                 throw arrayElemMismatch(WireType.WIRE_SINT, hdr.elemWireType());
             }
+            checkArrayAccumulatedCount(out.size(), hdr.count(), maxCollectionElements);
             int p = hdr.payloadStart();
             int end = hdr.payloadEnd();
             for (int i = 0; i < hdr.count(); i++) {
@@ -1359,6 +1421,12 @@ public final class OmniBufOpaque {
     }
 
     public static List<Boolean> readBoolList(byte[] packet, int offset, int length, int fieldNum) {
+        return readBoolList(packet, offset, length, fieldNum, UnmarshalOptions.DEFAULT_MAX_COLLECTION_ELEMENTS);
+    }
+
+    public static List<Boolean> readBoolList(
+            byte[] packet, int offset, int length, int fieldNum, int maxCollectionElements) {
+        checkMaxCollectionElements(maxCollectionElements);
         List<OmniBufDecoder.Slice> bodies =
             collectContainerBodies(packet, offset, length, fieldNum, WireType.WIRE_ARRAY);
         if (bodies.isEmpty()) {
@@ -1367,10 +1435,11 @@ public final class OmniBufOpaque {
         List<Boolean> out = new ArrayList<>();
         for (OmniBufDecoder.Slice body : bodies) {
             OmniBufDecoder.ArrayHeader hdr =
-                OmniBufDecoder.parseArrayHeader(packet, body.offset(), body.end());
+                OmniBufDecoder.parseArrayHeader(packet, body.offset(), body.end(), maxCollectionElements);
             if (hdr.elemWireType() != WireType.WIRE_BOOL_FALSE) {
                 throw arrayElemMismatch(WireType.WIRE_BOOL_FALSE, hdr.elemWireType());
             }
+            checkArrayAccumulatedCount(out.size(), hdr.count(), maxCollectionElements);
             int p = hdr.payloadStart();
             for (int i = 0; i < hdr.count(); i++) {
                 int b = packet[p + i] & 0xFF;
@@ -1384,15 +1453,30 @@ public final class OmniBufOpaque {
     }
 
     public static List<Integer> readFixed32List(byte[] packet, int offset, int length, int fieldNum) {
-        return readFixed32ListWithWireType(packet, offset, length, fieldNum, WireType.WIRE_FIXED32);
+        return readFixed32List(packet, offset, length, fieldNum, UnmarshalOptions.DEFAULT_MAX_COLLECTION_ELEMENTS);
+    }
+
+    public static List<Integer> readFixed32List(
+            byte[] packet, int offset, int length, int fieldNum, int maxCollectionElements) {
+        return readFixed32ListWithWireType(
+            packet, offset, length, fieldNum, WireType.WIRE_FIXED32, maxCollectionElements
+        );
     }
 
     public static List<Integer> readSfixed32List(byte[] packet, int offset, int length, int fieldNum) {
-        return readFixed32ListWithWireType(packet, offset, length, fieldNum, WireType.WIRE_SFIXED32);
+        return readSfixed32List(packet, offset, length, fieldNum, UnmarshalOptions.DEFAULT_MAX_COLLECTION_ELEMENTS);
+    }
+
+    public static List<Integer> readSfixed32List(
+            byte[] packet, int offset, int length, int fieldNum, int maxCollectionElements) {
+        return readFixed32ListWithWireType(
+            packet, offset, length, fieldNum, WireType.WIRE_SFIXED32, maxCollectionElements
+        );
     }
 
     private static List<Integer> readFixed32ListWithWireType(
-            byte[] packet, int offset, int length, int fieldNum, int expectedElemWT) {
+            byte[] packet, int offset, int length, int fieldNum, int expectedElemWT, int maxCollectionElements) {
+        checkMaxCollectionElements(maxCollectionElements);
         List<OmniBufDecoder.Slice> bodies =
             collectContainerBodies(packet, offset, length, fieldNum, WireType.WIRE_ARRAY);
         if (bodies.isEmpty()) {
@@ -1401,10 +1485,11 @@ public final class OmniBufOpaque {
         List<Integer> out = new ArrayList<>();
         for (OmniBufDecoder.Slice body : bodies) {
             OmniBufDecoder.ArrayHeader hdr =
-                OmniBufDecoder.parseArrayHeader(packet, body.offset(), body.end());
+                OmniBufDecoder.parseArrayHeader(packet, body.offset(), body.end(), maxCollectionElements);
             if (hdr.elemWireType() != expectedElemWT) {
                 throw arrayElemMismatch(expectedElemWT, hdr.elemWireType());
             }
+            checkArrayAccumulatedCount(out.size(), hdr.count(), maxCollectionElements);
             int p = hdr.payloadStart();
             for (int i = 0; i < hdr.count(); i++) {
                 out.add(PrefixVarint.getIntLE(packet, p + i * 4));
@@ -1414,15 +1499,30 @@ public final class OmniBufOpaque {
     }
 
     public static List<Long> readFixed64List(byte[] packet, int offset, int length, int fieldNum) {
-        return readFixed64ListWithWireType(packet, offset, length, fieldNum, WireType.WIRE_FIXED64);
+        return readFixed64List(packet, offset, length, fieldNum, UnmarshalOptions.DEFAULT_MAX_COLLECTION_ELEMENTS);
+    }
+
+    public static List<Long> readFixed64List(
+            byte[] packet, int offset, int length, int fieldNum, int maxCollectionElements) {
+        return readFixed64ListWithWireType(
+            packet, offset, length, fieldNum, WireType.WIRE_FIXED64, maxCollectionElements
+        );
     }
 
     public static List<Long> readSfixed64List(byte[] packet, int offset, int length, int fieldNum) {
-        return readFixed64ListWithWireType(packet, offset, length, fieldNum, WireType.WIRE_SFIXED64);
+        return readSfixed64List(packet, offset, length, fieldNum, UnmarshalOptions.DEFAULT_MAX_COLLECTION_ELEMENTS);
+    }
+
+    public static List<Long> readSfixed64List(
+            byte[] packet, int offset, int length, int fieldNum, int maxCollectionElements) {
+        return readFixed64ListWithWireType(
+            packet, offset, length, fieldNum, WireType.WIRE_SFIXED64, maxCollectionElements
+        );
     }
 
     private static List<Long> readFixed64ListWithWireType(
-            byte[] packet, int offset, int length, int fieldNum, int expectedElemWT) {
+            byte[] packet, int offset, int length, int fieldNum, int expectedElemWT, int maxCollectionElements) {
+        checkMaxCollectionElements(maxCollectionElements);
         List<OmniBufDecoder.Slice> bodies =
             collectContainerBodies(packet, offset, length, fieldNum, WireType.WIRE_ARRAY);
         if (bodies.isEmpty()) {
@@ -1431,10 +1531,11 @@ public final class OmniBufOpaque {
         List<Long> out = new ArrayList<>();
         for (OmniBufDecoder.Slice body : bodies) {
             OmniBufDecoder.ArrayHeader hdr =
-                OmniBufDecoder.parseArrayHeader(packet, body.offset(), body.end());
+                OmniBufDecoder.parseArrayHeader(packet, body.offset(), body.end(), maxCollectionElements);
             if (hdr.elemWireType() != expectedElemWT) {
                 throw arrayElemMismatch(expectedElemWT, hdr.elemWireType());
             }
+            checkArrayAccumulatedCount(out.size(), hdr.count(), maxCollectionElements);
             int p = hdr.payloadStart();
             for (int i = 0; i < hdr.count(); i++) {
                 out.add(PrefixVarint.getLongLE(packet, p + i * 8));
@@ -1444,6 +1545,12 @@ public final class OmniBufOpaque {
     }
 
     public static List<Float> readFloat32List(byte[] packet, int offset, int length, int fieldNum) {
+        return readFloat32List(packet, offset, length, fieldNum, UnmarshalOptions.DEFAULT_MAX_COLLECTION_ELEMENTS);
+    }
+
+    public static List<Float> readFloat32List(
+            byte[] packet, int offset, int length, int fieldNum, int maxCollectionElements) {
+        checkMaxCollectionElements(maxCollectionElements);
         List<OmniBufDecoder.Slice> bodies =
             collectContainerBodies(packet, offset, length, fieldNum, WireType.WIRE_ARRAY);
         if (bodies.isEmpty()) {
@@ -1452,10 +1559,11 @@ public final class OmniBufOpaque {
         List<Float> out = new ArrayList<>();
         for (OmniBufDecoder.Slice body : bodies) {
             OmniBufDecoder.ArrayHeader hdr =
-                OmniBufDecoder.parseArrayHeader(packet, body.offset(), body.end());
+                OmniBufDecoder.parseArrayHeader(packet, body.offset(), body.end(), maxCollectionElements);
             if (hdr.elemWireType() != WireType.WIRE_FLOAT32) {
                 throw arrayElemMismatch(WireType.WIRE_FLOAT32, hdr.elemWireType());
             }
+            checkArrayAccumulatedCount(out.size(), hdr.count(), maxCollectionElements);
             int p = hdr.payloadStart();
             for (int i = 0; i < hdr.count(); i++) {
                 out.add(Float.intBitsToFloat(PrefixVarint.getIntLE(packet, p + i * 4)));
@@ -1465,6 +1573,12 @@ public final class OmniBufOpaque {
     }
 
     public static List<Double> readFloat64List(byte[] packet, int offset, int length, int fieldNum) {
+        return readFloat64List(packet, offset, length, fieldNum, UnmarshalOptions.DEFAULT_MAX_COLLECTION_ELEMENTS);
+    }
+
+    public static List<Double> readFloat64List(
+            byte[] packet, int offset, int length, int fieldNum, int maxCollectionElements) {
+        checkMaxCollectionElements(maxCollectionElements);
         List<OmniBufDecoder.Slice> bodies =
             collectContainerBodies(packet, offset, length, fieldNum, WireType.WIRE_ARRAY);
         if (bodies.isEmpty()) {
@@ -1473,10 +1587,11 @@ public final class OmniBufOpaque {
         List<Double> out = new ArrayList<>();
         for (OmniBufDecoder.Slice body : bodies) {
             OmniBufDecoder.ArrayHeader hdr =
-                OmniBufDecoder.parseArrayHeader(packet, body.offset(), body.end());
+                OmniBufDecoder.parseArrayHeader(packet, body.offset(), body.end(), maxCollectionElements);
             if (hdr.elemWireType() != WireType.WIRE_FLOAT64) {
                 throw arrayElemMismatch(WireType.WIRE_FLOAT64, hdr.elemWireType());
             }
+            checkArrayAccumulatedCount(out.size(), hdr.count(), maxCollectionElements);
             int p = hdr.payloadStart();
             for (int i = 0; i < hdr.count(); i++) {
                 out.add(Double.longBitsToDouble(PrefixVarint.getLongLE(packet, p + i * 8)));
@@ -1486,6 +1601,12 @@ public final class OmniBufOpaque {
     }
 
     public static List<PacketView> readSubMsgList(byte[] packet, int offset, int length, int fieldNum) {
+        return readSubMsgList(packet, offset, length, fieldNum, UnmarshalOptions.DEFAULT_MAX_COLLECTION_ELEMENTS);
+    }
+
+    public static List<PacketView> readSubMsgList(
+            byte[] packet, int offset, int length, int fieldNum, int maxCollectionElements) {
+        checkMaxCollectionElements(maxCollectionElements);
         List<OmniBufDecoder.Slice> bodies =
             collectContainerBodies(packet, offset, length, fieldNum, WireType.WIRE_ARRAY);
         if (bodies.isEmpty()) {
@@ -1494,10 +1615,11 @@ public final class OmniBufOpaque {
         List<PacketView> out = new ArrayList<>();
         for (OmniBufDecoder.Slice body : bodies) {
             OmniBufDecoder.ArrayHeader hdr =
-                OmniBufDecoder.parseArrayHeader(packet, body.offset(), body.end());
+                OmniBufDecoder.parseArrayHeader(packet, body.offset(), body.end(), maxCollectionElements);
             if (hdr.elemWireType() != WireType.WIRE_SUB_MSG) {
                 throw arrayElemMismatch(WireType.WIRE_SUB_MSG, hdr.elemWireType());
             }
+            checkArrayAccumulatedCount(out.size(), hdr.count(), maxCollectionElements);
             int p = hdr.payloadStart();
             int end = hdr.payloadEnd();
             for (int i = 0; i < hdr.count(); i++) {
@@ -1516,6 +1638,12 @@ public final class OmniBufOpaque {
 
     public static Map<String, Long> readMapStringUint64(
             byte[] packet, int offset, int length, int fieldNum) {
+        return readMapStringUint64(packet, offset, length, fieldNum, UnmarshalOptions.DEFAULT_MAX_COLLECTION_ELEMENTS);
+    }
+
+    public static Map<String, Long> readMapStringUint64(
+            byte[] packet, int offset, int length, int fieldNum, int maxCollectionElements) {
+        checkMaxCollectionElements(maxCollectionElements);
         List<OmniBufDecoder.Slice> bodies =
             collectContainerBodies(packet, offset, length, fieldNum, WireType.WIRE_MAP);
         if (bodies.isEmpty()) {
@@ -1524,7 +1652,7 @@ public final class OmniBufOpaque {
         Map<String, Long> out = new LinkedHashMap<>();
         for (OmniBufDecoder.Slice body : bodies) {
             OmniBufDecoder.MapHeader hdr =
-                OmniBufDecoder.parseMapHeader(packet, body.offset(), body.end());
+                OmniBufDecoder.parseMapHeader(packet, body.offset(), body.end(), maxCollectionElements);
             if (hdr.keyWireType() != WireType.WIRE_STRING || hdr.valWireType() != WireType.WIRE_UINT) {
                 throw mapTypeMismatch(WireType.WIRE_STRING, WireType.WIRE_UINT, hdr.keyWireType(), hdr.valWireType());
             }
@@ -1537,6 +1665,7 @@ public final class OmniBufOpaque {
                 String k = Utf8Validator.decodeStrictUnchecked(packet, kStart, kEnd - kStart);
                 p = kEnd;
                 PrefixVarint.Decoded vd = PrefixVarint.decode(packet, p, end);
+                checkMapAccumulatedEntry(out, k, maxCollectionElements);
                 out.put(k, vd.value());
                 p += vd.bytesRead();
             }
@@ -1560,6 +1689,35 @@ public final class OmniBufOpaque {
             int expectedValWT,
             OpaqueElementReader<K> keyReader,
             OpaqueElementReader<V> valReader) {
+        return readMap(
+            packet,
+            offset,
+            length,
+            fieldNum,
+            expectedKeyWT,
+            expectedValWT,
+            keyReader,
+            valReader,
+            UnmarshalOptions.DEFAULT_MAX_COLLECTION_ELEMENTS
+        );
+    }
+
+    /**
+     * Reads and merges all {@code WireMap} occurrences for {@code fieldNum} matching
+     * {@code expectedKeyWT -> expectedValWT}, enforcing {@code maxCollectionElements} across
+     * all merged map segments.
+     */
+    public static <K, V> Map<K, V> readMap(
+            byte[] packet,
+            int offset,
+            int length,
+            int fieldNum,
+            int expectedKeyWT,
+            int expectedValWT,
+            OpaqueElementReader<K> keyReader,
+            OpaqueElementReader<V> valReader,
+            int maxCollectionElements) {
+        checkMaxCollectionElements(maxCollectionElements);
         List<OmniBufDecoder.Slice> bodies =
             collectContainerBodies(packet, offset, length, fieldNum, WireType.WIRE_MAP);
         if (bodies.isEmpty()) {
@@ -1570,7 +1728,7 @@ public final class OmniBufOpaque {
         try {
             for (OmniBufDecoder.Slice body : bodies) {
                 OmniBufDecoder.MapHeader hdr =
-                    OmniBufDecoder.parseMapHeader(packet, body.offset(), body.end());
+                    OmniBufDecoder.parseMapHeader(packet, body.offset(), body.end(), maxCollectionElements);
                 if (hdr.keyWireType() != expectedKeyWT || hdr.valWireType() != expectedValWT) {
                     throw mapTypeMismatch(expectedKeyWT, expectedValWT, hdr.keyWireType(), hdr.valWireType());
                 }
@@ -1578,6 +1736,7 @@ public final class OmniBufOpaque {
                 for (int i = 0; i < hdr.count(); i++) {
                     K k = keyReader.read(dec);
                     V v = valReader.read(dec);
+                    checkMapAccumulatedEntry(out, k, maxCollectionElements);
                     out.put(k, v);
                 }
                 dec.endContainer(saved);
@@ -1826,8 +1985,6 @@ public final class OmniBufOpaque {
                     emitted.set(fnum);
                 }
                 cleanStart = fieldEnd;
-            } else if (fnum > 0) {
-                emitted.set(fnum);
             }
         }
 
