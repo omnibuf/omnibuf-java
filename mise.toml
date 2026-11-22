@@ -2,5 +2,5 @@
 java = "temurin-21"
 maven = "latest"
 just = "1.58.0"
-protobuf = "35.1"
+protobuf = "36.2"
 buf = "1.75.0"
