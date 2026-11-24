@@ -37,6 +37,31 @@ byte[] wire = OmniBufMapper.marshal(
 SensorReading decoded = OmniBufMapper.unmarshal(wire, SensorReading.class);
 ```
 
+## gRPC and Connect
+
+`com.omnibuf.grpc` and `com.omnibuf.connect` are separate detached packages. `io.grpc:grpc-api` is `provided`-scoped so core users do not pull gRPC transitively.
+
+```java
+import com.omnibuf.grpc.OmniBufGrpcMarshaller;
+import io.grpc.MethodDescriptor;
+
+MethodDescriptor<SensorReading, SensorReading> method =
+    MethodDescriptor.<SensorReading, SensorReading>newBuilder()
+        .setType(MethodDescriptor.MethodType.UNARY)
+        .setFullMethodName("telemetry.SensorService/Report")
+        .setRequestMarshaller(OmniBufGrpcMarshaller.forClass(SensorReading.class))
+        .setResponseMarshaller(OmniBufGrpcMarshaller.forClass(SensorReading.class))
+        .build();
+```
+
+```java
+import com.omnibuf.connect.OmniBufConnectCodec;
+
+OmniBufConnectCodec codec = OmniBufConnectCodec.compact(); // encodingName() -> "omnibuf"
+byte[] wire = codec.serialize(new SensorReading("rack-12-top", -45, true));
+SensorReading restored = codec.deserialize(wire, SensorReading.class);
+```
+
 ## Details
 
 - Requires Java 21+. Uses `VarHandle` little-endian access, `Integer.numberOfTrailingZeros` prefix-varints, and single-pass container backpatching.
