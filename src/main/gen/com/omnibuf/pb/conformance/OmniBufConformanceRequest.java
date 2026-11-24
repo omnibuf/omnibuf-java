@@ -124,4 +124,63 @@ public final class OmniBufConformanceRequest {
     public byte[] marshal(MarshalOptions options) {
         return ConformanceRequestOmniBuf.marshal(this, options);
     }
+
+    @Override
+    public boolean equals(Object obj) {
+        if (this == obj) {
+            return true;
+        }
+        if (!(obj instanceof OmniBufConformanceRequest other)) {
+            return false;
+        }
+        return java.util.Objects.equals(this.testName, other.testName)
+            && java.util.Objects.equals(this.messageType, other.messageType)
+            && this.tier == other.tier
+            && this.requestedOutputFormat == other.requestedOutputFormat
+            && java.util.Arrays.equals(this.omnibufPayload, other.omnibufPayload)
+            && java.util.Objects.equals(this.jsonPayload, other.jsonPayload)
+            && this.selfDescribing == other.selfDescribing
+            && this.testOpaqueSplice == other.testOpaqueSplice
+            && this.testOpaqueSpliceShrink == other.testOpaqueSpliceShrink;
+    }
+
+    @Override
+    public int hashCode() {
+        int result = 1;
+        result = 31 * result + java.util.Objects.hashCode(this.testName);
+        result = 31 * result + java.util.Objects.hashCode(this.messageType);
+        result = 31 * result + Integer.hashCode(this.tier);
+        result = 31 * result + Integer.hashCode(this.requestedOutputFormat);
+        result = 31 * result + java.util.Arrays.hashCode(this.omnibufPayload);
+        result = 31 * result + java.util.Objects.hashCode(this.jsonPayload);
+        result = 31 * result + Boolean.hashCode(this.selfDescribing);
+        result = 31 * result + Boolean.hashCode(this.testOpaqueSplice);
+        result = 31 * result + Boolean.hashCode(this.testOpaqueSpliceShrink);
+        return result;
+    }
+
+    @Override
+    public String toString() {
+        StringBuilder sb = new StringBuilder("OmniBufConformanceRequest{");
+        sb.append("testName=");
+        sb.append('\'').append(this.testName).append('\'');
+        sb.append(", messageType=");
+        sb.append('\'').append(this.messageType).append('\'');
+        sb.append(", tier=");
+        sb.append(this.tier);
+        sb.append(", requestedOutputFormat=");
+        sb.append(this.requestedOutputFormat);
+        sb.append(", omnibufPayload=");
+        sb.append(java.util.Arrays.toString(this.omnibufPayload));
+        sb.append(", jsonPayload=");
+        sb.append('\'').append(this.jsonPayload).append('\'');
+        sb.append(", selfDescribing=");
+        sb.append(this.selfDescribing);
+        sb.append(", testOpaqueSplice=");
+        sb.append(this.testOpaqueSplice);
+        sb.append(", testOpaqueSpliceShrink=");
+        sb.append(this.testOpaqueSpliceShrink);
+        sb.append('}');
+        return sb.toString();
+    }
 }

@@ -43,8 +43,13 @@ public final class OmniBufMapper {
     private static final int[] EMPTY_INTS = new int[0];
     private static final long[] EMPTY_LONGS = new long[0];
 
-    private static final ConcurrentHashMap<Class<?>, ClassCodec<?>> CODEC_CACHE =
-        new ConcurrentHashMap<>();
+    private static final ClassValue<ClassCodec<?>> CODEC_CACHE = new ClassValue<>() {
+        @Override
+        protected ClassCodec<?> computeValue(Class<?> type) {
+            Map<Class<?>, ClassCodec<?>> building = new HashMap<>();
+            return compileCodec(type, building);
+        }
+    };
 
     private OmniBufMapper() {}
 
@@ -124,21 +129,13 @@ public final class OmniBufMapper {
 
     @SuppressWarnings("unchecked")
     private static <T> ClassCodec<T> getCodec(Class<T> type) {
-        ClassCodec<?> existing = CODEC_CACHE.get(type);
-        if (existing != null) {
-            return (ClassCodec<T>) existing;
-        }
-        Map<Class<?>, ClassCodec<?>> building = new HashMap<>();
-        ClassCodec<T> built = compileCodec(type, building);
-        for (Map.Entry<Class<?>, ClassCodec<?>> entry : building.entrySet()) {
-            CODEC_CACHE.putIfAbsent(entry.getKey(), entry.getValue());
-        }
-        return (ClassCodec<T>) CODEC_CACHE.getOrDefault(type, built);
+        return (ClassCodec<T>) CODEC_CACHE.get(type);
     }
 
     private enum FieldCategory {
         INT_SCALAR,
         LONG_SCALAR,
+        UNSIGNED_LONG_SCALAR,
         BOOL_SCALAR,
         FLOAT_SCALAR,
         DOUBLE_SCALAR,
@@ -493,6 +490,7 @@ public final class OmniBufMapper {
             return switch (category) {
                 case INT_SCALAR -> 0;
                 case LONG_SCALAR -> 0L;
+                case UNSIGNED_LONG_SCALAR -> UnsignedLong.ZERO;
                 case BOOL_SCALAR -> Boolean.FALSE;
                 case FLOAT_SCALAR -> 0.0f;
                 case DOUBLE_SCALAR -> 0.0d;
@@ -573,6 +571,7 @@ public final class OmniBufMapper {
                 switch (slot.category) {
                     case INT_SCALAR -> args[compIdx] = decodeIntScalar(dec, wt);
                     case LONG_SCALAR -> args[compIdx] = decodeLongScalar(dec, wt);
+                    case UNSIGNED_LONG_SCALAR -> args[compIdx] = UnsignedLong.fromLongBits(decodeLongScalar(dec, wt));
                     case BOOL_SCALAR -> args[compIdx] = (wt == WireType.WIRE_BOOL_TRUE);
                     case FLOAT_SCALAR -> args[compIdx] = dec.readFloat32();
                     case DOUBLE_SCALAR -> args[compIdx] = dec.readFloat64();
@@ -867,6 +866,7 @@ public final class OmniBufMapper {
                 switch (slot.category) {
                     case INT_SCALAR -> slot.writeInt(target, 0);
                     case LONG_SCALAR -> slot.writeLong(target, 0L);
+                    case UNSIGNED_LONG_SCALAR -> slot.writeObject(target, UnsignedLong.ZERO);
                     case BOOL_SCALAR -> slot.writeBoolean(target, false);
                     case FLOAT_SCALAR -> slot.writeFloat(target, 0.0f);
                     case DOUBLE_SCALAR -> slot.writeDouble(target, 0.0d);
@@ -953,6 +953,15 @@ public final class OmniBufMapper {
                         case WireType.WIRE_FIXED64 -> enc.writeFixed64(fnum, v);
                         case WireType.WIRE_SFIXED64 -> enc.writeSfixed64(fnum, v);
                         default -> throw new OmniBufException("omnibuf: unsupported long wire type");
+                    }
+                }
+                case UNSIGNED_LONG_SCALAR -> {
+                    UnsignedLong ul = (UnsignedLong) slot.readObject(instance);
+                    long v = ul == null ? 0L : ul.longBits();
+                    switch (slot.wireType) {
+                        case WireType.WIRE_UINT -> enc.writeUint(fnum, v);
+                        case WireType.WIRE_FIXED64 -> enc.writeFixed64(fnum, v);
+                        default -> throw new OmniBufException("omnibuf: unsupported UnsignedLong wire type");
                     }
                 }
                 case BOOL_SCALAR -> enc.writeBool(fnum, slot.readBoolean(instance));
@@ -1071,6 +1080,7 @@ public final class OmniBufMapper {
                 switch (slot.category) {
                     case INT_SCALAR -> args[compIdx] = decodeIntScalar(dec, wt);
                     case LONG_SCALAR -> args[compIdx] = decodeLongScalar(dec, wt);
+                    case UNSIGNED_LONG_SCALAR -> args[compIdx] = UnsignedLong.fromLongBits(decodeLongScalar(dec, wt));
                     case BOOL_SCALAR -> args[compIdx] = (wt == WireType.WIRE_BOOL_TRUE);
                     case FLOAT_SCALAR -> args[compIdx] = dec.readFloat32();
                     case DOUBLE_SCALAR -> args[compIdx] = dec.readFloat64();
@@ -1196,6 +1206,7 @@ public final class OmniBufMapper {
                 switch (slot.category) {
                     case INT_SCALAR -> slot.writeInt(target, decodeIntScalar(dec, wt));
                     case LONG_SCALAR -> slot.writeLong(target, decodeLongScalar(dec, wt));
+                    case UNSIGNED_LONG_SCALAR -> slot.writeObject(target, UnsignedLong.fromLongBits(decodeLongScalar(dec, wt)));
                     case BOOL_SCALAR -> slot.writeBoolean(target, wt == WireType.WIRE_BOOL_TRUE);
                     case FLOAT_SCALAR -> slot.writeFloat(target, dec.readFloat32());
                     case DOUBLE_SCALAR -> slot.writeDouble(target, dec.readFloat64());
@@ -1380,6 +1391,14 @@ public final class OmniBufMapper {
             case WireType.WIRE_UINT -> {
                 if (elemClass == Integer.class) {
                     enc.writeUint32List(fnum, (List<Integer>) (List<?>) list);
+                } else if (elemClass == UnsignedLong.class) {
+                    int n = list == null ? 0 : list.size();
+                    int arrPos = enc.beginTypedArrayFast(fnum, WireType.WIRE_UINT, n);
+                    for (int i = 0; i < n; i++) {
+                        UnsignedLong ul = (UnsignedLong) list.get(i);
+                        enc.writeVarint(ul == null ? 0L : ul.longBits());
+                    }
+                    enc.endContainerAt(arrPos);
                 } else {
                     enc.writeUint64List(fnum, (List<Long>) (List<?>) list);
                 }
@@ -1394,8 +1413,19 @@ public final class OmniBufMapper {
             case WireType.WIRE_BOOL_FALSE -> enc.writeBoolList(fnum, (List<Boolean>) (List<?>) list);
             case WireType.WIRE_FIXED32, WireType.WIRE_SFIXED32 ->
                 enc.writeFixed32List(fnum, elemWT, (List<Integer>) (List<?>) list);
-            case WireType.WIRE_FIXED64, WireType.WIRE_SFIXED64 ->
-                enc.writeFixed64List(fnum, elemWT, (List<Long>) (List<?>) list);
+            case WireType.WIRE_FIXED64, WireType.WIRE_SFIXED64 -> {
+                if (elemClass == UnsignedLong.class) {
+                    int n = list == null ? 0 : list.size();
+                    int arrPos = enc.beginTypedArrayFast(fnum, elemWT, n);
+                    for (int i = 0; i < n; i++) {
+                        UnsignedLong ul = (UnsignedLong) list.get(i);
+                        enc.writeInlineFixed64(ul == null ? 0L : ul.longBits());
+                    }
+                    enc.endContainerAt(arrPos);
+                } else {
+                    enc.writeFixed64List(fnum, elemWT, (List<Long>) (List<?>) list);
+                }
+            }
             case WireType.WIRE_FLOAT32 -> enc.writeFloat32List(fnum, (List<Float>) (List<?>) list);
             case WireType.WIRE_FLOAT64 -> enc.writeFloat64List(fnum, (List<Double>) (List<?>) list);
             default -> {
@@ -1657,6 +1687,9 @@ public final class OmniBufMapper {
                 if (targetClass == Integer.class) {
                     yield Integer.valueOf(dec.readUint32());
                 }
+                if (targetClass == UnsignedLong.class) {
+                    yield UnsignedLong.fromLongBits(dec.readUint64());
+                }
                 yield Long.valueOf(dec.readUint64());
             }
             case WireType.WIRE_SINT -> {
@@ -1678,7 +1711,10 @@ public final class OmniBufMapper {
             case WireType.WIRE_BOOL_FALSE -> dec.readContainerBool();
             case WireType.WIRE_FIXED32, WireType.WIRE_SFIXED32 -> dec.readFixed32();
             case WireType.WIRE_FLOAT32 -> dec.readFloat32();
-            case WireType.WIRE_FIXED64, WireType.WIRE_SFIXED64 -> dec.readFixed64();
+            case WireType.WIRE_FIXED64, WireType.WIRE_SFIXED64 -> {
+                long v = dec.readFixed64();
+                yield targetClass == UnsignedLong.class ? UnsignedLong.fromLongBits(v) : Long.valueOf(v);
+            }
             case WireType.WIRE_FLOAT64 -> dec.readFloat64();
             case WireType.WIRE_STRING -> dec.readString();
             case WireType.WIRE_BYTES -> dec.readBytes();
@@ -1859,6 +1895,11 @@ public final class OmniBufMapper {
                         return false;
                     }
                 }
+                case UNSIGNED_LONG_SCALAR -> {
+                    if (!UnsignedLong.ZERO.equals(slot.readObject(probe))) {
+                        return false;
+                    }
+                }
                 case BOOL_SCALAR -> {
                     if (slot.readBoolean(probe) || (slot.rawType != boolean.class && slot.readObject(probe) == null)) {
                         return false;
@@ -1984,6 +2025,13 @@ public final class OmniBufMapper {
             int wt = resolveScalarWire(rawType, ann.wire(), javaName);
             return new FieldDescriptorSlot(
                 recordComponentIndex, id, schemaName, FieldCategory.LONG_SCALAR, rawType,
+                wt, 0, 0, 0, null, null, handles
+            );
+        }
+        if (rawType == UnsignedLong.class) {
+            int wt = resolveScalarWire(rawType, ann.wire(), javaName);
+            return new FieldDescriptorSlot(
+                recordComponentIndex, id, schemaName, FieldCategory.UNSIGNED_LONG_SCALAR, rawType,
                 wt, 0, 0, 0, null, null, handles
             );
         }
@@ -2118,6 +2166,7 @@ public final class OmniBufMapper {
     private static boolean isScalarBytesOrEnumClass(Class<?> c) {
         return c == Integer.class
             || c == Long.class
+            || c == UnsignedLong.class
             || c == Boolean.class
             || c == Float.class
             || c == Double.class
@@ -2146,6 +2195,15 @@ public final class OmniBufMapper {
                 case SFIXED64 -> WireType.WIRE_SFIXED64;
                 default -> throw new OmniBufException(
                     "omnibuf: incompatible WireKind " + kind + " for long on " + fieldName
+                );
+            };
+        }
+        if (c == UnsignedLong.class) {
+            return switch (kind) {
+                case AUTO, UINT -> WireType.WIRE_UINT;
+                case FIXED64 -> WireType.WIRE_FIXED64;
+                default -> throw new OmniBufException(
+                    "omnibuf: incompatible WireKind " + kind + " for UnsignedLong on " + fieldName
                 );
             };
         }

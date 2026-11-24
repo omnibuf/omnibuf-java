@@ -132,13 +132,14 @@ public final class Utf8Validator {
         return decodeUtf8NonAscii(buf, off, len);
     }
 
-    @SuppressWarnings("deprecation")
     private static String newAsciiString(byte[] buf, int off, int len) {
-        return new String(buf, 0, off, len);
+        return new String(buf, off, len, StandardCharsets.ISO_8859_1);
     }
 
     private static String decodeUtf8NonAscii(byte[] buf, int off, int len) {
-        char[] out = len <= CHAR_DECODE_SCRATCH_LIMIT ? CHAR_DECODE_SCRATCH.get() : new char[len];
+        char[] out = (len <= CHAR_DECODE_SCRATCH_LIMIT && !Thread.currentThread().isVirtual())
+            ? CHAR_DECODE_SCRATCH.get()
+            : new char[len];
         int end = off + len;
         int i = off;
         int outPos = 0;

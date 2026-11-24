@@ -1,9 +1,13 @@
 package com.omnibuf;
 
+import static org.junit.jupiter.api.Assertions.assertArrayEquals;
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
+import static org.junit.jupiter.api.Assertions.assertNotSame;
+import static org.junit.jupiter.api.Assertions.assertSame;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
@@ -19,10 +23,14 @@ import com.google.protobuf.compiler.PluginProtos.CodeGeneratorRequest;
 import com.google.protobuf.compiler.PluginProtos.CodeGeneratorResponse;
 import com.omnibuf.annotation.OmniBufField;
 import com.omnibuf.annotation.OmniBufMessage;
+import com.omnibuf.annotation.WireKind;
+import com.omnibuf.pb.bench.OmniBufLocation;
 import com.omnibuf.pb.bench.OmniBufPeerUpdate;
 import com.omnibuf.pb.bench.OpaquePeerUpdate;
 import com.omnibuf.pb.bench.PeerUpdateOmniBuf;
+import com.omnibuf.pb.conformance.OmniBufTestAllTypes;
 import com.omnibuf.plugin.ProtocGenOmniBufJava;
+import com.omnibuf.wire.CodecPool;
 import com.omnibuf.wire.OmniBufDecoder;
 import com.omnibuf.wire.OmniBufEncoder;
 import com.omnibuf.wire.OmniBufOpaque;
@@ -1003,5 +1011,214 @@ class AuditRegressionsTest {
         byte[] nineByte = enc9.toByteArray();
         assertEquals(9, nineByte.length);
         assertEquals(1L << 40, OmniBufDecoder.readVarint4Or9(nineByte, 0, nineByte.length));
+    }
+
+    @OmniBufMessage(name = "UnsignedLongPojo")
+    public static final class UnsignedLongPojo {
+        @OmniBufField(id = 1, name = "counter")
+        public UnsignedLong counter = UnsignedLong.ZERO;
+
+        @OmniBufField(id = 2, name = "fixed_counter", wire = WireKind.FIXED64)
+        public UnsignedLong fixedCounter = UnsignedLong.ZERO;
+
+        @OmniBufField(id = 3, name = "history")
+        public List<UnsignedLong> history = new ArrayList<>();
+
+        @OmniBufField(id = 4, name = "fixed_history", wire = WireKind.FIXED64)
+        public List<UnsignedLong> fixedHistory = new ArrayList<>();
+
+        @OmniBufField(id = 5, name = "buckets", keyWire = WireKind.UINT, valueWire = WireKind.FIXED64)
+        public Map<UnsignedLong, UnsignedLong> buckets = new HashMap<>();
+    }
+
+    @OmniBufMessage(name = "UnsignedLongRecord")
+    public record UnsignedLongRecord(
+        @OmniBufField(id = 1, name = "counter") UnsignedLong counter,
+        @OmniBufField(id = 2, name = "fixed_counter", wire = WireKind.FIXED64) UnsignedLong fixedCounter
+    ) {}
+
+    @OmniBufMessage(name = "InvalidUnsignedLongWire")
+    public static final class InvalidUnsignedLongWire {
+        @OmniBufField(id = 1, name = "bad", wire = WireKind.SINT)
+        public UnsignedLong bad = UnsignedLong.ZERO;
+    }
+
+    @Test
+    void review_unsignedLongSupportInOmniBufMapper() {
+        UnsignedLong highVal = UnsignedLong.parseUnsigned("18446744073709551615"); // 2^64 - 1
+        UnsignedLong midVal = UnsignedLong.parseUnsigned("9223372036854775808");   // 2^63
+
+        UnsignedLongPojo pojo = new UnsignedLongPojo();
+        pojo.counter = highVal;
+        pojo.fixedCounter = midVal;
+        pojo.history = List.of(UnsignedLong.ZERO, midVal, highVal);
+        pojo.fixedHistory = List.of(highVal, UnsignedLong.fromLongBits(42L));
+        pojo.buckets = Map.of(highVal, midVal, UnsignedLong.fromLongBits(7L), highVal);
+
+        byte[] wire = OmniBufMapper.marshal(pojo, MarshalOptions.DETERMINISTIC);
+
+        // Verify wire types: field #1 is WIRE_UINT and field #2 is WIRE_FIXED64
+        OmniBufDecoder dec = new OmniBufDecoder(wire, 0, wire.length);
+        long tag1 = dec.readTag();
+        assertEquals(1, (int) (tag1 >>> 4));
+        assertEquals(WireType.WIRE_UINT, (int) (tag1 & 0x0FL));
+        assertEquals(-1L, dec.readUint64());
+        long tag2 = dec.readTag();
+        assertEquals(2, (int) (tag2 >>> 4));
+        assertEquals(WireType.WIRE_FIXED64, (int) (tag2 & 0x0FL));
+        assertEquals(Long.MIN_VALUE, dec.readFixed64());
+
+        UnsignedLongPojo decoded = OmniBufMapper.unmarshal(wire, UnsignedLongPojo.class);
+        assertEquals(highVal, decoded.counter);
+        assertEquals(midVal, decoded.fixedCounter);
+        assertEquals(pojo.history, decoded.history);
+        assertEquals(pojo.fixedHistory, decoded.fixedHistory);
+        assertEquals(pojo.buckets, decoded.buckets);
+
+        // Record round-trip including default values on empty packet
+        UnsignedLongRecord rec = new UnsignedLongRecord(highVal, midVal);
+        byte[] recWire = OmniBufMapper.marshal(rec);
+        assertEquals(rec, OmniBufMapper.unmarshal(recWire, UnsignedLongRecord.class));
+        assertEquals(
+            new UnsignedLongRecord(UnsignedLong.ZERO, UnsignedLong.ZERO),
+            OmniBufMapper.unmarshal(new byte[0], UnsignedLongRecord.class)
+        );
+
+        // Incompatible WireKind.SINT for UnsignedLong must fail at codec compilation
+        assertThrows(OmniBufException.class, () -> OmniBufMapper.marshal(new InvalidUnsignedLongWire()));
+    }
+
+    @Test
+    void review_schemaMetaEqualsHashCodeAndToString() {
+        SchemaMeta child1 = new SchemaMeta("Child", Map.of(1, "x"), null);
+        SchemaMeta child2 = new SchemaMeta("Child", Map.of(1, "x"), Map.of());
+        SchemaMeta childDiff = new SchemaMeta("Child", Map.of(1, "y"), null);
+
+        SchemaMeta a = new SchemaMeta("Root", Map.of(1, "id", 2, "child"), Map.of(2, child1));
+        SchemaMeta b = new SchemaMeta("Root", Map.of(1, "id", 2, "child"), Map.of(2, child2));
+        SchemaMeta diffType = new SchemaMeta("Other", Map.of(1, "id", 2, "child"), Map.of(2, child1));
+        SchemaMeta diffFields = new SchemaMeta("Root", Map.of(1, "name", 2, "child"), Map.of(2, child1));
+        SchemaMeta diffChildren = new SchemaMeta("Root", Map.of(1, "id", 2, "child"), Map.of(2, childDiff));
+
+        assertEquals(a, a);
+        assertEquals(a, b);
+        assertEquals(a.hashCode(), b.hashCode());
+        assertNotEquals(a, diffType);
+        assertNotEquals(a, diffFields);
+        assertNotEquals(a, diffChildren);
+        assertNotEquals(a, null);
+        assertNotEquals(a, "Root");
+        assertTrue(a.toString().contains("Root"));
+        assertTrue(a.toString().contains("id"));
+        assertTrue(a.toString().contains("Child"));
+    }
+
+    @Test
+    void review_generatedModelEqualsHashCodeAndToString() {
+        OmniBufPeerUpdate a = new OmniBufPeerUpdate()
+            .setAsn(64512)
+            .setRouterId("rtr-1")
+            .setLocation(new OmniBufLocation().setRegion("us-west").setLatitude(37.77f));
+        OmniBufPeerUpdate b = new OmniBufPeerUpdate()
+            .setAsn(64512)
+            .setRouterId("rtr-1")
+            .setLocation(new OmniBufLocation().setRegion("us-west").setLatitude(37.77f));
+
+        // Calling getTags() lazily initializes an empty list; equals/hashCode must still match null list
+        assertTrue(b.getTags().isEmpty());
+        assertEquals(a, b);
+        assertEquals(a.hashCode(), b.hashCode());
+        assertTrue(a.toString().contains("OmniBufPeerUpdate"));
+        assertTrue(a.toString().contains("rtr-1"));
+
+        b.setAsn(64513);
+        assertNotEquals(a, b);
+
+        // byte[] content equality on OmniBufTestAllTypes
+        OmniBufTestAllTypes t1 = new OmniBufTestAllTypes().setF7Bytes(new byte[] {1, 2, 3});
+        OmniBufTestAllTypes t2 = new OmniBufTestAllTypes().setF7Bytes(new byte[] {1, 2, 3});
+        assertEquals(t1, t2);
+        assertEquals(t1.hashCode(), t2.hashCode());
+        assertArrayEquals(new byte[] {1, 2, 3}, t1.getF7Bytes());
+    }
+
+    @Test
+    void review_codecPoolAndUtf8ValidatorVirtualThreadSafety() throws Exception {
+        // Platform thread should reuse its ThreadLocal encoder slot
+        OmniBufEncoder p1 = CodecPool.acquireEncoder();
+        CodecPool.releaseEncoder(p1);
+        OmniBufEncoder p2 = CodecPool.acquireEncoder();
+        assertSame(p1, p2);
+        CodecPool.releaseEncoder(p2);
+
+        // Virtual threads should not pin ThreadLocal slots and must safely encode/decode concurrently
+        int threadCount = 64;
+        List<Thread> threads = new ArrayList<>(threadCount);
+        List<Throwable> failures = java.util.Collections.synchronizedList(new ArrayList<>());
+
+        for (int i = 0; i < threadCount; i++) {
+            final int id = i;
+            Thread vt = Thread.ofVirtual().start(() -> {
+                try {
+                    OmniBufEncoder e1 = CodecPool.acquireEncoder();
+                    CodecPool.releaseEncoder(e1);
+                    OmniBufEncoder e2 = CodecPool.acquireEncoder();
+                    assertNotSame(e1, e2, "Virtual thread must not retain ThreadLocal encoder slot");
+                    e2.writeUint32(1, id);
+                    e2.writeString(2, "vt-utf8-\u20AC-\uD83D\uDE00-" + id);
+                    byte[] bytes = e2.toByteArray();
+                    CodecPool.releaseEncoder(e2);
+
+                    OmniBufDecoder d1 = CodecPool.acquireDecoder(bytes, 0, bytes.length);
+                    CodecPool.releaseDecoder(d1);
+                    OmniBufDecoder d2 = CodecPool.acquireDecoder(bytes, 0, bytes.length);
+                    assertNotSame(d1, d2, "Virtual thread must not retain ThreadLocal decoder slot");
+                    assertEquals((1L << 4) | WireType.WIRE_UINT, d2.readTag());
+                    assertEquals(id, d2.readUint32());
+                    assertEquals((2L << 4) | WireType.WIRE_STRING, d2.readTag());
+                    assertEquals("vt-utf8-\u20AC-\uD83D\uDE00-" + id, d2.readString());
+                    CodecPool.releaseDecoder(d2);
+                } catch (Throwable t) {
+                    failures.add(t);
+                }
+            });
+            threads.add(vt);
+        }
+        for (Thread vt : threads) {
+            vt.join();
+        }
+        assertTrue(failures.isEmpty(), () -> "Virtual thread failures: " + failures);
+    }
+
+    @Test
+    void review_opaqueConcurrentLazyFieldIndexVisibility() throws Exception {
+        OmniBufPeerUpdate peer = new OmniBufPeerUpdate()
+            .setAsn(65001)
+            .setRouterId("shared-opaque")
+            .setSequence(4242L);
+        byte[] pkt = PeerUpdateOmniBuf.marshal(peer);
+        OpaquePeerUpdate shared = new OpaquePeerUpdate(pkt);
+
+        int workers = 16;
+        List<Thread> threads = new ArrayList<>(workers);
+        List<Throwable> failures = java.util.Collections.synchronizedList(new ArrayList<>());
+        for (int i = 0; i < workers; i++) {
+            Thread t = Thread.ofVirtual().start(() -> {
+                try {
+                    for (int iter = 0; iter < 50; iter++) {
+                        assertEquals(65001, shared.getAsn());
+                        assertEquals("shared-opaque", shared.getRouterId());
+                        assertEquals(4242L, shared.getSequence());
+                    }
+                } catch (Throwable err) {
+                    failures.add(err);
+                }
+            });
+            threads.add(t);
+        }
+        for (Thread t : threads) {
+            t.join();
+        }
+        assertTrue(failures.isEmpty(), () -> "Concurrent Opaque read failures: " + failures);
     }
 }

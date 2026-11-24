@@ -91,4 +91,51 @@ public final class OmniBufLocation {
     public byte[] marshal(MarshalOptions options) {
         return LocationOmniBuf.marshal(this, options);
     }
+
+    @Override
+    public boolean equals(Object obj) {
+        if (this == obj) {
+            return true;
+        }
+        if (!(obj instanceof OmniBufLocation other)) {
+            return false;
+        }
+        return java.util.Objects.equals(this.region, other.region)
+            && java.util.Objects.equals(this.datacenter, other.datacenter)
+            && java.util.Objects.equals(this.city, other.city)
+            && this.rack == other.rack
+            && Float.floatToIntBits(this.latitude) == Float.floatToIntBits(other.latitude)
+            && Float.floatToIntBits(this.longitude) == Float.floatToIntBits(other.longitude);
+    }
+
+    @Override
+    public int hashCode() {
+        int result = 1;
+        result = 31 * result + java.util.Objects.hashCode(this.region);
+        result = 31 * result + java.util.Objects.hashCode(this.datacenter);
+        result = 31 * result + java.util.Objects.hashCode(this.city);
+        result = 31 * result + Integer.hashCode(this.rack);
+        result = 31 * result + Float.hashCode(this.latitude);
+        result = 31 * result + Float.hashCode(this.longitude);
+        return result;
+    }
+
+    @Override
+    public String toString() {
+        StringBuilder sb = new StringBuilder("OmniBufLocation{");
+        sb.append("region=");
+        sb.append('\'').append(this.region).append('\'');
+        sb.append(", datacenter=");
+        sb.append('\'').append(this.datacenter).append('\'');
+        sb.append(", city=");
+        sb.append('\'').append(this.city).append('\'');
+        sb.append(", rack=");
+        sb.append(this.rack);
+        sb.append(", latitude=");
+        sb.append(this.latitude);
+        sb.append(", longitude=");
+        sb.append(this.longitude);
+        sb.append('}');
+        return sb.toString();
+    }
 }

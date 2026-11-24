@@ -41,8 +41,8 @@ public final class OpaqueTestAllTypes {
     private final int offset;
     private final int length;
     private DirtyState dirty;
-    private long[] fieldIndex;
-    private byte readCount;
+    private volatile long[] fieldIndex;
+    private volatile byte readCount;
 
     public OpaqueTestAllTypes(byte[] packet) {
         this.buffer = packet == null ? EMPTY_BYTES : packet;

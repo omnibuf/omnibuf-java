@@ -306,4 +306,109 @@ public final class OmniBufTestAllTypes {
     public byte[] marshal(MarshalOptions options) {
         return TestAllTypesOmniBuf.marshal(this, options);
     }
+
+    @Override
+    public boolean equals(Object obj) {
+        if (this == obj) {
+            return true;
+        }
+        if (!(obj instanceof OmniBufTestAllTypes other)) {
+            return false;
+        }
+        return this.f1Uint32 == other.f1Uint32
+            && this.f2Uint64 == other.f2Uint64
+            && this.f3Sint32 == other.f3Sint32
+            && this.f4Sint64 == other.f4Sint64
+            && this.f5Bool == other.f5Bool
+            && java.util.Objects.equals(this.f6String, other.f6String)
+            && java.util.Arrays.equals(this.f7Bytes, other.f7Bytes)
+            && java.util.Objects.equals(this.f8SubMsg, other.f8SubMsg)
+            && listEquals(this.f9StringArr, other.f9StringArr)
+            && listEquals(this.f10Uint32Arr, other.f10Uint32Arr)
+            && listEquals(this.f11SubMsgArr, other.f11SubMsgArr)
+            && mapEquals(this.f12MapStrUint, other.f12MapStrUint)
+            && Float.floatToIntBits(this.f13Float32) == Float.floatToIntBits(other.f13Float32)
+            && Double.doubleToLongBits(this.f14Float64) == Double.doubleToLongBits(other.f14Float64)
+            && this.f15Fixed32 == other.f15Fixed32
+            && this.f16Fixed64 == other.f16Fixed64
+            && java.util.Objects.equals(this.f20OverflowStr, other.f20OverflowStr);
+    }
+
+    @Override
+    public int hashCode() {
+        int result = 1;
+        result = 31 * result + Integer.hashCode(this.f1Uint32);
+        result = 31 * result + Long.hashCode(this.f2Uint64);
+        result = 31 * result + Integer.hashCode(this.f3Sint32);
+        result = 31 * result + Long.hashCode(this.f4Sint64);
+        result = 31 * result + Boolean.hashCode(this.f5Bool);
+        result = 31 * result + java.util.Objects.hashCode(this.f6String);
+        result = 31 * result + java.util.Arrays.hashCode(this.f7Bytes);
+        result = 31 * result + java.util.Objects.hashCode(this.f8SubMsg);
+        result = 31 * result + (this.f9StringArr == null || this.f9StringArr.isEmpty() ? 0 : this.f9StringArr.hashCode());
+        result = 31 * result + (this.f10Uint32Arr == null || this.f10Uint32Arr.isEmpty() ? 0 : this.f10Uint32Arr.hashCode());
+        result = 31 * result + (this.f11SubMsgArr == null || this.f11SubMsgArr.isEmpty() ? 0 : this.f11SubMsgArr.hashCode());
+        result = 31 * result + (this.f12MapStrUint == null || this.f12MapStrUint.isEmpty() ? 0 : this.f12MapStrUint.hashCode());
+        result = 31 * result + Float.hashCode(this.f13Float32);
+        result = 31 * result + Double.hashCode(this.f14Float64);
+        result = 31 * result + Integer.hashCode(this.f15Fixed32);
+        result = 31 * result + Long.hashCode(this.f16Fixed64);
+        result = 31 * result + java.util.Objects.hashCode(this.f20OverflowStr);
+        return result;
+    }
+
+    @Override
+    public String toString() {
+        StringBuilder sb = new StringBuilder("OmniBufTestAllTypes{");
+        sb.append("f1Uint32=");
+        sb.append(this.f1Uint32);
+        sb.append(", f2Uint64=");
+        sb.append(this.f2Uint64);
+        sb.append(", f3Sint32=");
+        sb.append(this.f3Sint32);
+        sb.append(", f4Sint64=");
+        sb.append(this.f4Sint64);
+        sb.append(", f5Bool=");
+        sb.append(this.f5Bool);
+        sb.append(", f6String=");
+        sb.append('\'').append(this.f6String).append('\'');
+        sb.append(", f7Bytes=");
+        sb.append(java.util.Arrays.toString(this.f7Bytes));
+        sb.append(", f8SubMsg=");
+        sb.append(this.f8SubMsg);
+        sb.append(", f9StringArr=");
+        sb.append(this.f9StringArr);
+        sb.append(", f10Uint32Arr=");
+        sb.append(this.f10Uint32Arr);
+        sb.append(", f11SubMsgArr=");
+        sb.append(this.f11SubMsgArr);
+        sb.append(", f12MapStrUint=");
+        sb.append(this.f12MapStrUint);
+        sb.append(", f13Float32=");
+        sb.append(this.f13Float32);
+        sb.append(", f14Float64=");
+        sb.append(this.f14Float64);
+        sb.append(", f15Fixed32=");
+        sb.append(this.f15Fixed32);
+        sb.append(", f16Fixed64=");
+        sb.append(this.f16Fixed64);
+        sb.append(", f20OverflowStr=");
+        sb.append('\'').append(this.f20OverflowStr).append('\'');
+        sb.append('}');
+        return sb.toString();
+    }
+
+    private static boolean listEquals(List<?> a, List<?> b) {
+        if (a == null || a.isEmpty()) {
+            return b == null || b.isEmpty();
+        }
+        return b != null && a.equals(b);
+    }
+
+    private static boolean mapEquals(Map<?, ?> a, Map<?, ?> b) {
+        if (a == null || a.isEmpty()) {
+            return b == null || b.isEmpty();
+        }
+        return b != null && a.equals(b);
+    }
 }

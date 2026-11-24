@@ -51,6 +51,32 @@ public final class SchemaMeta {
         return children;
     }
 
+    @Override
+    public boolean equals(Object obj) {
+        if (this == obj) {
+            return true;
+        }
+        if (!(obj instanceof SchemaMeta other)) {
+            return false;
+        }
+        return typeName.equals(other.typeName)
+            && fields.equals(other.fields)
+            && children.equals(other.children);
+    }
+
+    @Override
+    public int hashCode() {
+        int result = typeName.hashCode();
+        result = 31 * result + fields.hashCode();
+        result = 31 * result + children.hashCode();
+        return result;
+    }
+
+    @Override
+    public String toString() {
+        return "SchemaMeta{typeName='" + typeName + "', fields=" + fields + ", children=" + children + "}";
+    }
+
     /**
      * Merges {@code base} and {@code override} following concatenation last-write-wins semantics.
      */

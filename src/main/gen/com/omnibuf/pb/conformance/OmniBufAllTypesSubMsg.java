@@ -69,4 +69,43 @@ public final class OmniBufAllTypesSubMsg {
     public byte[] marshal(MarshalOptions options) {
         return AllTypesSubMsgOmniBuf.marshal(this, options);
     }
+
+    @Override
+    public boolean equals(Object obj) {
+        if (this == obj) {
+            return true;
+        }
+        if (!(obj instanceof OmniBufAllTypesSubMsg other)) {
+            return false;
+        }
+        return this.id == other.id
+            && java.util.Objects.equals(this.label, other.label)
+            && this.flag == other.flag
+            && this.score == other.score;
+    }
+
+    @Override
+    public int hashCode() {
+        int result = 1;
+        result = 31 * result + Integer.hashCode(this.id);
+        result = 31 * result + java.util.Objects.hashCode(this.label);
+        result = 31 * result + Boolean.hashCode(this.flag);
+        result = 31 * result + Long.hashCode(this.score);
+        return result;
+    }
+
+    @Override
+    public String toString() {
+        StringBuilder sb = new StringBuilder("OmniBufAllTypesSubMsg{");
+        sb.append("id=");
+        sb.append(this.id);
+        sb.append(", label=");
+        sb.append('\'').append(this.label).append('\'');
+        sb.append(", flag=");
+        sb.append(this.flag);
+        sb.append(", score=");
+        sb.append(this.score);
+        sb.append('}');
+        return sb.toString();
+    }
 }

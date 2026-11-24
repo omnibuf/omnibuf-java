@@ -878,10 +878,246 @@ public final class ProtocGenOmniBufJava {
 
         sb.append("    public byte[] marshal(MarshalOptions options) {\n");
         sb.append("        return ").append(info.codecClass()).append(".marshal(this, options);\n");
-        sb.append("    }\n");
+        sb.append("    }\n\n");
+
+        emitModelEqualsHashCodeToString(sb, info, fields, oneofs);
 
         sb.append("}\n");
         return sb.toString();
+    }
+
+    private static void emitModelEqualsHashCodeToString(
+            StringBuilder sb, MessageInfo info, List<ResolvedField> fields, List<OneofInfo> oneofs) {
+        boolean needsListHelper = false;
+        boolean needsBytesListHelper = false;
+        boolean needsMapHelper = false;
+        boolean needsBytesMapHelper = false;
+        for (ResolvedField f : fields) {
+            if (f.isRepeated()) {
+                if (f.proto().getType() == Type.TYPE_BYTES) {
+                    needsBytesListHelper = true;
+                } else {
+                    needsListHelper = true;
+                }
+            } else if (f.isMap()) {
+                if (f.mapValProto().getType() == Type.TYPE_BYTES) {
+                    needsBytesMapHelper = true;
+                } else {
+                    needsMapHelper = true;
+                }
+            }
+        }
+
+        sb.append("    @Override\n");
+        sb.append("    public boolean equals(Object obj) {\n");
+        sb.append("        if (this == obj) {\n");
+        sb.append("            return true;\n");
+        sb.append("        }\n");
+        if (fields.isEmpty() && oneofs.isEmpty()) {
+            sb.append("        return obj instanceof ").append(info.modelClass()).append(";\n");
+            sb.append("    }\n\n");
+        } else {
+            sb.append("        if (!(obj instanceof ").append(info.modelClass()).append(" other)) {\n");
+            sb.append("            return false;\n");
+            sb.append("        }\n");
+            sb.append("        return ");
+            boolean first = true;
+            for (ResolvedField f : fields) {
+                if (!first) {
+                    sb.append("\n            && ");
+                }
+                first = false;
+                String name = f.camelName();
+                if (f.isRepeated()) {
+                    if (f.proto().getType() == Type.TYPE_BYTES) {
+                        sb.append("bytesListEquals(this.").append(name).append(", other.").append(name).append(')');
+                    } else {
+                        sb.append("listEquals(this.").append(name).append(", other.").append(name).append(')');
+                    }
+                } else if (f.isMap()) {
+                    if (f.mapValProto().getType() == Type.TYPE_BYTES) {
+                        sb.append("bytesMapEquals(this.").append(name).append(", other.").append(name).append(')');
+                    } else {
+                        sb.append("mapEquals(this.").append(name).append(", other.").append(name).append(')');
+                    }
+                } else {
+                    switch (f.proto().getType()) {
+                        case TYPE_BYTES -> sb.append("java.util.Arrays.equals(this.").append(name)
+                            .append(", other.").append(name).append(')');
+                        case TYPE_STRING, TYPE_MESSAGE -> sb.append("java.util.Objects.equals(this.").append(name)
+                            .append(", other.").append(name).append(')');
+                        case TYPE_FLOAT -> sb.append("Float.floatToIntBits(this.").append(name)
+                            .append(") == Float.floatToIntBits(other.").append(name).append(')');
+                        case TYPE_DOUBLE -> sb.append("Double.doubleToLongBits(this.").append(name)
+                            .append(") == Double.doubleToLongBits(other.").append(name).append(')');
+                        default -> sb.append("this.").append(name).append(" == other.").append(name);
+                    }
+                }
+                if (f.hasExplicitScalarPresence()) {
+                    sb.append("\n            && this.has_").append(name).append(" == other.has_").append(name);
+                }
+            }
+            for (OneofInfo oi : oneofs) {
+                if (!first) {
+                    sb.append("\n            && ");
+                }
+                first = false;
+                sb.append("this.").append(oi.camelName()).append("Case == other.")
+                    .append(oi.camelName()).append("Case");
+            }
+            sb.append(";\n");
+            sb.append("    }\n\n");
+        }
+
+        sb.append("    @Override\n");
+        sb.append("    public int hashCode() {\n");
+        if (fields.isEmpty() && oneofs.isEmpty()) {
+            sb.append("        return 0;\n");
+            sb.append("    }\n\n");
+        } else {
+            sb.append("        int result = 1;\n");
+            for (ResolvedField f : fields) {
+                String name = f.camelName();
+                if (f.isRepeated()) {
+                    if (f.proto().getType() == Type.TYPE_BYTES) {
+                        sb.append("        result = 31 * result + bytesListHash(this.").append(name).append(");\n");
+                    } else {
+                        sb.append("        result = 31 * result + (this.").append(name)
+                            .append(" == null || this.").append(name).append(".isEmpty() ? 0 : this.")
+                            .append(name).append(".hashCode());\n");
+                    }
+                } else if (f.isMap()) {
+                    if (f.mapValProto().getType() == Type.TYPE_BYTES) {
+                        sb.append("        result = 31 * result + bytesMapHash(this.").append(name).append(");\n");
+                    } else {
+                        sb.append("        result = 31 * result + (this.").append(name)
+                            .append(" == null || this.").append(name).append(".isEmpty() ? 0 : this.")
+                            .append(name).append(".hashCode());\n");
+                    }
+                } else {
+                    switch (f.proto().getType()) {
+                        case TYPE_BYTES -> sb.append("        result = 31 * result + java.util.Arrays.hashCode(this.")
+                            .append(name).append(");\n");
+                        case TYPE_STRING, TYPE_MESSAGE -> sb.append("        result = 31 * result + java.util.Objects.hashCode(this.")
+                            .append(name).append(");\n");
+                        case TYPE_FLOAT -> sb.append("        result = 31 * result + Float.hashCode(this.")
+                            .append(name).append(");\n");
+                        case TYPE_DOUBLE -> sb.append("        result = 31 * result + Double.hashCode(this.")
+                            .append(name).append(");\n");
+                        case TYPE_BOOL -> sb.append("        result = 31 * result + Boolean.hashCode(this.")
+                            .append(name).append(");\n");
+                        case TYPE_INT64, TYPE_UINT64, TYPE_SINT64, TYPE_FIXED64, TYPE_SFIXED64 ->
+                            sb.append("        result = 31 * result + Long.hashCode(this.")
+                                .append(name).append(");\n");
+                        default -> sb.append("        result = 31 * result + Integer.hashCode(this.")
+                            .append(name).append(");\n");
+                    }
+                }
+                if (f.hasExplicitScalarPresence()) {
+                    sb.append("        result = 31 * result + Boolean.hashCode(this.has_")
+                        .append(name).append(");\n");
+                }
+            }
+            for (OneofInfo oi : oneofs) {
+                sb.append("        result = 31 * result + Integer.hashCode(this.")
+                    .append(oi.camelName()).append("Case);\n");
+            }
+            sb.append("        return result;\n");
+            sb.append("    }\n\n");
+        }
+
+        sb.append("    @Override\n");
+        sb.append("    public String toString() {\n");
+        if (fields.isEmpty()) {
+            sb.append("        return \"").append(info.modelClass()).append("{}\";\n");
+            sb.append("    }\n");
+        } else {
+            sb.append("        StringBuilder sb = new StringBuilder(\"").append(info.modelClass()).append("{\");\n");
+            for (int i = 0; i < fields.size(); i++) {
+                ResolvedField f = fields.get(i);
+                String name = f.camelName();
+                sb.append("        sb.append(\"").append(i == 0 ? "" : ", ").append(name).append("=\");\n");
+                if (!f.isRepeated() && !f.isMap() && f.proto().getType() == Type.TYPE_BYTES) {
+                    sb.append("        sb.append(java.util.Arrays.toString(this.").append(name).append("));\n");
+                } else if (!f.isRepeated() && !f.isMap() && f.proto().getType() == Type.TYPE_STRING) {
+                    sb.append("        sb.append('\\'').append(this.").append(name).append(").append('\\'');\n");
+                } else {
+                    sb.append("        sb.append(this.").append(name).append(");\n");
+                }
+            }
+            sb.append("        sb.append('}');\n");
+            sb.append("        return sb.toString();\n");
+            sb.append("    }\n");
+        }
+
+        if (needsListHelper) {
+            sb.append("\n    private static boolean listEquals(List<?> a, List<?> b) {\n");
+            sb.append("        if (a == null || a.isEmpty()) {\n");
+            sb.append("            return b == null || b.isEmpty();\n");
+            sb.append("        }\n");
+            sb.append("        return b != null && a.equals(b);\n");
+            sb.append("    }\n");
+        }
+        if (needsBytesListHelper) {
+            sb.append("\n    private static boolean bytesListEquals(List<byte[]> a, List<byte[]> b) {\n");
+            sb.append("        if (a == null || a.isEmpty()) {\n");
+            sb.append("            return b == null || b.isEmpty();\n");
+            sb.append("        }\n");
+            sb.append("        if (b == null || a.size() != b.size()) {\n");
+            sb.append("            return false;\n");
+            sb.append("        }\n");
+            sb.append("        for (int i = 0; i < a.size(); i++) {\n");
+            sb.append("            if (!java.util.Arrays.equals(a.get(i), b.get(i))) {\n");
+            sb.append("                return false;\n");
+            sb.append("            }\n");
+            sb.append("        }\n");
+            sb.append("        return true;\n");
+            sb.append("    }\n");
+            sb.append("\n    private static int bytesListHash(List<byte[]> list) {\n");
+            sb.append("        if (list == null || list.isEmpty()) {\n");
+            sb.append("            return 0;\n");
+            sb.append("        }\n");
+            sb.append("        int h = 1;\n");
+            sb.append("        for (byte[] item : list) {\n");
+            sb.append("            h = 31 * h + java.util.Arrays.hashCode(item);\n");
+            sb.append("        }\n");
+            sb.append("        return h;\n");
+            sb.append("    }\n");
+        }
+        if (needsMapHelper) {
+            sb.append("\n    private static boolean mapEquals(Map<?, ?> a, Map<?, ?> b) {\n");
+            sb.append("        if (a == null || a.isEmpty()) {\n");
+            sb.append("            return b == null || b.isEmpty();\n");
+            sb.append("        }\n");
+            sb.append("        return b != null && a.equals(b);\n");
+            sb.append("    }\n");
+        }
+        if (needsBytesMapHelper) {
+            sb.append("\n    private static <K> boolean bytesMapEquals(Map<K, byte[]> a, Map<K, byte[]> b) {\n");
+            sb.append("        if (a == null || a.isEmpty()) {\n");
+            sb.append("            return b == null || b.isEmpty();\n");
+            sb.append("        }\n");
+            sb.append("        if (b == null || a.size() != b.size()) {\n");
+            sb.append("            return false;\n");
+            sb.append("        }\n");
+            sb.append("        for (Map.Entry<K, byte[]> entry : a.entrySet()) {\n");
+            sb.append("            if (!b.containsKey(entry.getKey()) || !java.util.Arrays.equals(entry.getValue(), b.get(entry.getKey()))) {\n");
+            sb.append("                return false;\n");
+            sb.append("            }\n");
+            sb.append("        }\n");
+            sb.append("        return true;\n");
+            sb.append("    }\n");
+            sb.append("\n    private static <K> int bytesMapHash(Map<K, byte[]> map) {\n");
+            sb.append("        if (map == null || map.isEmpty()) {\n");
+            sb.append("            return 0;\n");
+            sb.append("        }\n");
+            sb.append("        int h = 0;\n");
+            sb.append("        for (Map.Entry<K, byte[]> entry : map.entrySet()) {\n");
+            sb.append("            h += java.util.Objects.hashCode(entry.getKey()) ^ java.util.Arrays.hashCode(entry.getValue());\n");
+            sb.append("        }\n");
+            sb.append("        return h;\n");
+            sb.append("    }\n");
+        }
     }
 
     private static void emitOneofClearSwitch(
@@ -2371,8 +2607,8 @@ public final class ProtocGenOmniBufJava {
         sb.append("    private final int offset;\n");
         sb.append("    private final int length;\n");
         sb.append("    private DirtyState dirty;\n");
-        sb.append("    private long[] fieldIndex;\n");
-        sb.append("    private byte readCount;\n\n");
+        sb.append("    private volatile long[] fieldIndex;\n");
+        sb.append("    private volatile byte readCount;\n\n");
 
         sb.append("    public ").append(info.opaqueClass()).append("(byte[] packet) {\n");
         sb.append("        this.buffer = packet == null ? EMPTY_BYTES : packet;\n");

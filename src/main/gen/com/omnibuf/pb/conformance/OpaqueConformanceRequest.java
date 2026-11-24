@@ -33,8 +33,8 @@ public final class OpaqueConformanceRequest {
     private final int offset;
     private final int length;
     private DirtyState dirty;
-    private long[] fieldIndex;
-    private byte readCount;
+    private volatile long[] fieldIndex;
+    private volatile byte readCount;
 
     public OpaqueConformanceRequest(byte[] packet) {
         this.buffer = packet == null ? EMPTY_BYTES : packet;

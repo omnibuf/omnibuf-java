@@ -69,4 +69,43 @@ public final class OmniBufNeighbor {
     public byte[] marshal(MarshalOptions options) {
         return NeighborOmniBuf.marshal(this, options);
     }
+
+    @Override
+    public boolean equals(Object obj) {
+        if (this == obj) {
+            return true;
+        }
+        if (!(obj instanceof OmniBufNeighbor other)) {
+            return false;
+        }
+        return this.peerAsn == other.peerAsn
+            && java.util.Objects.equals(this.router, other.router)
+            && this.latencyUs == other.latencyUs
+            && this.established == other.established;
+    }
+
+    @Override
+    public int hashCode() {
+        int result = 1;
+        result = 31 * result + Integer.hashCode(this.peerAsn);
+        result = 31 * result + java.util.Objects.hashCode(this.router);
+        result = 31 * result + Integer.hashCode(this.latencyUs);
+        result = 31 * result + Boolean.hashCode(this.established);
+        return result;
+    }
+
+    @Override
+    public String toString() {
+        StringBuilder sb = new StringBuilder("OmniBufNeighbor{");
+        sb.append("peerAsn=");
+        sb.append(this.peerAsn);
+        sb.append(", router=");
+        sb.append('\'').append(this.router).append('\'');
+        sb.append(", latencyUs=");
+        sb.append(this.latencyUs);
+        sb.append(", established=");
+        sb.append(this.established);
+        sb.append('}');
+        return sb.toString();
+    }
 }

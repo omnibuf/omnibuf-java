@@ -725,8 +725,8 @@ public final class OmniBufDecoder {
      * <p>If the wire element type matches {@code expectedElemWT}, advances {@code pos} to the first
      * element, sets {@code limit} to {@code bodyEnd}, and returns packed
      * {@code (((long) savedLimit) << 32) | (count & 0xFFFF_FFFFL)}.
-     * If the wire element type does not match {@code expectedElemWT}, deeply validates the array,
-     * advances {@code pos} past {@code bodyEnd}, and returns {@code -1L}.
+     * If the wire element type does not match {@code expectedElemWT} or the header is malformed,
+     * restores {@code limit} and throws {@link OmniBufException}.
      */
     public long beginArray(int expectedElemWT, int depth) {
         if (depth + 1 > this.maxNestingDepth) {

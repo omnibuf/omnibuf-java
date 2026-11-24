@@ -221,4 +221,78 @@ public final class OmniBufPeerUpdate {
     public byte[] marshal(MarshalOptions options) {
         return PeerUpdateOmniBuf.marshal(this, options);
     }
+
+    @Override
+    public boolean equals(Object obj) {
+        if (this == obj) {
+            return true;
+        }
+        if (!(obj instanceof OmniBufPeerUpdate other)) {
+            return false;
+        }
+        return this.asn == other.asn
+            && java.util.Objects.equals(this.routerId, other.routerId)
+            && this.active == other.active
+            && this.uptimeSec == other.uptimeSec
+            && this.rssiDbm == other.rssiDbm
+            && Double.doubleToLongBits(this.cpuLoad) == Double.doubleToLongBits(other.cpuLoad)
+            && listEquals(this.tags, other.tags)
+            && listEquals(this.prefixes, other.prefixes)
+            && java.util.Objects.equals(this.location, other.location)
+            && listEquals(this.neighbors, other.neighbors)
+            && this.sequence == other.sequence;
+    }
+
+    @Override
+    public int hashCode() {
+        int result = 1;
+        result = 31 * result + Integer.hashCode(this.asn);
+        result = 31 * result + java.util.Objects.hashCode(this.routerId);
+        result = 31 * result + Boolean.hashCode(this.active);
+        result = 31 * result + Long.hashCode(this.uptimeSec);
+        result = 31 * result + Integer.hashCode(this.rssiDbm);
+        result = 31 * result + Double.hashCode(this.cpuLoad);
+        result = 31 * result + (this.tags == null || this.tags.isEmpty() ? 0 : this.tags.hashCode());
+        result = 31 * result + (this.prefixes == null || this.prefixes.isEmpty() ? 0 : this.prefixes.hashCode());
+        result = 31 * result + java.util.Objects.hashCode(this.location);
+        result = 31 * result + (this.neighbors == null || this.neighbors.isEmpty() ? 0 : this.neighbors.hashCode());
+        result = 31 * result + Long.hashCode(this.sequence);
+        return result;
+    }
+
+    @Override
+    public String toString() {
+        StringBuilder sb = new StringBuilder("OmniBufPeerUpdate{");
+        sb.append("asn=");
+        sb.append(this.asn);
+        sb.append(", routerId=");
+        sb.append('\'').append(this.routerId).append('\'');
+        sb.append(", active=");
+        sb.append(this.active);
+        sb.append(", uptimeSec=");
+        sb.append(this.uptimeSec);
+        sb.append(", rssiDbm=");
+        sb.append(this.rssiDbm);
+        sb.append(", cpuLoad=");
+        sb.append(this.cpuLoad);
+        sb.append(", tags=");
+        sb.append(this.tags);
+        sb.append(", prefixes=");
+        sb.append(this.prefixes);
+        sb.append(", location=");
+        sb.append(this.location);
+        sb.append(", neighbors=");
+        sb.append(this.neighbors);
+        sb.append(", sequence=");
+        sb.append(this.sequence);
+        sb.append('}');
+        return sb.toString();
+    }
+
+    private static boolean listEquals(List<?> a, List<?> b) {
+        if (a == null || a.isEmpty()) {
+            return b == null || b.isEmpty();
+        }
+        return b != null && a.equals(b);
+    }
 }

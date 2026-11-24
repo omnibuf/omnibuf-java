@@ -25,6 +25,9 @@ public final class CodecPool {
     private CodecPool() {}
 
     public static OmniBufEncoder acquireEncoder() {
+        if (Thread.currentThread().isVirtual()) {
+            return new OmniBufEncoder(INITIAL_ENCODER_CAPACITY);
+        }
         OmniBufEncoder enc = SLOT.get().encoder;
         if (!enc.pooledInUse) {
             enc.pooledInUse = true;
@@ -47,13 +50,19 @@ public final class CodecPool {
 
     public static OmniBufDecoder acquireDecoder(
             byte[] buf, int offset, int length, UnmarshalOptions options) {
-        OmniBufDecoder dec = SLOT.get().decoder;
+        OmniBufDecoder dec;
         boolean pooled = false;
-        if (!dec.pooledInUse) {
-            dec.pooledInUse = true;
-            pooled = true;
-        } else {
+        if (Thread.currentThread().isVirtual()) {
             dec = new OmniBufDecoder();
+        } else {
+            OmniBufDecoder slotDec = SLOT.get().decoder;
+            if (!slotDec.pooledInUse) {
+                slotDec.pooledInUse = true;
+                pooled = true;
+                dec = slotDec;
+            } else {
+                dec = new OmniBufDecoder();
+            }
         }
         try {
             dec.reset(buf, offset, length, options);

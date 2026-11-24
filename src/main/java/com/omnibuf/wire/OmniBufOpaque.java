@@ -253,7 +253,8 @@ public final class OmniBufOpaque {
     /**
      * Scans all top-level field headers in {@code packet[offset..offset+length]} in O(1) time per
      * header and returns the last occurrence matching {@code targetField} and {@code wireMask}.
-     * Returns {@link LocatedField#NOT_FOUND} if absent or if the packet framing is malformed.
+     * Returns {@link LocatedField#NOT_FOUND} if absent, or throws {@link OmniBufException} if the
+     * packet framing is malformed.
      */
     public static LocatedField locateField(
             byte[] packet, int offset, int length, int targetField, int wireMask) {

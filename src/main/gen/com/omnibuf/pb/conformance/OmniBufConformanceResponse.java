@@ -91,4 +91,51 @@ public final class OmniBufConformanceResponse {
     public byte[] marshal(MarshalOptions options) {
         return ConformanceResponseOmniBuf.marshal(this, options);
     }
+
+    @Override
+    public boolean equals(Object obj) {
+        if (this == obj) {
+            return true;
+        }
+        if (!(obj instanceof OmniBufConformanceResponse other)) {
+            return false;
+        }
+        return java.util.Objects.equals(this.parseError, other.parseError)
+            && java.util.Objects.equals(this.serializeError, other.serializeError)
+            && java.util.Objects.equals(this.runtimeError, other.runtimeError)
+            && java.util.Objects.equals(this.skipped, other.skipped)
+            && java.util.Arrays.equals(this.omnibufPayload, other.omnibufPayload)
+            && java.util.Objects.equals(this.jsonPayload, other.jsonPayload);
+    }
+
+    @Override
+    public int hashCode() {
+        int result = 1;
+        result = 31 * result + java.util.Objects.hashCode(this.parseError);
+        result = 31 * result + java.util.Objects.hashCode(this.serializeError);
+        result = 31 * result + java.util.Objects.hashCode(this.runtimeError);
+        result = 31 * result + java.util.Objects.hashCode(this.skipped);
+        result = 31 * result + java.util.Arrays.hashCode(this.omnibufPayload);
+        result = 31 * result + java.util.Objects.hashCode(this.jsonPayload);
+        return result;
+    }
+
+    @Override
+    public String toString() {
+        StringBuilder sb = new StringBuilder("OmniBufConformanceResponse{");
+        sb.append("parseError=");
+        sb.append('\'').append(this.parseError).append('\'');
+        sb.append(", serializeError=");
+        sb.append('\'').append(this.serializeError).append('\'');
+        sb.append(", runtimeError=");
+        sb.append('\'').append(this.runtimeError).append('\'');
+        sb.append(", skipped=");
+        sb.append('\'').append(this.skipped).append('\'');
+        sb.append(", omnibufPayload=");
+        sb.append(java.util.Arrays.toString(this.omnibufPayload));
+        sb.append(", jsonPayload=");
+        sb.append('\'').append(this.jsonPayload).append('\'');
+        sb.append('}');
+        return sb.toString();
+    }
 }
