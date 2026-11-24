@@ -16,10 +16,7 @@ import java.lang.reflect.Method;
 import java.util.Objects;
 
 /**
- * Detached {@link MethodDescriptor.Marshaller} implementation for OmniBuf.
- *
- * <p>{@code io.grpc:grpc-api} is declared with {@code provided} scope in {@code pom.xml}, so core
- * {@code omnibuf-java} users do not pull gRPC transitively unless they use this package.
+ * {@link MethodDescriptor.Marshaller} implementation for OmniBuf gRPC services.
  *
  * <p>Supports both {@code @OmniBufMessage}-annotated Java classes/records (via
  * {@link OmniBufMapper}) and standard {@link Message} protobuf types (via

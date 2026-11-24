@@ -11,8 +11,7 @@ import java.lang.reflect.Method;
 import java.util.Objects;
 
 /**
- * Detached Connect RPC codec helper for OmniBuf with zero dependency on {@code io.grpc}
- * or Connect runtime libraries.
+ * Connect RPC codec helper for OmniBuf (`application/omnibuf` and `application/x-omnibuf`).
  *
  * <p>Supports both {@code @OmniBufMessage}-annotated Java classes/records (via
  * {@link OmniBufMapper}) and standard {@link Message} protobuf types (via
