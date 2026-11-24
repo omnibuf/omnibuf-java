@@ -24,13 +24,13 @@ public final class WireType {
     public static final int WIRE_MAP = 14;
     public static final int WIRE_EXTENDED = 15;
 
-    /** Maximum legal field number ((1 << 29) - 1 = 536870911). */
+    /** Maximum legal field number ({@code (1 << 29) - 1 = 536870911}). */
     public static final int MAX_FIELD_NUMBER = (1 << 29) - 1;
 
     /** Maximum nesting depth across WireSubMsg, WireArray, WireMap, and Field #0 containers. */
     public static final int MAX_CONTAINER_DEPTH = 32;
 
-    /** Pre-encoded 1-byte Prefix-Varint tag for Field #0 SchemaMeta (((0 << 4) | 12) << 1 | 1 = 0x19). */
+    /** Pre-encoded 1-byte Prefix-Varint tag for Field #0 SchemaMeta ({@code (((0 << 4) | 12) << 1 | 1 = 0x19)}). */
     public static final byte FIELD0_TAG_BYTE = 0x19;
 
     private WireType() {}

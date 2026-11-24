@@ -190,7 +190,6 @@ public final class OmniBufProtobuf {
         }
     }
 
-    @SuppressWarnings("unchecked")
     private static SchemaMeta buildValueSchemaMeta(MessageOrBuilder msg, int schemaDepth) {
         if (msg == null || schemaDepth + 1 > OmniBufDecoder.MAX_CONTAINER_DEPTH) {
             return null;
@@ -208,26 +207,28 @@ public final class OmniBufProtobuf {
             SchemaMeta childMeta = null;
             if (fd.isMapField()) {
                 FieldDescriptor valFd = fd.getMessageType().findFieldByNumber(2);
-                if (valFd != null && valFd.getType() == FieldDescriptor.Type.MESSAGE) {
-                    List<Message> entries = (List<Message>) msg.getField(fd);
+                if (valFd != null && valFd.getType() == FieldDescriptor.Type.MESSAGE
+                        && msg.getField(fd) instanceof List<?> entries) {
                     for (int i = 0, n = entries.size(); i < n; i++) {
-                        Object v = entries.get(i).getField(valFd);
-                        if (v instanceof MessageOrBuilder subMsg) {
-                            childMeta = SchemaMeta.merge(
-                                childMeta, buildValueSchemaMeta(subMsg, schemaDepth + 2)
-                            );
+                        if (entries.get(i) instanceof Message entryMsg) {
+                            Object v = entryMsg.getField(valFd);
+                            if (v instanceof MessageOrBuilder subMsg) {
+                                childMeta = SchemaMeta.merge(
+                                    childMeta, buildValueSchemaMeta(subMsg, schemaDepth + 2)
+                                );
+                            }
                         }
                     }
                 }
             } else if (fd.getType() == FieldDescriptor.Type.MESSAGE) {
                 if (fd.isRepeated()) {
-                    List<Message> list = (List<Message>) msg.getField(fd);
-                    for (int i = 0, n = list.size(); i < n; i++) {
-                        Message elem = list.get(i);
-                        if (elem != null) {
-                            childMeta = SchemaMeta.merge(
-                                childMeta, buildValueSchemaMeta(elem, schemaDepth + 2)
-                            );
+                    if (msg.getField(fd) instanceof List<?> list) {
+                        for (int i = 0, n = list.size(); i < n; i++) {
+                            if (list.get(i) instanceof Message elem) {
+                                childMeta = SchemaMeta.merge(
+                                    childMeta, buildValueSchemaMeta(elem, schemaDepth + 2)
+                                );
+                            }
                         }
                     }
                 } else if (msg.hasField(fd)) {
@@ -251,7 +252,6 @@ public final class OmniBufProtobuf {
     // Encoding
     // ========================================================================
 
-    @SuppressWarnings("unchecked")
     private static void encodeMessage(
             OmniBufEncoder enc, MessageOrBuilder msg, boolean deterministic) {
         Descriptor md = msg.getDescriptorForType();
@@ -282,9 +282,10 @@ public final class OmniBufProtobuf {
                     ? WireType.WIRE_SUB_MSG
                     : scalarWireType(valFd.getType());
 
-                List<Message> rawEntries = (List<Message>) val;
+                List<?> rawEntries = (List<?>) val;
                 Map<Object, Object> deduped = new LinkedHashMap<>(rawEntries.size());
-                for (Message entryMsg : rawEntries) {
+                for (Object rawEntry : rawEntries) {
+                    Message entryMsg = (Message) rawEntry;
                     deduped.put(entryMsg.getField(keyFd), entryMsg.getField(valFd));
                 }
 
@@ -299,7 +300,7 @@ public final class OmniBufProtobuf {
             }
 
             if (fd.isRepeated()) {
-                List<Object> list = (List<Object>) val;
+                List<?> list = (List<?>) val;
                 int count = list.size();
                 if (fd.getType() == FieldDescriptor.Type.MESSAGE) {
                     boolean largeArr = count > 0
@@ -398,7 +399,6 @@ public final class OmniBufProtobuf {
     // Decoding
     // ========================================================================
 
-    @SuppressWarnings("unchecked")
     private static void decodeIntoBuilder(
             OmniBufDecoder dec, Message.Builder builder, int depth) {
         if (depth > dec.maxNestingDepth()) {
@@ -453,8 +453,9 @@ public final class OmniBufProtobuf {
                 Map<Object, Object> acc = mapAccumulators.get(fd);
                 if (acc == null) {
                     acc = new LinkedHashMap<>();
-                    List<Message> existing = (List<Message>) builder.getField(fd);
-                    for (Message em : existing) {
+                    List<?> existing = (List<?>) builder.getField(fd);
+                    for (Object rawEm : existing) {
+                        Message em = (Message) rawEm;
                         acc.put(em.getField(keyFd), em.getField(valFd));
                     }
                     mapAccumulators.put(fd, acc);

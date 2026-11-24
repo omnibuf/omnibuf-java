@@ -177,6 +177,8 @@ public final class OmniBufBlind {
         Map<String, ByteArrayOutputStream> subMsgBuffers = null;
         Map<String, OmniBufDecoder.Slice> singleSubSlices = null;
         Map<String, BlindSchema> subMsgSchemas = null;
+        Map<String, List<Object>> arrayAccumulators = null;
+        Map<String, Map<String, Object>> mapAccumulators = null;
 
         pos = offset;
         while (pos < end) {
@@ -323,10 +325,13 @@ public final class OmniBufBlind {
                     OmniBufDecoder.Slice s = OmniBufDecoder.readLengthSlice(data, pos, end, 2);
                     pos = s.end();
                     BlindSchema childSchema = activeSchema != null ? activeSchema.childSchema(fnum) : null;
-                    @SuppressWarnings("unchecked")
-                    List<Object> list = (List<Object>) out.get(name);
+                    if (arrayAccumulators == null) {
+                        arrayAccumulators = new HashMap<>();
+                    }
+                    List<Object> list = arrayAccumulators.get(name);
                     if (list == null) {
                         list = new ArrayList<>();
+                        arrayAccumulators.put(name, list);
                         out.put(name, list);
                     }
                     decodeArrayBodyBlind(list, data, s.offset(), s.end(), childSchema, depth + 1, opts);
@@ -335,10 +340,13 @@ public final class OmniBufBlind {
                     OmniBufDecoder.Slice s = OmniBufDecoder.readLengthSlice(data, pos, end, 3);
                     pos = s.end();
                     BlindSchema childSchema = activeSchema != null ? activeSchema.childSchema(fnum) : null;
-                    @SuppressWarnings("unchecked")
-                    Map<String, Object> map = (Map<String, Object>) out.get(name);
+                    if (mapAccumulators == null) {
+                        mapAccumulators = new HashMap<>();
+                    }
+                    Map<String, Object> map = mapAccumulators.get(name);
                     if (map == null) {
                         map = new LinkedHashMap<>();
+                        mapAccumulators.put(name, map);
                         out.put(name, map);
                     }
                     decodeMapBodyBlind(map, data, s.offset(), s.end(), childSchema, depth + 1, opts);

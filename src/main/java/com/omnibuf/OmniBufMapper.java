@@ -57,13 +57,12 @@ public final class OmniBufMapper {
         return marshal(message, MarshalOptions.DEFAULT);
     }
 
-    @SuppressWarnings("unchecked")
     public static <T> byte[] marshal(T message, MarshalOptions options) {
         if (message == null) {
             throw new OmniBufException("omnibuf: cannot marshal null message");
         }
         MarshalOptions opts = options == null ? MarshalOptions.DEFAULT : options;
-        ClassCodec<T> codec = (ClassCodec<T>) getCodec(message.getClass());
+        ClassCodec<?> codec = getCodec(message.getClass());
         OmniBufEncoder enc = CodecPool.acquireEncoder();
         try {
             if (opts.selfDescribing()) {
@@ -100,7 +99,6 @@ public final class OmniBufMapper {
         unmarshal(data, target, UnmarshalOptions.DEFAULT);
     }
 
-    @SuppressWarnings("unchecked")
     public static <T> void unmarshal(byte[] data, T target, UnmarshalOptions options) {
         if (data == null) {
             throw new OmniBufException("omnibuf: null packet buffer");
@@ -113,7 +111,7 @@ public final class OmniBufMapper {
                 "omnibuf: Java records are immutable; use OmniBufMapper.unmarshal(data, RecordClass.class)"
             );
         }
-        ClassCodec<T> codec = (ClassCodec<T>) getCodec(target.getClass());
+        ClassCodec<?> codec = getCodec(target.getClass());
         OmniBufDecoder dec = CodecPool.acquireDecoder(data, 0, data.length, options);
         try {
             codec.resetInstance(target);
@@ -549,7 +547,6 @@ public final class OmniBufMapper {
             }
         }
 
-        @SuppressWarnings("unchecked")
         void applySlice(OmniBufDecoder dec, int depth) {
             if (depth > dec.maxNestingDepth()) {
                 throw new OmniBufException("omnibuf: nesting depth exceeds MaxNestingDepth");
@@ -606,14 +603,8 @@ public final class OmniBufMapper {
                         }
                         decodeLongArrayInto(dec, slot, acc, depth);
                     }
-                    case LIST -> {
-                        List<Object> list = (List<Object>) args[compIdx];
-                        args[compIdx] = decodeListInto(dec, slot, list, depth);
-                    }
-                    case MAP -> {
-                        Map<Object, Object> map = (Map<Object, Object>) args[compIdx];
-                        args[compIdx] = decodeMapInto(dec, slot, map, depth);
-                    }
+                    case LIST -> args[compIdx] = decodeListInto(dec, slot, args[compIdx], depth);
+                    case MAP -> args[compIdx] = decodeMapInto(dec, slot, args[compIdx], depth);
                     case SUB_MSG -> {
                         int subSaved = dec.readLengthPrefixedLimit(0);
                         if (slot.subCodec.isRecord) {
@@ -726,7 +717,7 @@ public final class OmniBufMapper {
             return b;
         }
 
-        void writeSelfDescribingField0(OmniBufEncoder enc, T message, boolean deterministic) {
+        void writeSelfDescribingField0(OmniBufEncoder enc, Object message, boolean deterministic) {
             SchemaMeta staticMeta = getSchemaMeta();
             if (cyclicSchema) {
                 SchemaMeta dynMeta = buildValueSchemaMeta(message, 1);
@@ -861,7 +852,7 @@ public final class OmniBufMapper {
             }
         }
 
-        void resetInstance(T target) {
+        void resetInstance(Object target) {
             for (FieldDescriptorSlot slot : orderedFields) {
                 switch (slot.category) {
                     case INT_SCALAR -> slot.writeInt(target, 0);
@@ -930,7 +921,6 @@ public final class OmniBufMapper {
             return false;
         }
 
-        @SuppressWarnings("unchecked")
         private void encodeField(
                 OmniBufEncoder enc, Object instance, FieldDescriptorSlot slot, boolean deterministic) {
             int fnum = slot.fieldNumber;
@@ -1016,7 +1006,7 @@ public final class OmniBufMapper {
                     }
                 }
                 case LIST -> {
-                    List<Object> list = (List<Object>) slot.readObject(instance);
+                    List<?> list = (List<?>) slot.readObject(instance);
                     if (slot.elemWireType == WireType.WIRE_SUB_MSG) {
                         int n = list == null ? 0 : list.size();
                         boolean largeArr = n > 0 && slot.subCodec.isLargeInstance(list.get(0), 1);
@@ -1035,7 +1025,7 @@ public final class OmniBufMapper {
                     }
                 }
                 case MAP -> {
-                    Map<Object, Object> map = (Map<Object, Object>) slot.readObject(instance);
+                    Map<?, ?> map = (Map<?, ?>) slot.readObject(instance);
                     encodeMapField(enc, slot, map, deterministic);
                 }
             }
@@ -1050,7 +1040,6 @@ public final class OmniBufMapper {
             return inst;
         }
 
-        @SuppressWarnings("unchecked")
         private T decodeRecordFrom(OmniBufDecoder dec, int depth) {
             if (depth > dec.maxNestingDepth()) {
                 throw new OmniBufException("omnibuf: nesting depth exceeds MaxNestingDepth");
@@ -1101,14 +1090,8 @@ public final class OmniBufMapper {
                         LongArrayList acc = longArrayAccum.computeIfAbsent(compIdx, k -> new LongArrayList());
                         decodeLongArrayInto(dec, slot, acc, depth);
                     }
-                    case LIST -> {
-                        List<Object> list = (List<Object>) args[compIdx];
-                        args[compIdx] = decodeListInto(dec, slot, list, depth);
-                    }
-                    case MAP -> {
-                        Map<Object, Object> map = (Map<Object, Object>) args[compIdx];
-                        args[compIdx] = decodeMapInto(dec, slot, map, depth);
-                    }
+                    case LIST -> args[compIdx] = decodeListInto(dec, slot, args[compIdx], depth);
+                    case MAP -> args[compIdx] = decodeMapInto(dec, slot, args[compIdx], depth);
                     case SUB_MSG -> {
                         if (!slot.subCodec.isRecord) {
                             int subSaved = dec.readLengthPrefixedLimit(0);
@@ -1178,7 +1161,6 @@ public final class OmniBufMapper {
             return instantiateRecord(args);
         }
 
-        @SuppressWarnings("unchecked")
         void decodeFrom(OmniBufDecoder dec, Object target, int depth) {
             if (depth > dec.maxNestingDepth()) {
                 throw new OmniBufException("omnibuf: nesting depth exceeds MaxNestingDepth");
@@ -1244,14 +1226,14 @@ public final class OmniBufMapper {
                         decodeLongArrayInto(dec, slot, acc, depth);
                     }
                     case LIST -> {
-                        List<Object> list = (List<Object>) slot.readObject(target);
+                        Object list = slot.readObject(target);
                         List<Object> updated = decodeListInto(dec, slot, list, depth);
                         if (updated != list) {
                             slot.writeObject(target, updated);
                         }
                     }
                     case MAP -> {
-                        Map<Object, Object> map = (Map<Object, Object>) slot.readObject(target);
+                        Object map = slot.readObject(target);
                         Map<Object, Object> updated = decodeMapInto(dec, slot, map, depth);
                         if (updated != map) {
                             slot.writeObject(target, updated);
@@ -1373,7 +1355,7 @@ public final class OmniBufMapper {
 
     @SuppressWarnings("unchecked")
     private static void encodeScalarList(
-            OmniBufEncoder enc, int fnum, int elemWT, Class<?> elemClass, List<Object> list) {
+            OmniBufEncoder enc, int fnum, int elemWT, Class<?> elemClass, List<?> list) {
         if (elemClass != null && elemClass.isEnum()) {
             int n = list == null ? 0 : list.size();
             int arrPos = enc.beginTypedArrayFast(fnum, WireType.WIRE_SINT, n);
@@ -1439,15 +1421,15 @@ public final class OmniBufMapper {
         }
     }
 
-    private static void encodeMapField(
+    private static <K, V> void encodeMapField(
             OmniBufEncoder enc,
             FieldDescriptorSlot slot,
-            Map<Object, Object> map,
+            Map<K, V> map,
             boolean deterministic) {
         int n = map == null ? 0 : map.size();
         int mapPos = enc.beginTypedMapFast(slot.fieldNumber, slot.mapKeyWireType, slot.mapValWireType, n);
         if (n > 0) {
-            for (Map.Entry<Object, Object> entry :
+            for (Map.Entry<K, V> entry :
                     OmniBufEncoder.sortMapEntries(map, slot.mapKeyWireType, deterministic)) {
                 writeInlineValue(enc, slot.mapKeyWireType, null, entry.getKey(), deterministic);
                 writeInlineValue(enc, slot.mapValWireType, slot.subCodec, entry.getValue(), deterministic);
@@ -1541,7 +1523,8 @@ public final class OmniBufMapper {
 
     @SuppressWarnings("unchecked")
     private static List<Object> decodeListInto(
-            OmniBufDecoder dec, FieldDescriptorSlot slot, List<Object> target, int depth) {
+            OmniBufDecoder dec, FieldDescriptorSlot slot, Object rawTarget, int depth) {
+        List<Object> target = (List<Object>) rawTarget;
         long arrState = dec.beginArray(slot.elemWireType, depth);
         if (arrState < 0L) {
             return target == null ? slot.newList(0) : target;
@@ -1639,8 +1622,10 @@ public final class OmniBufMapper {
         return list;
     }
 
+    @SuppressWarnings("unchecked")
     private static Map<Object, Object> decodeMapInto(
-            OmniBufDecoder dec, FieldDescriptorSlot slot, Map<Object, Object> target, int depth) {
+            OmniBufDecoder dec, FieldDescriptorSlot slot, Object rawTarget, int depth) {
+        Map<Object, Object> target = (Map<Object, Object>) rawTarget;
         long mapState = dec.beginMap(slot.mapKeyWireType, slot.mapValWireType, depth);
         if (mapState < 0L) {
             return target == null ? slot.newMap(4) : target;
