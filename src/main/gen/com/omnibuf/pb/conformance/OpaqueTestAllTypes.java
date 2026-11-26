@@ -277,6 +277,10 @@ public final class OpaqueTestAllTypes {
         return this;
     }
 
+    public OpaqueTestAllTypes clearF8SubMsg() {
+        return setF8SubMsg(null);
+    }
+
     public List<String> getF9StringArr() {
         DirtyState d = this.dirty;
         if (d != null && (d.dirtyMask & 0x200L) != 0L) {

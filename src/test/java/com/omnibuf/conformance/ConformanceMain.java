@@ -25,12 +25,36 @@ import com.omnibuf.pb.bench.OpaquePeerUpdate;
 import com.omnibuf.pb.bench.PeerUpdate;
 import com.omnibuf.pb.bench.PeerUpdateOmniBuf;
 import com.omnibuf.pb.conformance.AllTypesSubMsg;
+import com.omnibuf.pb.conformance.Editions2023Child;
+import com.omnibuf.pb.conformance.Editions2023Status;
+import com.omnibuf.pb.conformance.Editions2024Child;
+import com.omnibuf.pb.conformance.Editions2024Status;
+import com.omnibuf.pb.conformance.Editions2026Child;
+import com.omnibuf.pb.conformance.Editions2026Status;
 import com.omnibuf.pb.conformance.OmniBufAllTypesSubMsg;
+import com.omnibuf.pb.conformance.OmniBufEditions2023Child;
+import com.omnibuf.pb.conformance.OmniBufEditions2024Child;
+import com.omnibuf.pb.conformance.OmniBufEditions2026Child;
 import com.omnibuf.pb.conformance.OmniBufTestAllTypes;
+import com.omnibuf.pb.conformance.OmniBufTestEditions2023;
+import com.omnibuf.pb.conformance.OmniBufTestEditions2024;
+import com.omnibuf.pb.conformance.OmniBufTestEditions2026;
 import com.omnibuf.pb.conformance.OpaqueAllTypesSubMsg;
+import com.omnibuf.pb.conformance.OpaqueEditions2023Child;
+import com.omnibuf.pb.conformance.OpaqueEditions2024Child;
+import com.omnibuf.pb.conformance.OpaqueEditions2026Child;
 import com.omnibuf.pb.conformance.OpaqueTestAllTypes;
+import com.omnibuf.pb.conformance.OpaqueTestEditions2023;
+import com.omnibuf.pb.conformance.OpaqueTestEditions2024;
+import com.omnibuf.pb.conformance.OpaqueTestEditions2026;
 import com.omnibuf.pb.conformance.TestAllTypes;
 import com.omnibuf.pb.conformance.TestAllTypesOmniBuf;
+import com.omnibuf.pb.conformance.TestEditions2023;
+import com.omnibuf.pb.conformance.TestEditions2023OmniBuf;
+import com.omnibuf.pb.conformance.TestEditions2024;
+import com.omnibuf.pb.conformance.TestEditions2024OmniBuf;
+import com.omnibuf.pb.conformance.TestEditions2026;
+import com.omnibuf.pb.conformance.TestEditions2026OmniBuf;
 import com.omnibuf.wire.OmniBufEncoder;
 import com.omnibuf.wire.OmniBufOpaque;
 import com.omnibuf.wire.PrefixVarint;
@@ -211,7 +235,12 @@ public final class ConformanceMain {
         switch (req.getMessageType()) {
             case "omnibuf.bench.PeerUpdate" -> handlePluginPeerUpdate(req, payload, resp);
             case "omnibuf.conformance.TestAllTypes" -> handlePluginTestAllTypes(req, payload, resp);
-            default -> resp.setSkipped("plugin tier generated for PeerUpdate and TestAllTypes");
+            case "omnibuf.conformance.TestEditions2023" -> handlePluginTestEditions2023(req, payload, resp);
+            case "omnibuf.conformance.TestEditions2024" -> handlePluginTestEditions2024(req, payload, resp);
+            case "omnibuf.conformance.TestEditions2026" -> handlePluginTestEditions2026(req, payload, resp);
+            default -> resp.setSkipped(
+                "plugin tier generated for PeerUpdate, TestAllTypes, and Editions 2023/2024/2026"
+            );
         }
     }
 
@@ -513,6 +542,270 @@ public final class ConformanceMain {
         }
     }
 
+    private static void handlePluginTestEditions2023(
+            ConformanceRequestFrame req, byte[] payload, ConformanceResponseFrame resp) {
+        Map<String, Integer> staleScores = new LinkedHashMap<>();
+        staleScores.put("stale", 999);
+        OmniBufEditions2023Child staleChild = new OmniBufEditions2023Child()
+            .setId(999)
+            .setNote("stale");
+        OmniBufTestEditions2023 msg = new OmniBufTestEditions2023()
+            .setExplicitInt(999)
+            .setExplicitBool(true)
+            .setExplicitString("stale")
+            .setExplicitBytes(new byte[] {(byte) 0xFF})
+            .setExplicitDouble(99.5d)
+            .setStatus(Editions2023Status.EDITIONS2023_STATUS_PAUSED_VALUE)
+            .setImplicitCount(999)
+            .setImplicitFlag(true)
+            .setChild(staleChild)
+            .setDelimitedChild(staleChild)
+            .setPackedVals(List.of(999))
+            .setExpandedVals(List.of(999))
+            .setScores(staleScores)
+            .setChoiceText("stale");
+
+        try {
+            TestEditions2023OmniBuf.unmarshal(payload, msg);
+        } catch (OmniBufException e) {
+            resp.setParseError(e.getMessage());
+            return;
+        }
+
+        OpaqueTestEditions2023 op = new OpaqueTestEditions2023(payload);
+        if (!opaqueEditions2023Matches(op, msg)) {
+            resp.setParseError("opaque TestEditions2023 getter mismatch with decoded struct");
+            return;
+        }
+
+        try {
+            resp.setOmnibufPayload(
+                TestEditions2023OmniBuf.marshal(msg, MarshalOptions.of(true, req.getSelfDescribing()))
+            );
+        } catch (OmniBufException e) {
+            resp.setSerializeError(e.getMessage());
+        }
+    }
+
+    private static boolean opaqueEditions2023ChildMatches(
+            OpaqueEditions2023Child op, OmniBufEditions2023Child want) {
+        if (op == null || want == null) {
+            return op == null && want == null;
+        }
+        return op.hasId() == want.hasId()
+            && op.getId() == want.getId()
+            && op.hasNote() == want.hasNote()
+            && op.getNote().equals(want.getNote());
+    }
+
+    private static boolean opaqueEditions2023Matches(
+            OpaqueTestEditions2023 op, OmniBufTestEditions2023 msg) {
+        return op.hasExplicitInt() == msg.hasExplicitInt()
+            && op.getExplicitInt() == msg.getExplicitInt()
+            && op.hasExplicitBool() == msg.hasExplicitBool()
+            && op.getExplicitBool() == msg.getExplicitBool()
+            && op.hasExplicitString() == msg.hasExplicitString()
+            && op.getExplicitString().equals(msg.getExplicitString())
+            && op.hasExplicitBytes() == msg.hasExplicitBytes()
+            && Arrays.equals(op.getExplicitBytes(), msg.getExplicitBytes())
+            && op.hasExplicitDouble() == msg.hasExplicitDouble()
+            && Double.doubleToRawLongBits(op.getExplicitDouble())
+                == Double.doubleToRawLongBits(msg.getExplicitDouble())
+            && op.hasStatus() == msg.hasStatus()
+            && op.getStatus() == msg.getStatus()
+            && op.getImplicitCount() == msg.getImplicitCount()
+            && op.getImplicitFlag() == msg.getImplicitFlag()
+            && op.hasChild() == msg.hasChild()
+            && opaqueEditions2023ChildMatches(op.getChild(), msg.getChild())
+            && op.hasDelimitedChild() == msg.hasDelimitedChild()
+            && opaqueEditions2023ChildMatches(op.getDelimitedChild(), msg.getDelimitedChild())
+            && op.getPackedVals().equals(msg.getPackedVals())
+            && op.getExpandedVals().equals(msg.getExpandedVals())
+            && op.getScores().equals(msg.getScores())
+            && op.getChoiceCase() == msg.getChoiceCase()
+            && op.getChoiceInt() == msg.getChoiceInt()
+            && op.getChoiceText().equals(msg.getChoiceText())
+            && op.getChoiceFlag() == msg.getChoiceFlag()
+            && op.hasChoiceChild() == msg.hasChoiceChild()
+            && opaqueEditions2023ChildMatches(op.getChoiceChild(), msg.getChoiceChild());
+    }
+
+    private static void handlePluginTestEditions2024(
+            ConformanceRequestFrame req, byte[] payload, ConformanceResponseFrame resp) {
+        Map<String, Integer> staleScores = new LinkedHashMap<>();
+        staleScores.put("stale", 999);
+        OmniBufEditions2024Child staleChild = new OmniBufEditions2024Child()
+            .setId(999)
+            .setNote("stale");
+        OmniBufTestEditions2024 msg = new OmniBufTestEditions2024()
+            .setExplicitInt(999)
+            .setExplicitBool(true)
+            .setExplicitString("stale")
+            .setExplicitBytes(new byte[] {(byte) 0xFF})
+            .setExplicitDouble(99.5d)
+            .setStatus(Editions2024Status.EDITIONS2024_STATUS_PAUSED_VALUE)
+            .setImplicitCount(999)
+            .setImplicitFlag(true)
+            .setChild(staleChild)
+            .setDelimitedChild(staleChild)
+            .setPackedVals(List.of(999))
+            .setExpandedVals(List.of(999))
+            .setScores(staleScores)
+            .setChoiceText("stale");
+
+        try {
+            TestEditions2024OmniBuf.unmarshal(payload, msg);
+        } catch (OmniBufException e) {
+            resp.setParseError(e.getMessage());
+            return;
+        }
+
+        OpaqueTestEditions2024 op = new OpaqueTestEditions2024(payload);
+        if (!opaqueEditions2024Matches(op, msg)) {
+            resp.setParseError("opaque TestEditions2024 getter mismatch with decoded struct");
+            return;
+        }
+
+        try {
+            resp.setOmnibufPayload(
+                TestEditions2024OmniBuf.marshal(msg, MarshalOptions.of(true, req.getSelfDescribing()))
+            );
+        } catch (OmniBufException e) {
+            resp.setSerializeError(e.getMessage());
+        }
+    }
+
+    private static boolean opaqueEditions2024ChildMatches(
+            OpaqueEditions2024Child op, OmniBufEditions2024Child want) {
+        if (op == null || want == null) {
+            return op == null && want == null;
+        }
+        return op.hasId() == want.hasId()
+            && op.getId() == want.getId()
+            && op.hasNote() == want.hasNote()
+            && op.getNote().equals(want.getNote());
+    }
+
+    private static boolean opaqueEditions2024Matches(
+            OpaqueTestEditions2024 op, OmniBufTestEditions2024 msg) {
+        return op.hasExplicitInt() == msg.hasExplicitInt()
+            && op.getExplicitInt() == msg.getExplicitInt()
+            && op.hasExplicitBool() == msg.hasExplicitBool()
+            && op.getExplicitBool() == msg.getExplicitBool()
+            && op.hasExplicitString() == msg.hasExplicitString()
+            && op.getExplicitString().equals(msg.getExplicitString())
+            && op.hasExplicitBytes() == msg.hasExplicitBytes()
+            && Arrays.equals(op.getExplicitBytes(), msg.getExplicitBytes())
+            && op.hasExplicitDouble() == msg.hasExplicitDouble()
+            && Double.doubleToRawLongBits(op.getExplicitDouble())
+                == Double.doubleToRawLongBits(msg.getExplicitDouble())
+            && op.hasStatus() == msg.hasStatus()
+            && op.getStatus() == msg.getStatus()
+            && op.getImplicitCount() == msg.getImplicitCount()
+            && op.getImplicitFlag() == msg.getImplicitFlag()
+            && op.hasChild() == msg.hasChild()
+            && opaqueEditions2024ChildMatches(op.getChild(), msg.getChild())
+            && op.hasDelimitedChild() == msg.hasDelimitedChild()
+            && opaqueEditions2024ChildMatches(op.getDelimitedChild(), msg.getDelimitedChild())
+            && op.getPackedVals().equals(msg.getPackedVals())
+            && op.getExpandedVals().equals(msg.getExpandedVals())
+            && op.getScores().equals(msg.getScores())
+            && op.getChoiceCase() == msg.getChoiceCase()
+            && op.getChoiceInt() == msg.getChoiceInt()
+            && op.getChoiceText().equals(msg.getChoiceText())
+            && op.getChoiceFlag() == msg.getChoiceFlag()
+            && op.hasChoiceChild() == msg.hasChoiceChild()
+            && opaqueEditions2024ChildMatches(op.getChoiceChild(), msg.getChoiceChild());
+    }
+
+    private static void handlePluginTestEditions2026(
+            ConformanceRequestFrame req, byte[] payload, ConformanceResponseFrame resp) {
+        Map<String, Integer> staleScores = new LinkedHashMap<>();
+        staleScores.put("stale", 999);
+        OmniBufEditions2026Child staleChild = new OmniBufEditions2026Child()
+            .setId(999)
+            .setNote("stale");
+        OmniBufTestEditions2026 msg = new OmniBufTestEditions2026()
+            .setExplicitInt(999)
+            .setExplicitBool(true)
+            .setExplicitString("stale")
+            .setExplicitBytes(new byte[] {(byte) 0xFF})
+            .setExplicitDouble(99.5d)
+            .setStatus(Editions2026Status.EDITIONS2026_STATUS_PAUSED_VALUE)
+            .setImplicitCount(999)
+            .setImplicitFlag(true)
+            .setChild(staleChild)
+            .setDelimitedChild(staleChild)
+            .setPackedVals(List.of(999))
+            .setExpandedVals(List.of(999))
+            .setScores(staleScores)
+            .setChoiceText("stale");
+
+        try {
+            TestEditions2026OmniBuf.unmarshal(payload, msg);
+        } catch (OmniBufException e) {
+            resp.setParseError(e.getMessage());
+            return;
+        }
+
+        OpaqueTestEditions2026 op = new OpaqueTestEditions2026(payload);
+        if (!opaqueEditions2026Matches(op, msg)) {
+            resp.setParseError("opaque TestEditions2026 getter mismatch with decoded struct");
+            return;
+        }
+
+        try {
+            resp.setOmnibufPayload(
+                TestEditions2026OmniBuf.marshal(msg, MarshalOptions.of(true, req.getSelfDescribing()))
+            );
+        } catch (OmniBufException e) {
+            resp.setSerializeError(e.getMessage());
+        }
+    }
+
+    private static boolean opaqueEditions2026ChildMatches(
+            OpaqueEditions2026Child op, OmniBufEditions2026Child want) {
+        if (op == null || want == null) {
+            return op == null && want == null;
+        }
+        return op.hasId() == want.hasId()
+            && op.getId() == want.getId()
+            && op.hasNote() == want.hasNote()
+            && op.getNote().equals(want.getNote());
+    }
+
+    private static boolean opaqueEditions2026Matches(
+            OpaqueTestEditions2026 op, OmniBufTestEditions2026 msg) {
+        return op.hasExplicitInt() == msg.hasExplicitInt()
+            && op.getExplicitInt() == msg.getExplicitInt()
+            && op.hasExplicitBool() == msg.hasExplicitBool()
+            && op.getExplicitBool() == msg.getExplicitBool()
+            && op.hasExplicitString() == msg.hasExplicitString()
+            && op.getExplicitString().equals(msg.getExplicitString())
+            && op.hasExplicitBytes() == msg.hasExplicitBytes()
+            && Arrays.equals(op.getExplicitBytes(), msg.getExplicitBytes())
+            && op.hasExplicitDouble() == msg.hasExplicitDouble()
+            && Double.doubleToRawLongBits(op.getExplicitDouble())
+                == Double.doubleToRawLongBits(msg.getExplicitDouble())
+            && op.hasStatus() == msg.hasStatus()
+            && op.getStatus() == msg.getStatus()
+            && op.getImplicitCount() == msg.getImplicitCount()
+            && op.getImplicitFlag() == msg.getImplicitFlag()
+            && op.hasChild() == msg.hasChild()
+            && opaqueEditions2026ChildMatches(op.getChild(), msg.getChild())
+            && op.hasDelimitedChild() == msg.hasDelimitedChild()
+            && opaqueEditions2026ChildMatches(op.getDelimitedChild(), msg.getDelimitedChild())
+            && op.getPackedVals().equals(msg.getPackedVals())
+            && op.getExpandedVals().equals(msg.getExpandedVals())
+            && op.getScores().equals(msg.getScores())
+            && op.getChoiceCase() == msg.getChoiceCase()
+            && op.getChoiceInt() == msg.getChoiceInt()
+            && op.getChoiceText().equals(msg.getChoiceText())
+            && op.getChoiceFlag() == msg.getChoiceFlag()
+            && op.hasChoiceChild() == msg.hasChoiceChild()
+            && opaqueEditions2026ChildMatches(op.getChoiceChild(), msg.getChoiceChild());
+    }
+
     private static void checkSpliceAliasedPrefix(byte[] packet) {
         OmniBufOpaque.DirtyFieldWriter appendDirty = (enc, fnum) -> enc.writeUint(fnum, 1L << 40);
         byte[] spliced = OmniBufOpaque.spliceFields(packet, 1L << 1, 2, appendDirty);
@@ -597,7 +890,105 @@ public final class ConformanceMain {
                     resp.setSerializeError(e.getMessage());
                 }
             }
-            default -> resp.setSkipped("protobuf types tier exercises PeerUpdate and TestAllTypes");
+            case "omnibuf.conformance.TestEditions2023" -> {
+                Editions2023Child staleChild = Editions2023Child.newBuilder()
+                    .setId(999)
+                    .setNote("stale")
+                    .build();
+                TestEditions2023.Builder builder = TestEditions2023.newBuilder()
+                    .setExplicitInt(999)
+                    .setExplicitBool(true)
+                    .setExplicitString("stale")
+                    .setExplicitBytes(ByteString.copyFrom(new byte[] {(byte) 0xFF}))
+                    .setExplicitDouble(99.5d)
+                    .setStatus(Editions2023Status.EDITIONS2023_STATUS_PAUSED)
+                    .setImplicitCount(999)
+                    .setImplicitFlag(true)
+                    .setChild(staleChild)
+                    .setDelimitedChild(staleChild)
+                    .addPackedVals(999)
+                    .addExpandedVals(999)
+                    .putScores("stale", 999)
+                    .setChoiceText("stale");
+                try {
+                    OmniBufProtobuf.unmarshal(payload, builder);
+                } catch (OmniBufException e) {
+                    resp.setParseError(e.getMessage());
+                    return;
+                }
+                try {
+                    resp.setOmnibufPayload(OmniBufProtobuf.marshal(builder.build(), opts));
+                } catch (OmniBufException e) {
+                    resp.setSerializeError(e.getMessage());
+                }
+            }
+            case "omnibuf.conformance.TestEditions2024" -> {
+                Editions2024Child staleChild = Editions2024Child.newBuilder()
+                    .setId(999)
+                    .setNote("stale")
+                    .build();
+                TestEditions2024.Builder builder = TestEditions2024.newBuilder()
+                    .setExplicitInt(999)
+                    .setExplicitBool(true)
+                    .setExplicitString("stale")
+                    .setExplicitBytes(ByteString.copyFrom(new byte[] {(byte) 0xFF}))
+                    .setExplicitDouble(99.5d)
+                    .setStatus(Editions2024Status.EDITIONS2024_STATUS_PAUSED)
+                    .setImplicitCount(999)
+                    .setImplicitFlag(true)
+                    .setChild(staleChild)
+                    .setDelimitedChild(staleChild)
+                    .addPackedVals(999)
+                    .addExpandedVals(999)
+                    .putScores("stale", 999)
+                    .setChoiceText("stale");
+                try {
+                    OmniBufProtobuf.unmarshal(payload, builder);
+                } catch (OmniBufException e) {
+                    resp.setParseError(e.getMessage());
+                    return;
+                }
+                try {
+                    resp.setOmnibufPayload(OmniBufProtobuf.marshal(builder.build(), opts));
+                } catch (OmniBufException e) {
+                    resp.setSerializeError(e.getMessage());
+                }
+            }
+            case "omnibuf.conformance.TestEditions2026" -> {
+                Editions2026Child staleChild = Editions2026Child.newBuilder()
+                    .setId(999)
+                    .setNote("stale")
+                    .build();
+                TestEditions2026.Builder builder = TestEditions2026.newBuilder()
+                    .setExplicitInt(999)
+                    .setExplicitBool(true)
+                    .setExplicitString("stale")
+                    .setExplicitBytes(ByteString.copyFrom(new byte[] {(byte) 0xFF}))
+                    .setExplicitDouble(99.5d)
+                    .setStatus(Editions2026Status.EDITIONS2026_STATUS_PAUSED)
+                    .setImplicitCount(999)
+                    .setImplicitFlag(true)
+                    .setChild(staleChild)
+                    .setDelimitedChild(staleChild)
+                    .addPackedVals(999)
+                    .addExpandedVals(999)
+                    .putScores("stale", 999)
+                    .setChoiceText("stale");
+                try {
+                    OmniBufProtobuf.unmarshal(payload, builder);
+                } catch (OmniBufException e) {
+                    resp.setParseError(e.getMessage());
+                    return;
+                }
+                try {
+                    resp.setOmnibufPayload(OmniBufProtobuf.marshal(builder.build(), opts));
+                } catch (OmniBufException e) {
+                    resp.setSerializeError(e.getMessage());
+                }
+            }
+            default -> resp.setSkipped(
+                "protobuf types tier exercises PeerUpdate, TestAllTypes, and Editions 2023/2024/2026"
+            );
         }
     }
 

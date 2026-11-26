@@ -6,7 +6,7 @@
 
   <groupId>com.omnibuf</groupId>
   <artifactId>omnibuf-java</artifactId>
-  <version>0.1.7</version>
+  <version>0.1.8</version>
   <packaging>jar</packaging>
 
   <name>OmniBuf Java</name>
@@ -139,6 +139,20 @@
             <arg>-Xlint:all,-this-escape</arg>
           </compilerArgs>
         </configuration>
+        <executions>
+          <execution>
+            <id>default-testCompile</id>
+            <goals>
+              <goal>testCompile</goal>
+            </goals>
+            <configuration>
+              <!-- protoc java_out emits calls to deprecated CodedOutputStream.writeGroup/computeGroupSize for Editions DELIMITED fields in src/main/gen -->
+              <compilerArgs>
+                <arg>-Xlint:all,-this-escape,-deprecation</arg>
+              </compilerArgs>
+            </configuration>
+          </execution>
+        </executions>
       </plugin>
 
       <plugin>

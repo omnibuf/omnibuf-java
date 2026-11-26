@@ -81,6 +81,7 @@ public final class ProtocGenOmniBufJava {
         String schemaTypeName,
         String javaPackage,
         boolean isProto2,
+        boolean isEditions,
         DescriptorProto descriptor,
         Map<String, DescriptorProto> mapEntries
     ) {
@@ -141,18 +142,34 @@ public final class ProtocGenOmniBufJava {
 
     public static CodeGeneratorResponse generate(CodeGeneratorRequest request) {
         CodeGeneratorResponse.Builder resp = CodeGeneratorResponse.newBuilder();
-        resp.setSupportedFeatures(
-            CodeGeneratorResponse.Feature.FEATURE_PROTO3_OPTIONAL_VALUE
-        );
+        resp.setSupportedFeatures(EditionResolver.SUPPORTED_FEATURES);
+        resp.setMinimumEdition(EditionResolver.MIN_EDITION)
+            .setMaximumEdition(EditionResolver.MAX_EDITION);
 
         try {
+            Set<String> targetFiles = new HashSet<>(request.getFileToGenerateList());
+            Map<String, Boolean> enumClosedRegistry = new HashMap<>();
+            Map<String, Boolean> fileIsEditions = new HashMap<>();
+            Map<String, FileDescriptorProto> unresolvedDepFiles = new HashMap<>();
+            List<FileDescriptorProto> processedFiles = new ArrayList<>(request.getProtoFileCount());
+            for (FileDescriptorProto file : request.getProtoFileList()) {
+                boolean isEditions = EditionResolver.isEditions(file);
+                fileIsEditions.put(file.getName(), isEditions);
+                EditionResolver.collectEnumClosedMap(file, enumClosedRegistry);
+                if (targetFiles.contains(file.getName())) {
+                    processedFiles.add(EditionResolver.resolve(file));
+                } else {
+                    unresolvedDepFiles.put(file.getName(), file);
+                    processedFiles.add(file);
+                }
+            }
+
             Map<String, MessageInfo> registry = new LinkedHashMap<>();
             Map<String, EnumDescriptorProto> enumRegistry = new LinkedHashMap<>();
             Map<String, Set<String>> usedClassNamesByPkg = new HashMap<>();
             Map<String, String> reservedTopLevelSimple = new HashMap<>();
-            Set<String> targetFiles = new HashSet<>(request.getFileToGenerateList());
 
-            for (FileDescriptorProto file : request.getProtoFileList()) {
+            for (FileDescriptorProto file : processedFiles) {
                 String protoPkg = file.getPackage();
                 String javaPkg = file.getOptions().hasJavaPackage() && !file.getOptions().getJavaPackage().isEmpty()
                     ? file.getOptions().getJavaPackage()
@@ -167,19 +184,18 @@ public final class ProtocGenOmniBufJava {
                 }
             }
 
-            for (FileDescriptorProto file : request.getProtoFileList()) {
+            for (FileDescriptorProto file : processedFiles) {
                 String protoPkg = file.getPackage();
                 String javaPkg = file.getOptions().hasJavaPackage() && !file.getOptions().getJavaPackage().isEmpty()
                     ? file.getOptions().getJavaPackage()
                     : protoPkg;
-                boolean isProto2 = !"proto3".equals(file.getSyntax());
+                boolean isEditions = Boolean.TRUE.equals(fileIsEditions.get(file.getName()));
+                boolean isProto2 = !isEditions && !"proto3".equals(file.getSyntax());
                 String protoPrefix = protoPkg.isEmpty() ? "." : "." + protoPkg + ".";
                 Set<String> pkgClasses = usedClassNamesByPkg.computeIfAbsent(javaPkg, k -> new HashSet<>());
 
-                if (targetFiles.contains(file.getName()) && file.getExtensionCount() > 0) {
-                    throw new PluginValidationException(
-                        "omnibuf: proto2 extensions are not supported in " + file.getName()
-                    );
+                if (targetFiles.contains(file.getName())) {
+                    validateFileExtensions(file);
                 }
 
                 for (EnumDescriptorProto ed : file.getEnumTypeList()) {
@@ -194,6 +210,7 @@ public final class ProtocGenOmniBufJava {
                         targetFiles.contains(file.getName()),
                         javaPkg,
                         isProto2,
+                        isEditions,
                         fullProto,
                         topSimple,
                         true,
@@ -207,16 +224,26 @@ public final class ProtocGenOmniBufJava {
 
             // Validate and resolve all messages in target files (plus any referenced dependency messages)
             Map<String, ResolvedMessage> resolvedCache = new LinkedHashMap<>();
+            Set<String> validatedDepFiles = new HashSet<>();
+            List<MessageInfo> targetMessages = new ArrayList<>();
             for (MessageInfo info : registry.values()) {
                 if (targetFiles.contains(info.sourceFileName())) {
-                    resolveMessageGraph(info, registry, enumRegistry, resolvedCache);
+                    targetMessages.add(info);
                 }
             }
+            for (MessageInfo info : targetMessages) {
+                resolveMessageGraph(
+                    info,
+                    registry,
+                    enumRegistry,
+                    enumClosedRegistry,
+                    unresolvedDepFiles,
+                    validatedDepFiles,
+                    resolvedCache
+                );
+            }
 
-            for (MessageInfo info : registry.values()) {
-                if (!targetFiles.contains(info.sourceFileName())) {
-                    continue;
-                }
+            for (MessageInfo info : targetMessages) {
                 ResolvedMessage resolved = resolvedCache.get(info.protoFullName());
                 String dirPrefix = info.javaPackage().isEmpty()
                     ? ""
@@ -243,11 +270,82 @@ public final class ProtocGenOmniBufJava {
             }
 
             return resp.build();
-        } catch (PluginValidationException e) {
+        } catch (PluginValidationException | IllegalArgumentException e) {
             return CodeGeneratorResponse.newBuilder()
-                .setSupportedFeatures(CodeGeneratorResponse.Feature.FEATURE_PROTO3_OPTIONAL_VALUE)
+                .setSupportedFeatures(EditionResolver.SUPPORTED_FEATURES)
+                .setMinimumEdition(EditionResolver.MIN_EDITION)
+                .setMaximumEdition(EditionResolver.MAX_EDITION)
                 .setError(e.getMessage())
                 .build();
+        }
+    }
+
+    private static void validateFileExtensions(FileDescriptorProto file) {
+        for (FieldDescriptorProto ext : file.getExtensionList()) {
+            if (!EditionResolver.isDescriptorOptionExtension(ext)) {
+                throw new PluginValidationException(
+                    "omnibuf: extensions are not supported in "
+                        + file.getName() + " (" + ext.getName() + " extends " + ext.getExtendee() + ")"
+                );
+            }
+        }
+    }
+
+    private static void validateMessageExtensions(String fullProtoName, DescriptorProto msg) {
+        if (msg.getExtensionRangeCount() > 0) {
+            throw new PluginValidationException(
+                "omnibuf: extension ranges are not supported on message " + fullProtoName
+            );
+        }
+        for (FieldDescriptorProto ext : msg.getExtensionList()) {
+            if (!EditionResolver.isDescriptorOptionExtension(ext)) {
+                throw new PluginValidationException(
+                    "omnibuf: extensions are not supported on message "
+                        + fullProtoName + " (" + ext.getName() + " extends " + ext.getExtendee() + ")"
+                );
+            }
+        }
+    }
+
+    private static void updateResolvedDependencyMessages(
+            FileDescriptorProto resolvedFile, Map<String, MessageInfo> registry) {
+        String protoPkg = resolvedFile.getPackage();
+        String protoPrefix = protoPkg.isEmpty() ? "." : "." + protoPkg + ".";
+        for (DescriptorProto msg : resolvedFile.getMessageTypeList()) {
+            updateResolvedDepMessageRecursive(protoPrefix + msg.getName(), msg, registry);
+        }
+    }
+
+    private static void updateResolvedDepMessageRecursive(
+            String fullProtoName, DescriptorProto msg, Map<String, MessageInfo> registry) {
+        if (msg.getOptions().getMapEntry()) {
+            return;
+        }
+        Map<String, DescriptorProto> mapEntries = new HashMap<>();
+        for (DescriptorProto nested : msg.getNestedTypeList()) {
+            String nestedFull = fullProtoName + "." + nested.getName();
+            if (nested.getOptions().getMapEntry()) {
+                mapEntries.put(nestedFull, nested);
+            } else {
+                updateResolvedDepMessageRecursive(nestedFull, nested, registry);
+            }
+        }
+        MessageInfo old = registry.get(fullProtoName);
+        if (old != null) {
+            registry.put(
+                fullProtoName,
+                new MessageInfo(
+                    old.sourceFileName(),
+                    old.protoFullName(),
+                    old.simpleName(),
+                    old.schemaTypeName(),
+                    old.javaPackage(),
+                    old.isProto2(),
+                    old.isEditions(),
+                    msg,
+                    mapEntries
+                )
+            );
         }
     }
 
@@ -271,6 +369,7 @@ public final class ProtocGenOmniBufJava {
             boolean isTargetFile,
             String javaPkg,
             boolean isProto2,
+            boolean isEditions,
             String fullProtoName,
             String candidateSimpleName,
             boolean alreadyAllocated,
@@ -281,10 +380,8 @@ public final class ProtocGenOmniBufJava {
         if (msg.getOptions().getMapEntry()) {
             return;
         }
-        if (isTargetFile && (msg.getExtensionCount() > 0 || msg.getExtensionRangeCount() > 0)) {
-            throw new PluginValidationException(
-                "omnibuf: proto2 extensions are not supported on message " + fullProtoName
-            );
+        if (isTargetFile) {
+            validateMessageExtensions(fullProtoName, msg);
         }
 
         String flatJavaSimpleName = alreadyAllocated
@@ -306,6 +403,7 @@ public final class ProtocGenOmniBufJava {
                     isTargetFile,
                     javaPkg,
                     isProto2,
+                    isEditions,
                     nestedFullProto,
                     flatJavaSimpleName + "_" + nested.getName(),
                     false,
@@ -326,6 +424,7 @@ public final class ProtocGenOmniBufJava {
                 msg.getName(),
                 javaPkg,
                 isProto2,
+                isEditions,
                 msg,
                 mapEntries
             )
@@ -336,17 +435,26 @@ public final class ProtocGenOmniBufJava {
             MessageInfo info,
             Map<String, MessageInfo> registry,
             Map<String, EnumDescriptorProto> enumRegistry,
+            Map<String, Boolean> enumClosedRegistry,
+            Map<String, FileDescriptorProto> unresolvedDepFiles,
+            Set<String> validatedDepFiles,
             Map<String, ResolvedMessage> resolvedCache) {
         ResolvedMessage existing = resolvedCache.get(info.protoFullName());
         if (existing != null) {
             return existing;
         }
 
-        if (info.descriptor().getExtensionCount() > 0 || info.descriptor().getExtensionRangeCount() > 0) {
-            throw new PluginValidationException(
-                "omnibuf: proto2 extensions are not supported on message " + info.protoFullName()
-            );
+        FileDescriptorProto depFile = unresolvedDepFiles.get(info.sourceFileName());
+        if (depFile != null) {
+            if (validatedDepFiles.add(info.sourceFileName())) {
+                FileDescriptorProto resolvedDep = EditionResolver.resolve(depFile);
+                validateFileExtensions(resolvedDep);
+                updateResolvedDependencyMessages(resolvedDep, registry);
+            }
+            info = registry.get(info.protoFullName());
         }
+
+        validateMessageExtensions(info.protoFullName(), info.descriptor());
 
         // Put a placeholder first to guard cyclic message graphs
         List<ResolvedField> fields = new ArrayList<>();
@@ -377,7 +485,7 @@ public final class ProtocGenOmniBufJava {
             List<Integer> memberNums = new ArrayList<>(sortedMembers.size());
             List<String> memberMasks = new ArrayList<>(sortedMembers.size());
             for (FieldDescriptorProto mfd : sortedMembers) {
-                validateFieldSupported(info, mfd, registry, enumRegistry);
+                validateFieldSupported(info, mfd, registry, enumRegistry, enumClosedRegistry);
                 memberNums.add(mfd.getNumber());
                 memberMasks.add(wireMaskExpr(mfd.getType()));
             }
@@ -413,7 +521,7 @@ public final class ProtocGenOmniBufJava {
                 );
             }
 
-            validateFieldSupported(info, fd, registry, enumRegistry);
+            validateFieldSupported(info, fd, registry, enumRegistry, enumClosedRegistry);
 
             String protoName = fd.getName();
             String[] names = sanitizeNames(protoName, number, usedCamels, usedPascals);
@@ -427,12 +535,20 @@ public final class ProtocGenOmniBufJava {
                     FieldDescriptorProto kf = mapEntry.getField(0);
                     FieldDescriptorProto vf = mapEntry.getField(1);
                     validateMapKeyType(info, fd, kf);
-                    validateMapValueType(info, fd, vf, registry, enumRegistry);
+                    validateMapValueType(info, fd, vf, registry, enumRegistry, enumClosedRegistry);
                     MessageInfo valSub = vf.getType() == Type.TYPE_MESSAGE
                         ? registry.get(normalizeTypeName(vf.getTypeName()))
                         : null;
                     if (valSub != null) {
-                        resolveMessageGraph(valSub, registry, enumRegistry, resolvedCache);
+                        resolveMessageGraph(
+                            valSub,
+                            registry,
+                            enumRegistry,
+                            enumClosedRegistry,
+                            unresolvedDepFiles,
+                            validatedDepFiles,
+                            resolvedCache
+                        );
                     }
                     fields.add(new ResolvedField(
                         fd, number, protoName, camel, pascal, true, false, false, null, kf, vf, valSub
@@ -453,7 +569,15 @@ public final class ProtocGenOmniBufJava {
                 ? registry.get(normalizeTypeName(fd.getTypeName()))
                 : null;
             if (sub != null) {
-                resolveMessageGraph(sub, registry, enumRegistry, resolvedCache);
+                resolveMessageGraph(
+                    sub,
+                    registry,
+                    enumRegistry,
+                    enumClosedRegistry,
+                    unresolvedDepFiles,
+                    validatedDepFiles,
+                    resolvedCache
+                );
             }
 
             fields.add(new ResolvedField(
@@ -469,7 +593,8 @@ public final class ProtocGenOmniBufJava {
             MessageInfo info,
             FieldDescriptorProto fd,
             Map<String, MessageInfo> registry,
-            Map<String, EnumDescriptorProto> enumRegistry) {
+            Map<String, EnumDescriptorProto> enumRegistry,
+            Map<String, Boolean> enumClosedRegistry) {
         String qualifiedField = info.protoFullName() + "." + fd.getName();
         if (fd.getType() == Type.TYPE_GROUP) {
             throw new PluginValidationException(
@@ -478,12 +603,12 @@ public final class ProtocGenOmniBufJava {
         }
         if (fd.getLabel() == Label.LABEL_REQUIRED) {
             throw new PluginValidationException(
-                "omnibuf: proto2 required fields are not supported: " + qualifiedField
+                "omnibuf: required fields are not supported: " + qualifiedField
             );
         }
         if (fd.hasDefaultValue() && !isZeroProtoDefault(fd, enumRegistry)) {
             throw new PluginValidationException(
-                "omnibuf: custom non-zero proto2 default values are not supported on "
+                "omnibuf: custom non-zero default values are not supported on "
                     + qualifiedField + " (default=\"" + fd.getDefaultValue() + "\")"
             );
         }
@@ -499,6 +624,11 @@ public final class ProtocGenOmniBufJava {
             if (!enumRegistry.isEmpty() && !enumRegistry.containsKey(typeName)) {
                 throw new PluginValidationException(
                     "omnibuf: unresolved enum type " + typeName + " on " + qualifiedField
+                );
+            }
+            if (info.isEditions() && Boolean.TRUE.equals(enumClosedRegistry.get(typeName))) {
+                throw new PluginValidationException(
+                    "omnibuf: editions CLOSED enums are not supported (" + qualifiedField + " -> " + typeName + ")"
                 );
             }
         }
@@ -531,7 +661,8 @@ public final class ProtocGenOmniBufJava {
             FieldDescriptorProto mapField,
             FieldDescriptorProto vf,
             Map<String, MessageInfo> registry,
-            Map<String, EnumDescriptorProto> enumRegistry) {
+            Map<String, EnumDescriptorProto> enumRegistry,
+            Map<String, Boolean> enumClosedRegistry) {
         String qualifiedField = info.protoFullName() + "." + mapField.getName();
         if (vf.getType() == Type.TYPE_GROUP) {
             throw new PluginValidationException(
@@ -550,6 +681,11 @@ public final class ProtocGenOmniBufJava {
             if (!enumRegistry.isEmpty() && !enumRegistry.containsKey(typeName)) {
                 throw new PluginValidationException(
                     "omnibuf: unresolved map value enum type " + typeName + " on " + qualifiedField
+                );
+            }
+            if (info.isEditions() && Boolean.TRUE.equals(enumClosedRegistry.get(typeName))) {
+                throw new PluginValidationException(
+                    "omnibuf: editions CLOSED enums are not supported (" + qualifiedField + " -> " + typeName + ")"
                 );
             }
         }
@@ -571,7 +707,13 @@ public final class ProtocGenOmniBufJava {
                  TYPE_FIXED64,
                  TYPE_SFIXED32,
                  TYPE_SFIXED64 -> "0".equals(dv);
-            case TYPE_FLOAT, TYPE_DOUBLE -> "0".equals(dv) || "0.0".equals(dv);
+            case TYPE_FLOAT, TYPE_DOUBLE -> {
+                try {
+                    yield Double.doubleToRawLongBits(Double.parseDouble(dv)) == 0L;
+                } catch (NumberFormatException e) {
+                    yield false;
+                }
+            }
             case TYPE_ENUM -> {
                 EnumDescriptorProto ed = enumRegistry.get(normalizeTypeName(fd.getTypeName()));
                 if (ed == null) {
@@ -2993,6 +3135,11 @@ public final class ProtocGenOmniBufJava {
             }
             sb.append("        return this;\n");
             sb.append("    }\n\n");
+            if (f.oneof() == null) {
+                sb.append("    public ").append(info.opaqueClass()).append(" clear").append(f.pascalName()).append("() {\n");
+                sb.append("        return set").append(f.pascalName()).append("(null);\n");
+                sb.append("    }\n\n");
+            }
             return;
         }
 

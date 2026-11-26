@@ -265,6 +265,10 @@ public final class OpaquePeerUpdate {
         return this;
     }
 
+    public OpaquePeerUpdate clearLocation() {
+        return setLocation(null);
+    }
+
     public List<com.omnibuf.pb.bench.OpaqueNeighbor> getNeighbors() {
         DirtyState d = this.dirty;
         if (d != null && (d.dirtyMask & 0x400L) != 0L) {

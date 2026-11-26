@@ -1,19 +1,29 @@
 package com.omnibuf;
 
 import com.google.protobuf.ByteString;
+import com.google.protobuf.DescriptorProtos.Edition;
+import com.google.protobuf.DescriptorProtos.FeatureSet;
+import com.google.protobuf.DescriptorProtos.FieldDescriptorProto;
+import com.google.protobuf.DescriptorProtos.FileDescriptorProto;
 import com.google.protobuf.Descriptors.Descriptor;
+import com.google.protobuf.Descriptors.EnumDescriptor;
 import com.google.protobuf.Descriptors.EnumValueDescriptor;
 import com.google.protobuf.Descriptors.FieldDescriptor;
+import com.google.protobuf.Descriptors.FileDescriptor;
+import com.google.protobuf.Descriptors.OneofDescriptor;
 import com.google.protobuf.DynamicMessage;
 import com.google.protobuf.Message;
 import com.google.protobuf.MessageOrBuilder;
+import com.google.protobuf.UnknownFieldSet;
 import com.omnibuf.wire.CodecPool;
 import com.omnibuf.wire.OmniBufDecoder;
 import com.omnibuf.wire.OmniBufEncoder;
 import com.omnibuf.wire.PrefixVarint;
 import com.omnibuf.wire.WireType;
+import java.util.ArrayDeque;
 import java.util.ArrayList;
 import java.util.Comparator;
+import java.util.Deque;
 import java.util.HashMap;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
@@ -39,6 +49,7 @@ public final class OmniBufProtobuf {
         if (message == null) {
             throw new OmniBufException("omnibuf: cannot marshal null protobuf message");
         }
+        validateDescriptorSupported(message.getDescriptorForType());
         if (!message.isInitialized()) {
             throw new OmniBufException("omnibuf: protobuf message has uninitialized required fields");
         }
@@ -107,15 +118,276 @@ public final class OmniBufProtobuf {
     }
 
     public static SchemaMeta schemaMetaFor(Descriptor descriptor) {
+        if (descriptor != null) {
+            validateDescriptorSupported(descriptor);
+        }
         return buildSchemaMeta(descriptor, 1, new HashSet<>(), new boolean[1]);
     }
 
-    private static void validateDescriptorSupported(Descriptor md) {
+    private static boolean isEditionsFile(FileDescriptor file) {
+        return file != null && "editions".equals(file.toProto().getSyntax());
+    }
+
+    private static boolean isMessageLike(FieldDescriptor fd) {
+        return fd.getType() == FieldDescriptor.Type.MESSAGE
+            || (fd.getType() == FieldDescriptor.Type.GROUP && isEditionsFile(fd.getFile()));
+    }
+
+    private static int extractEditionNumber(FileDescriptorProto proto) {
+        if (proto.hasEdition()) {
+            return proto.getEdition().getNumber();
+        }
+        UnknownFieldSet unknown = proto.getUnknownFields();
+        if (unknown.hasField(FileDescriptorProto.EDITION_FIELD_NUMBER)) {
+            List<Long> varints = unknown.getField(FileDescriptorProto.EDITION_FIELD_NUMBER).getVarintList();
+            if (!varints.isEmpty()) {
+                return (int) varints.get(0).longValue();
+            }
+        }
+        return Edition.EDITION_UNKNOWN_VALUE;
+    }
+
+    private static boolean hasEditionField(FileDescriptorProto proto) {
+        return proto.hasEdition()
+            || proto.getUnknownFields().hasField(FileDescriptorProto.EDITION_FIELD_NUMBER);
+    }
+
+    private static boolean isDescriptorOptionExtension(FieldDescriptorProto ext) {
+        String extendee = ext.getExtendee();
+        if (extendee == null || extendee.isEmpty()) {
+            return false;
+        }
+        if (!extendee.startsWith(".")) {
+            extendee = "." + extendee;
+        }
+        if (!extendee.startsWith(".google.protobuf.") || !extendee.endsWith("Options")) {
+            return false;
+        }
+        return extendee.indexOf('.', ".google.protobuf.".length()) < 0;
+    }
+
+    private static FeatureSet defaultEditionFeatures() {
+        return FeatureSet.newBuilder()
+            .setFieldPresence(FeatureSet.FieldPresence.EXPLICIT)
+            .setEnumType(FeatureSet.EnumType.OPEN)
+            .setRepeatedFieldEncoding(FeatureSet.RepeatedFieldEncoding.PACKED)
+            .setUtf8Validation(FeatureSet.Utf8Validation.VERIFY)
+            .setMessageEncoding(FeatureSet.MessageEncoding.LENGTH_PREFIXED)
+            .setJsonFormat(FeatureSet.JsonFormat.ALLOW)
+            .build();
+    }
+
+    private static FeatureSet resolveMessageFeatures(Descriptor md) {
+        Deque<Descriptor> chain = new ArrayDeque<>();
+        for (Descriptor cur = md; cur != null; cur = cur.getContainingType()) {
+            chain.addFirst(cur);
+        }
+        FeatureSet.Builder fb = defaultEditionFeatures().toBuilder();
+        fb.mergeFrom(md.getFile().toProto().getOptions().getFeatures());
+        for (Descriptor d : chain) {
+            fb.mergeFrom(d.toProto().getOptions().getFeatures());
+        }
+        return fb.build();
+    }
+
+    private static FeatureSet resolveFieldFeatures(FieldDescriptor fd, FeatureSet messageFeatures) {
+        FeatureSet.Builder fb = messageFeatures.toBuilder();
+        OneofDescriptor oneof = fd.getContainingOneof();
+        if (oneof != null) {
+            fb.mergeFrom(oneof.toProto().getOptions().getFeatures());
+        }
+        fb.mergeFrom(fd.toProto().getOptions().getFeatures());
+        return fb.build();
+    }
+
+    private static boolean isZeroDescriptorDefault(FieldDescriptor fd) {
+        Object dv = fd.getDefaultValue();
+        return switch (fd.getType()) {
+            case INT32, SINT32, UINT32, FIXED32, SFIXED32 -> dv instanceof Integer i && i == 0;
+            case INT64, SINT64, UINT64, FIXED64, SFIXED64 -> dv instanceof Long l && l == 0L;
+            case FLOAT -> dv instanceof Float f && Float.floatToRawIntBits(f) == 0;
+            case DOUBLE -> dv instanceof Double d && Double.doubleToRawLongBits(d) == 0L;
+            case BOOL -> Boolean.FALSE.equals(dv);
+            case STRING -> dv instanceof String s && s.isEmpty();
+            case BYTES -> dv instanceof ByteString bs && bs.isEmpty();
+            case ENUM -> dv instanceof EnumValueDescriptor ev && ev.getNumber() == 0;
+            default -> false;
+        };
+    }
+
+    private static void validateFileSupported(FileDescriptor file) {
+        FileDescriptorProto proto = file.toProto();
+        if ("editions".equals(proto.getSyntax())) {
+            int edition = extractEditionNumber(proto);
+            if (edition != Edition.EDITION_2023_VALUE
+                    && edition != Edition.EDITION_2024_VALUE
+                    && edition != Edition.EDITION_2026_VALUE) {
+                throw new OmniBufException(
+                    "omnibuf: unsupported protobuf edition " + edition + " in " + file.getName()
+                );
+            }
+            for (FieldDescriptorProto ext : proto.getExtensionList()) {
+                if (!isDescriptorOptionExtension(ext)) {
+                    throw new OmniBufException(
+                        "omnibuf: editions extensions are not supported in "
+                            + file.getName() + " (" + ext.getName() + " extends " + ext.getExtendee() + ")"
+                    );
+                }
+            }
+            for (EnumDescriptor ed : file.getEnumTypes()) {
+                if (ed.isClosed()) {
+                    throw new OmniBufException(
+                        "omnibuf: editions CLOSED enums are not supported (" + ed.getFullName() + ")"
+                    );
+                }
+            }
+            return;
+        }
+        String syntax = proto.getSyntax();
+        if (!syntax.isEmpty() && !"proto2".equals(syntax) && !"proto3".equals(syntax)) {
+            throw new OmniBufException(
+                "omnibuf: unsupported protobuf edition/syntax \"" + syntax + "\" in " + file.getName()
+            );
+        }
+        if (hasEditionField(proto)) {
+            int edition = extractEditionNumber(proto);
+            if (edition != Edition.EDITION_PROTO2_VALUE && edition != Edition.EDITION_PROTO3_VALUE) {
+                throw new OmniBufException(
+                    "omnibuf: unsupported protobuf edition " + edition + " in " + file.getName()
+                );
+            }
+        }
+    }
+
+    private static void validateDescriptorSupported(Descriptor root) {
+        if (root == null) {
+            return;
+        }
+        validateDescriptorRecursive(root, new HashSet<>(), new HashSet<>());
+    }
+
+    private static void validateDescriptorRecursive(
+            Descriptor md, Set<Descriptor> visited, Set<FileDescriptor> validatedFiles) {
+        if (!visited.add(md)) {
+            return;
+        }
+        FileDescriptor file = md.getFile();
+        if (validatedFiles.add(file)) {
+            validateFileSupported(file);
+        }
+        boolean isEditions = isEditionsFile(file);
+        FeatureSet mdFeatures = null;
+        if (isEditions) {
+            if (md.isExtendable()) {
+                throw new OmniBufException(
+                    "omnibuf: editions extension ranges are not supported on message " + md.getFullName()
+                );
+            }
+            for (FieldDescriptorProto ext : md.toProto().getExtensionList()) {
+                if (!isDescriptorOptionExtension(ext)) {
+                    throw new OmniBufException(
+                        "omnibuf: editions extensions are not supported on message "
+                            + md.getFullName() + " (" + ext.getName() + " extends " + ext.getExtendee() + ")"
+                    );
+                }
+            }
+            for (EnumDescriptor ed : md.getEnumTypes()) {
+                if (ed.isClosed()) {
+                    throw new OmniBufException(
+                        "omnibuf: editions CLOSED enums are not supported (" + ed.getFullName() + ")"
+                    );
+                }
+            }
+            mdFeatures = resolveMessageFeatures(md);
+        }
+
         for (FieldDescriptor fd : md.getFields()) {
-            if (fd.getType() == FieldDescriptor.Type.GROUP) {
+            if (fd.getType() == FieldDescriptor.Type.GROUP && !isEditions) {
                 throw new OmniBufException(
                     "omnibuf: proto2 groups are not supported: " + fd.getFullName()
                 );
+            }
+            if (fd.isMapField()) {
+                Descriptor entryDesc = fd.getMessageType();
+                FieldDescriptor keyFd = entryDesc.findFieldByNumber(1);
+                FieldDescriptor valFd = entryDesc.findFieldByNumber(2);
+                if (isEditions) {
+                    FeatureSet mapBase = mdFeatures.toBuilder()
+                        .mergeFrom(fd.toProto().getOptions().getFeatures())
+                        .mergeFrom(entryDesc.toProto().getOptions().getFeatures())
+                        .build();
+                    if (keyFd != null) {
+                        FeatureSet keyFeatures = mapBase.toBuilder()
+                            .mergeFrom(keyFd.toProto().getOptions().getFeatures())
+                            .build();
+                        if (keyFd.getType() == FieldDescriptor.Type.STRING
+                                && keyFeatures.getUtf8Validation() != FeatureSet.Utf8Validation.VERIFY) {
+                            throw new OmniBufException(
+                                "omnibuf: editions UTF-8 NONE is not supported (" + fd.getFullName() + ".key)"
+                            );
+                        }
+                    }
+                    if (valFd != null) {
+                        FeatureSet valFeatures = mapBase.toBuilder()
+                            .mergeFrom(valFd.toProto().getOptions().getFeatures())
+                            .build();
+                        if (valFd.getType() == FieldDescriptor.Type.STRING
+                                && valFeatures.getUtf8Validation() != FeatureSet.Utf8Validation.VERIFY) {
+                            throw new OmniBufException(
+                                "omnibuf: editions UTF-8 NONE is not supported (" + fd.getFullName() + ".value)"
+                            );
+                        }
+                        if (valFd.getType() == FieldDescriptor.Type.ENUM && valFd.getEnumType().isClosed()) {
+                            throw new OmniBufException(
+                                "omnibuf: editions CLOSED enums are not supported ("
+                                    + fd.getFullName() + " -> " + valFd.getEnumType().getFullName() + ")"
+                            );
+                        }
+                    }
+                }
+                if (valFd != null) {
+                    if (valFd.getType() == FieldDescriptor.Type.GROUP && !isEditionsFile(valFd.getFile())) {
+                        throw new OmniBufException(
+                            "omnibuf: proto2 groups are not supported: " + valFd.getFullName()
+                        );
+                    }
+                    if (isMessageLike(valFd)) {
+                        validateDescriptorRecursive(valFd.getMessageType(), visited, validatedFiles);
+                    }
+                }
+                continue;
+            }
+
+            if (isEditions) {
+                FeatureSet fdFeatures = resolveFieldFeatures(fd, mdFeatures);
+                if (fd.isRequired()
+                        || (fdFeatures.getFieldPresence() != FeatureSet.FieldPresence.EXPLICIT
+                            && fdFeatures.getFieldPresence() != FeatureSet.FieldPresence.IMPLICIT)) {
+                    throw new OmniBufException(
+                        "omnibuf: editions LEGACY_REQUIRED is not supported (" + fd.getFullName() + ")"
+                    );
+                }
+                if (fd.getType() == FieldDescriptor.Type.STRING
+                        && fdFeatures.getUtf8Validation() != FeatureSet.Utf8Validation.VERIFY) {
+                    throw new OmniBufException(
+                        "omnibuf: editions UTF-8 NONE is not supported (" + fd.getFullName() + ")"
+                    );
+                }
+                if (fd.getType() == FieldDescriptor.Type.ENUM && fd.getEnumType().isClosed()) {
+                    throw new OmniBufException(
+                        "omnibuf: editions CLOSED enums are not supported ("
+                            + fd.getFullName() + " -> " + fd.getEnumType().getFullName() + ")"
+                    );
+                }
+                if (fd.hasDefaultValue() && !isZeroDescriptorDefault(fd)) {
+                    throw new OmniBufException(
+                        "omnibuf: custom non-zero default values are not supported on " + fd.getFullName()
+                    );
+                }
+            }
+
+            if (isMessageLike(fd)) {
+                validateDescriptorRecursive(fd.getMessageType(), visited, validatedFiles);
             }
         }
     }
@@ -124,9 +396,10 @@ public final class OmniBufProtobuf {
         List<FieldDescriptor> fds = md.getFields();
         int n = fds.size();
         boolean ascending = true;
+        boolean isEditions = isEditionsFile(md.getFile());
         for (int i = 0; i < n; i++) {
             FieldDescriptor fd = fds.get(i);
-            if (fd.getType() == FieldDescriptor.Type.GROUP) {
+            if (fd.getType() == FieldDescriptor.Type.GROUP && !isEditions) {
                 throw new OmniBufException(
                     "omnibuf: proto2 groups are not supported: " + fd.getFullName()
                 );
@@ -166,10 +439,10 @@ public final class OmniBufProtobuf {
                 Descriptor childDesc = null;
                 if (fd.isMapField()) {
                     FieldDescriptor valFd = fd.getMessageType().findFieldByNumber(2);
-                    if (valFd != null && valFd.getType() == FieldDescriptor.Type.MESSAGE) {
+                    if (valFd != null && isMessageLike(valFd)) {
                         childDesc = valFd.getMessageType();
                     }
-                } else if (fd.getType() == FieldDescriptor.Type.MESSAGE) {
+                } else if (isMessageLike(fd)) {
                     childDesc = fd.getMessageType();
                 }
                 if (childDesc != null) {
@@ -207,7 +480,7 @@ public final class OmniBufProtobuf {
             SchemaMeta childMeta = null;
             if (fd.isMapField()) {
                 FieldDescriptor valFd = fd.getMessageType().findFieldByNumber(2);
-                if (valFd != null && valFd.getType() == FieldDescriptor.Type.MESSAGE
+                if (valFd != null && isMessageLike(valFd)
                         && msg.getField(fd) instanceof List<?> entries) {
                     for (int i = 0, n = entries.size(); i < n; i++) {
                         if (entries.get(i) instanceof Message entryMsg) {
@@ -220,7 +493,7 @@ public final class OmniBufProtobuf {
                         }
                     }
                 }
-            } else if (fd.getType() == FieldDescriptor.Type.MESSAGE) {
+            } else if (isMessageLike(fd)) {
                 if (fd.isRepeated()) {
                     if (msg.getField(fd) instanceof List<?> list) {
                         for (int i = 0, n = list.size(); i < n; i++) {
@@ -278,7 +551,7 @@ public final class OmniBufProtobuf {
                 FieldDescriptor keyFd = entryDesc.findFieldByNumber(1);
                 FieldDescriptor valFd = entryDesc.findFieldByNumber(2);
                 int keyWT = scalarWireType(keyFd.getType());
-                int valWT = valFd.getType() == FieldDescriptor.Type.MESSAGE
+                int valWT = isMessageLike(valFd)
                     ? WireType.WIRE_SUB_MSG
                     : scalarWireType(valFd.getType());
 
@@ -302,7 +575,7 @@ public final class OmniBufProtobuf {
             if (fd.isRepeated()) {
                 List<?> list = (List<?>) val;
                 int count = list.size();
-                if (fd.getType() == FieldDescriptor.Type.MESSAGE) {
+                if (isMessageLike(fd)) {
                     boolean largeArr = count > 0
                         && list.get(0) instanceof Message firstMsg
                         && firstMsg.getSerializedSize() > 16_383;
@@ -351,7 +624,12 @@ public final class OmniBufProtobuf {
             case DOUBLE -> enc.writeFloat64(fnum, ((Number) val).doubleValue());
             case STRING -> enc.writeString(fnum, val == null ? "" : val.toString());
             case BYTES -> enc.writeBytes(fnum, val instanceof ByteString bs ? bs.toByteArray() : EMPTY_BYTES);
-            case MESSAGE -> {
+            case MESSAGE, GROUP -> {
+                if (fd.getType() == FieldDescriptor.Type.GROUP && !isEditionsFile(fd.getFile())) {
+                    throw new OmniBufException(
+                        "omnibuf: proto2 groups are not supported: " + fd.getFullName()
+                    );
+                }
                 if (val instanceof MessageOrBuilder sub) {
                     boolean largeSub = sub instanceof Message sm && sm.getSerializedSize() > 16_383;
                     int subPos = enc.beginSubMsgFast(fnum, largeSub);
@@ -359,9 +637,6 @@ public final class OmniBufProtobuf {
                     enc.endContainerAt(subPos);
                 }
             }
-            case GROUP -> throw new OmniBufException(
-                "omnibuf: proto2 groups are not supported: " + fd.getFullName()
-            );
             default -> throw new OmniBufException("omnibuf: unsupported protobuf type: " + fd.getType());
         }
     }
@@ -381,16 +656,18 @@ public final class OmniBufProtobuf {
             case DOUBLE -> enc.writeInlineFixed64(Double.doubleToRawLongBits(((Number) val).doubleValue()));
             case STRING -> enc.writeStringElement(val == null ? "" : val.toString());
             case BYTES -> enc.writeBytesElement(val instanceof ByteString bs ? bs.toByteArray() : EMPTY_BYTES);
-            case MESSAGE -> {
+            case MESSAGE, GROUP -> {
+                if (fd.getType() == FieldDescriptor.Type.GROUP && !isEditionsFile(fd.getFile())) {
+                    throw new OmniBufException(
+                        "omnibuf: proto2 groups are not supported: " + fd.getFullName()
+                    );
+                }
                 int elemPos = enc.beginInlineSubMsgFast();
                 if (val instanceof MessageOrBuilder sub) {
                     encodeMessage(enc, sub, deterministic);
                 }
                 enc.endContainerAt(elemPos);
             }
-            case GROUP -> throw new OmniBufException(
-                "omnibuf: proto2 groups are not supported: " + fd.getFullName()
-            );
             default -> throw new OmniBufException("omnibuf: unsupported protobuf element type: " + fd.getType());
         }
     }
@@ -405,7 +682,7 @@ public final class OmniBufProtobuf {
             throw new OmniBufException("omnibuf: nesting depth exceeds MaxNestingDepth");
         }
         Descriptor md = builder.getDescriptorForType();
-        validateDescriptorSupported(md);
+        boolean isEditions = isEditionsFile(md.getFile());
         Map<FieldDescriptor, Map<Object, Object>> mapAccumulators = null;
 
         while (dec.hasRemaining()) {
@@ -421,7 +698,7 @@ public final class OmniBufProtobuf {
                 dec.skipOrValidateUnknown(fnum, wt, depth);
                 continue;
             }
-            if (fd.getType() == FieldDescriptor.Type.GROUP) {
+            if (fd.getType() == FieldDescriptor.Type.GROUP && !isEditions) {
                 throw new OmniBufException(
                     "omnibuf: proto2 groups are not supported: " + fd.getFullName()
                 );
@@ -436,7 +713,7 @@ public final class OmniBufProtobuf {
                 FieldDescriptor keyFd = entryDesc.findFieldByNumber(1);
                 FieldDescriptor valFd = entryDesc.findFieldByNumber(2);
                 int expectedKeyWT = scalarWireType(keyFd.getType());
-                int expectedValWT = valFd.getType() == FieldDescriptor.Type.MESSAGE
+                int expectedValWT = isMessageLike(valFd)
                     ? WireType.WIRE_SUB_MSG
                     : scalarWireType(valFd.getType());
 
@@ -462,7 +739,7 @@ public final class OmniBufProtobuf {
                 }
 
                 Message.Builder sampleEntryBuilder =
-                    valFd.getType() == FieldDescriptor.Type.MESSAGE
+                    isMessageLike(valFd)
                         ? builder.newBuilderForField(fd)
                         : null;
                 for (int i = 0; i < count; i++) {
@@ -484,7 +761,7 @@ public final class OmniBufProtobuf {
                     dec.skipOrValidateUnknown(fnum, wt, depth);
                     continue;
                 }
-                int expectedElemWT = fd.getType() == FieldDescriptor.Type.MESSAGE
+                int expectedElemWT = isMessageLike(fd)
                     ? WireType.WIRE_SUB_MSG
                     : scalarWireType(fd.getType());
                 long arrState = dec.beginArray(expectedElemWT, depth);
@@ -516,7 +793,7 @@ public final class OmniBufProtobuf {
                 continue;
             }
 
-            if (fd.getType() == FieldDescriptor.Type.MESSAGE) {
+            if (isMessageLike(fd)) {
                 if (wt != WireType.WIRE_SUB_MSG) {
                     dec.skipOrValidateUnknown(fnum, wt, depth);
                     continue;
@@ -588,7 +865,12 @@ public final class OmniBufProtobuf {
             int containerDepth) {
         return switch (fd.getType()) {
             case BOOL -> dec.readContainerBool();
-            case MESSAGE -> {
+            case MESSAGE, GROUP -> {
+                if (fd.getType() == FieldDescriptor.Type.GROUP && !isEditionsFile(fd.getFile())) {
+                    throw new OmniBufException(
+                        "omnibuf: proto2 groups are not supported: " + fd.getFullName()
+                    );
+                }
                 int elemLimit = dec.readLengthPrefixedLimit(0);
                 Message.Builder subBuilder = parentBuilder != null
                     ? parentBuilder.newBuilderForField(fd)

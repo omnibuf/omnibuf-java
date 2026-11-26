@@ -33,7 +33,7 @@ conformance:
     elif command -v conformance-runner >/dev/null 2>&1; then
         RUNNER="conformance-runner"
     elif command -v go >/dev/null 2>&1; then
-        exec go run github.com/omnibuf/omnibuf-go/cmd/conformance-runner@71dad83aadd7dc65401d662521d34cfaeb1011ab ./bin/conformance-java
+        exec go run github.com/omnibuf/omnibuf-go/cmd/conformance-runner@v0.2.11 ./bin/conformance-java
     else
         echo "conformance-runner binary not found; set CONFORMANCE_RUNNER or install conformance-runner" >&2
         exit 1
