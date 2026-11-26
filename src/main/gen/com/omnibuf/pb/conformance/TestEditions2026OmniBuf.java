@@ -174,31 +174,90 @@ public final class TestEditions2026OmniBuf {
         }
     }
 
+    public static final int MIN_ENCODED_BYTES = 23;
+
     public static boolean isLargePayload(OmniBufTestEditions2026 msg) {
-        return isLargePayload(msg, 2);
+        return estimateMinSize(msg, 2) > 16_383;
     }
 
     public static boolean isLargePayload(OmniBufTestEditions2026 msg, int depthLeft) {
-        if (msg == null || depthLeft < 0) {
-            return false;
+        return depthLeft >= 0 && estimateMinSize(msg, depthLeft) > 16_383;
+    }
+
+    public static int estimateMinSize(OmniBufTestEditions2026 msg, int depthLeft) {
+        if (msg == null) {
+            return 0;
         }
-        if (((msg.has_explicitString && msg.explicitString != null ? msg.explicitString.length() : 0)
-                | (msg.has_explicitBytes && msg.explicitBytes != null ? msg.explicitBytes.length : 0)
-                | (msg.choiceCase == 15 && msg.choiceText != null ? msg.choiceText.length() : 0)) > 16_383) {
-            return true;
+        int est = MIN_ENCODED_BYTES;
+        if (msg.has_explicitString && msg.explicitString != null) {
+            int sl = msg.explicitString.length();
+            if (sl > 16_383 || (est += sl) > 16_383) {
+                return 16_384;
+            }
+        }
+        if (msg.has_explicitBytes && msg.explicitBytes != null) {
+            int sl = msg.explicitBytes.length;
+            if (sl > 16_383 || (est += sl) > 16_383) {
+                return 16_384;
+            }
+        }
+        if (msg.packedVals != null) {
+            int sz = msg.packedVals.size();
+            if (sz > 16_383) {
+                return 16_384;
+            }
+            est += sz;
+            if (est > 16_383) {
+                return 16_384;
+            }
+        }
+        if (msg.expandedVals != null) {
+            int sz = msg.expandedVals.size();
+            if (sz > 16_383) {
+                return 16_384;
+            }
+            est += sz;
+            if (est > 16_383) {
+                return 16_384;
+            }
+        }
+        if (msg.scores != null) {
+            int sz = msg.scores.size();
+            if (sz > 8_191) {
+                return 16_384;
+            }
+            est += sz << 1;
+            if (est > 16_383) {
+                return 16_384;
+            }
+        }
+        if (msg.choiceCase == 15 && msg.choiceText != null) {
+            int sl = msg.choiceText.length();
+            if (sl > 16_383 || (est += sl) > 16_383) {
+                return 16_384;
+            }
         }
         if (depthLeft > 0) {
-            if (msg.child != null && com.omnibuf.pb.conformance.Editions2026ChildOmniBuf.isLargePayload(msg.child, depthLeft - 1)) {
-                return true;
+            if (msg.child != null) {
+                est += 4 + com.omnibuf.pb.conformance.Editions2026ChildOmniBuf.estimateMinSize(msg.child, depthLeft - 1);
+                if (est > 16_383) {
+                    return 16_384;
+                }
             }
-            if (msg.delimitedChild != null && com.omnibuf.pb.conformance.Editions2026ChildOmniBuf.isLargePayload(msg.delimitedChild, depthLeft - 1)) {
-                return true;
+            if (msg.delimitedChild != null) {
+                est += 4 + com.omnibuf.pb.conformance.Editions2026ChildOmniBuf.estimateMinSize(msg.delimitedChild, depthLeft - 1);
+                if (est > 16_383) {
+                    return 16_384;
+                }
             }
-            if (msg.choiceCase == 17 && msg.choiceChild != null && com.omnibuf.pb.conformance.Editions2026ChildOmniBuf.isLargePayload(msg.choiceChild, depthLeft - 1)) {
-                return true;
+            if (msg.choiceCase == 17 && msg.choiceChild != null) {
+                est += 4 + com.omnibuf.pb.conformance.Editions2026ChildOmniBuf.estimateMinSize(msg.choiceChild, depthLeft - 1);
+                if (est > 16_383) {
+                    return 16_384;
+                }
             }
         }
-        return false;
+        return est;
     }
 
     public static void encode(com.omnibuf.wire.OmniBufEncoder enc, OmniBufTestEditions2026 msg, boolean deterministic) {
@@ -494,7 +553,7 @@ public final class TestEditions2026OmniBuf {
                 }
                 case 9 -> {
                     if (wt == WireType.WIRE_SUB_MSG) {
-                        long pk_subStart = com.omnibuf.wire.OmniBufDecoder.readStringSpan(buf, pos, lim);
+                        long pk_subStart = com.omnibuf.wire.OmniBufDecoder.readSubMsgSpan(buf, pos, lim);
                         int subStart = (int) (pk_subStart >>> 32);
                         int subEnd = (int) pk_subStart;
                         pos = subEnd;
@@ -510,7 +569,7 @@ public final class TestEditions2026OmniBuf {
                 }
                 case 10 -> {
                     if (wt == WireType.WIRE_SUB_MSG) {
-                        long pk_subStart = com.omnibuf.wire.OmniBufDecoder.readStringSpan(buf, pos, lim);
+                        long pk_subStart = com.omnibuf.wire.OmniBufDecoder.readSubMsgSpan(buf, pos, lim);
                         int subStart = (int) (pk_subStart >>> 32);
                         int subEnd = (int) pk_subStart;
                         pos = subEnd;
@@ -634,7 +693,7 @@ public final class TestEditions2026OmniBuf {
                 }
                 case 17 -> {
                     if (wt == WireType.WIRE_SUB_MSG) {
-                        long pk_subStart = com.omnibuf.wire.OmniBufDecoder.readStringSpan(buf, pos, lim);
+                        long pk_subStart = com.omnibuf.wire.OmniBufDecoder.readSubMsgSpan(buf, pos, lim);
                         int subStart = (int) (pk_subStart >>> 32);
                         int subEnd = (int) pk_subStart;
                         pos = subEnd;

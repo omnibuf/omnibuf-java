@@ -281,15 +281,7 @@ public final class OpaquePeerUpdate {
             }
             return out;
         }
-        List<com.omnibuf.wire.OmniBufOpaque.PacketView> views = com.omnibuf.wire.OmniBufOpaque.readSubMsgList(buffer, offset, length, 10);
-        if (views.isEmpty()) {
-            return Collections.emptyList();
-        }
-        List<com.omnibuf.pb.bench.OpaqueNeighbor> out = new ArrayList<>(views.size());
-        for (com.omnibuf.wire.OmniBufOpaque.PacketView v : views) {
-            out.add(new com.omnibuf.pb.bench.OpaqueNeighbor(v));
-        }
-        return out;
+        return com.omnibuf.wire.OmniBufOpaque.readSubMsgListMapped(buffer, offset, length, 10, com.omnibuf.pb.bench.OpaqueNeighbor::new);
     }
 
     public OpaquePeerUpdate setNeighbors(List<com.omnibuf.pb.bench.OmniBufNeighbor> value) {
@@ -390,16 +382,32 @@ public final class OpaquePeerUpdate {
                     List<com.omnibuf.pb.bench.OmniBufNeighbor> list10 = d.dirty_neighbors;
                     int n = list10 == null ? 0 : list10.size();
                     boolean largeArr = false;
-                    for (int i = 0; i < n; i++) {
-                        if (com.omnibuf.pb.bench.NeighborOmniBuf.isLargePayload(list10.get(i))) {
+                    boolean checkElemLarge = false;
+                    if (n > 0) {
+                        int minPerElem = com.omnibuf.pb.bench.NeighborOmniBuf.MIN_ENCODED_BYTES + 2;
+                        if (n > 16_383 / minPerElem) {
                             largeArr = true;
-                            break;
+                            checkElemLarge = com.omnibuf.pb.bench.NeighborOmniBuf.isLargePayload(list10.get(0));
+                        } else {
+                            int e0 = com.omnibuf.pb.bench.NeighborOmniBuf.estimateMinSize(list10.get(0), 2);
+                            if (e0 > 8_192) {
+                                largeArr = true;
+                                checkElemLarge = true;
+                            } else if (n > 1) {
+                                int eLast = com.omnibuf.pb.bench.NeighborOmniBuf.estimateMinSize(list10.get(n - 1), 2);
+                                if (eLast > 8_192) {
+                                    largeArr = true;
+                                    checkElemLarge = true;
+                                } else if ((long) (e0 + eLast + 4) * (long) n > 32_766L) {
+                                    largeArr = true;
+                                }
+                            }
                         }
                     }
                     int arrPos = enc.beginTypedArrayFast(10, WireType.WIRE_SUB_MSG, n, largeArr);
                     for (int i = 0; i < n; i++) {
                         com.omnibuf.pb.bench.OmniBufNeighbor elem = list10.get(i);
-                        int elemPos = enc.beginInlineSubMsgFast(com.omnibuf.pb.bench.NeighborOmniBuf.isLargePayload(elem));
+                        int elemPos = enc.beginInlineSubMsgFast(checkElemLarge && com.omnibuf.pb.bench.NeighborOmniBuf.isLargePayload(elem));
                         if (elem != null) {
                             com.omnibuf.pb.bench.NeighborOmniBuf.encode(enc, elem, deterministic);
                         }

@@ -259,4 +259,80 @@ class WireTest {
         assertThrows(OmniBufException.class, () -> PeerUpdateOmniBuf.unmarshal(wire, zeroDepth));
         assertThrows(OmniBufException.class, () -> OmniBufBlind.decodeBlind(wire, zeroDepth));
     }
+
+    @Test
+    void doubleAndFloatArrayListsRoundTripWithoutBoxingAndRejectNulls() {
+        DoubleArrayList doubles = new DoubleArrayList(4);
+        doubles.addDouble(-0.0d);
+        doubles.addDouble(Math.PI);
+        doubles.addAll(new double[] {Double.POSITIVE_INFINITY, Double.NaN, 42.5d});
+        assertEquals(5, doubles.size());
+        assertEquals(Math.PI, doubles.getDouble(1));
+        assertThrows(NullPointerException.class, () -> doubles.add(null));
+
+        FloatArrayList floats = new FloatArrayList(4);
+        floats.addFloat(-1.5f);
+        floats.addAll(new float[] {0.0f, Float.MAX_VALUE});
+        assertEquals(3, floats.size());
+        assertEquals(-1.5f, floats.getFloat(0));
+        assertThrows(NullPointerException.class, () -> floats.add(null));
+
+        OmniBufEncoder enc = new OmniBufEncoder();
+        enc.writeFloat64List(1, doubles);
+        enc.writeFloat32List(2, floats);
+        byte[] wire = enc.toByteArray();
+
+        OmniBufDecoder dec = new OmniBufDecoder(wire);
+        assertEquals((1L << 4) | WireType.WIRE_ARRAY, dec.readTag());
+        long arr1 = dec.beginArray(WireType.WIRE_FLOAT64, 0);
+        DoubleArrayList outD = new DoubleArrayList((int) arr1);
+        int end1 = OmniBufDecoder.readFloat64SliceInto(dec.buffer(), dec.position(), dec.limit(), outD, (int) arr1);
+        dec.position(end1);
+        dec.endContainer((int) (arr1 >>> 32));
+        assertEquals(doubles, outD);
+
+        assertEquals((2L << 4) | WireType.WIRE_ARRAY, dec.readTag());
+        long arr2 = dec.beginArray(WireType.WIRE_FLOAT32, 0);
+        FloatArrayList outF = new FloatArrayList((int) arr2);
+        int end2 = OmniBufDecoder.readFloat32SliceInto(dec.buffer(), dec.position(), dec.limit(), outF, (int) arr2);
+        dec.position(end2);
+        dec.endContainer((int) (arr2 >>> 32));
+        assertEquals(floats, outF);
+    }
+
+    @Test
+    void writeStringListAndReadStringSliceIntoHandleLargeListsAsciiUtf8AndInvalidUtf8() {
+        List<String> large = new ArrayList<>(600);
+        for (int i = 0; i < 600; i++) {
+            large.add(i % 25 == 0 ? "utf8-\u20AC-\uD83D\uDE00-" + i : "item-payload-string-value-" + i);
+        }
+        large.add("");
+        large.add("x".repeat(200));
+
+        OmniBufEncoder enc = new OmniBufEncoder();
+        enc.writeStringList(1, large);
+        byte[] wire = enc.toByteArray();
+
+        OmniBufDecoder dec = new OmniBufDecoder(wire);
+        assertEquals((1L << 4) | WireType.WIRE_ARRAY, dec.readTag());
+        long arr = dec.beginArray(WireType.WIRE_STRING, 0);
+        ArrayList<String> decoded = new ArrayList<>((int) arr);
+        int end = OmniBufDecoder.readStringSliceInto(dec.buffer(), dec.position(), dec.limit(), decoded, (int) arr);
+        dec.position(end);
+        dec.endContainer((int) (arr >>> 32));
+        assertEquals(large, decoded);
+
+        // Verify PeerUpdateOmniBuf.estimateMinSize accounts for repeated strings
+        OmniBufPeerUpdate bigPeer = new OmniBufPeerUpdate().setTags(large);
+        assertTrue(PeerUpdateOmniBuf.estimateMinSize(bigPeer, 2) > 16_383);
+        assertTrue(PeerUpdateOmniBuf.isLargePayload(bigPeer));
+
+        // Invalid UTF-8 inside WireArray<WireString> must be rejected by readStringSliceInto
+        byte[] badPayload = new byte[] {0x05, 'a', (byte) 0xFF};
+        ArrayList<String> sink = new ArrayList<>();
+        assertThrows(
+            OmniBufException.class,
+            () -> OmniBufDecoder.readStringSliceInto(badPayload, 0, badPayload.length, sink, 1)
+        );
+    }
 }

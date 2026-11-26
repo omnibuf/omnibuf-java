@@ -112,18 +112,28 @@ public final class Editions2023ChildOmniBuf {
         }
     }
 
+    public static final int MIN_ENCODED_BYTES = 0;
+
     public static boolean isLargePayload(OmniBufEditions2023Child msg) {
-        return isLargePayload(msg, 2);
+        return estimateMinSize(msg, 2) > 16_383;
     }
 
     public static boolean isLargePayload(OmniBufEditions2023Child msg, int depthLeft) {
-        if (msg == null || depthLeft < 0) {
-            return false;
+        return depthLeft >= 0 && estimateMinSize(msg, depthLeft) > 16_383;
+    }
+
+    public static int estimateMinSize(OmniBufEditions2023Child msg, int depthLeft) {
+        if (msg == null) {
+            return 0;
         }
-        if ((msg.has_note && msg.note != null ? msg.note.length() : 0) > 16_383) {
-            return true;
+        int est = MIN_ENCODED_BYTES;
+        if (msg.has_note && msg.note != null) {
+            int sl = msg.note.length();
+            if (sl > 16_383 || (est += sl) > 16_383) {
+                return 16_384;
+            }
         }
-        return false;
+        return est;
     }
 
     public static void encode(com.omnibuf.wire.OmniBufEncoder enc, OmniBufEditions2023Child msg, boolean deterministic) {

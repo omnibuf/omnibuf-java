@@ -429,55 +429,26 @@ public final class OmniBufEncoder {
     }
 
     private void writeShortAsciiOrFallback(String s, int n) {
-        byte[] dst = this.buf;
         int lenBytePos = this.pos;
+        int nextP = writeShortAsciiInto(this.buf, lenBytePos, s, n);
+        if (nextP >= 0) {
+            this.pos = nextP;
+            return;
+        }
+        writeStringNonAsciiTail(s, n, lenBytePos, 1, ~nextP);
+    }
+
+    private static int writeShortAsciiInto(byte[] dst, int lenBytePos, String s, int n) {
         int p = lenBytePos + 1;
-        int i = 0;
-        for (; i + 8 <= n; i += 8) {
-            int c0 = s.charAt(i);
-            int c1 = s.charAt(i + 1);
-            int c2 = s.charAt(i + 2);
-            int c3 = s.charAt(i + 3);
-            int c4 = s.charAt(i + 4);
-            int c5 = s.charAt(i + 5);
-            int c6 = s.charAt(i + 6);
-            int c7 = s.charAt(i + 7);
-            if (((c0 | c1 | c2 | c3 | c4 | c5 | c6 | c7) & 0xFF80) != 0) {
-                writeStringNonAsciiTail(s, n, lenBytePos, 1, i);
-                return;
-            }
-            long word = (long) c0
-                | ((long) c1 << 8)
-                | ((long) c2 << 16)
-                | ((long) c3 << 24)
-                | ((long) c4 << 32)
-                | ((long) c5 << 40)
-                | ((long) c6 << 48)
-                | ((long) c7 << 56);
-            PrefixVarint.setLongLE(dst, p + i, word);
-        }
-        if (i + 4 <= n) {
-            int c0 = s.charAt(i);
-            int c1 = s.charAt(i + 1);
-            int c2 = s.charAt(i + 2);
-            int c3 = s.charAt(i + 3);
-            if (((c0 | c1 | c2 | c3) & 0xFF80) != 0) {
-                writeStringNonAsciiTail(s, n, lenBytePos, 1, i);
-                return;
-            }
-            PrefixVarint.setIntLE(dst, p + i, c0 | (c1 << 8) | (c2 << 16) | (c3 << 24));
-            i += 4;
-        }
-        for (; i < n; i++) {
+        for (int i = 0; i < n; i++) {
             int c = s.charAt(i);
             if (c >= 0x80) {
-                writeStringNonAsciiTail(s, n, lenBytePos, 1, i);
-                return;
+                return ~i;
             }
             dst[p + i] = (byte) c;
         }
         dst[lenBytePos] = (byte) ((n << 1) | 1);
-        this.pos = p + n;
+        return p + n;
     }
 
     private void writeLargeStringStreamed(String s, int n) {
@@ -957,29 +928,133 @@ public final class OmniBufEncoder {
     // High-Level Typed Array & Map Helpers
     // ========================================================================
 
+    private static boolean isLargeStringListHint(List<String> values, int n) {
+        if (n > 16_380) {
+            return true;
+        }
+        String first = values.get(0);
+        int l0 = first == null ? 0 : first.length();
+        if (l0 > 16_383) {
+            return true;
+        }
+        if (n == 1) {
+            return false;
+        }
+        String last = values.get(n - 1);
+        int lLast = last == null ? 0 : last.length();
+        if (lLast > 16_383) {
+            return true;
+        }
+        if (n <= 4) {
+            long sum = 2L + l0 + lLast;
+            for (int i = 1; i < n - 1; i++) {
+                String s = values.get(i);
+                sum += 1L + (s == null ? 0L : s.length());
+            }
+            return sum + 2L > PrefixVarint.MAX_2BYTE;
+        }
+        String mid = values.get(n >>> 1);
+        int lMid = mid == null ? 0 : mid.length();
+        if (lMid > 16_383) {
+            return true;
+        }
+        return (long) (l0 + lMid + lLast + 3) * (long) n > 49_149L;
+    }
+
+    private int writeStringElementSlow(int currentPos, String s) {
+        this.pos = currentPos;
+        writeStringElement(s);
+        return this.pos;
+    }
+
+    private int writeStringNonAsciiFrom(int lenBytePos, String s, int slen, int asciiPrefixLen) {
+        this.pos = lenBytePos;
+        writeStringNonAsciiTail(s, slen, lenBytePos, 1, asciiPrefixLen);
+        return this.pos;
+    }
+
     public void writeStringList(int fieldNumber, List<String> values) {
         int n = values == null ? 0 : values.size();
-        boolean largeHint = n > 0 && values.get(0) != null && values.get(0).length() > 16_383;
-        int lenPos = beginTypedArrayFast(fieldNumber, WireType.WIRE_STRING, n, largeHint);
-        for (int i = 0; i < n; i++) {
-            writeStringElement(values.get(i));
+        if (n == 0) {
+            int lenPos = beginTypedArrayFast(fieldNumber, WireType.WIRE_STRING, 0, false);
+            endContainerAt(lenPos);
+            return;
         }
+        String first = values.get(0);
+        boolean largeHint = n > 64
+            ? isLargeStringListHint(values, n)
+            : (first != null && first.length() > 16_383);
+        int lenPos = beginTypedArrayFast(fieldNumber, WireType.WIRE_STRING, n, largeHint);
+        byte[] dst = this.buf;
+        int p = this.pos;
+        int cap = dst.length;
+        for (int i = 0; i < n; i++) {
+            String s = values.get(i);
+            if (s == null || s.isEmpty()) {
+                if (p < cap) {
+                    dst[p++] = 1;
+                } else {
+                    p = writeStringElementSlow(p, s);
+                    dst = this.buf;
+                    cap = dst.length;
+                }
+                continue;
+            }
+            int slen = s.length();
+            if (slen <= 127 && cap - p >= 1 + slen) {
+                int nextP = writeShortAsciiInto(dst, p, s, slen);
+                if (nextP >= 0) {
+                    p = nextP;
+                    continue;
+                }
+                p = writeStringNonAsciiFrom(p, s, slen, ~nextP);
+                dst = this.buf;
+                cap = dst.length;
+            } else {
+                p = writeStringElementSlow(p, s);
+                dst = this.buf;
+                cap = dst.length;
+            }
+        }
+        this.pos = p;
         endContainerAt(lenPos);
     }
 
     public void writeBytesList(int fieldNumber, List<byte[]> values) {
         int n = values == null ? 0 : values.size();
-        boolean largeHint = n > 0 && values.get(0) != null && values.get(0).length > 16_383;
-        int lenPos = beginTypedArrayFast(fieldNumber, WireType.WIRE_BYTES, n, largeHint);
-        for (int i = 0; i < n; i++) {
-            writeBytesElement(values.get(i));
+        if (n == 0) {
+            int lenPos = beginTypedArrayFast(fieldNumber, WireType.WIRE_BYTES, 0, false);
+            endContainerAt(lenPos);
+            return;
         }
+        long exact = 0L;
+        for (int i = 0; i < n; i++) {
+            byte[] b = values.get(i);
+            int blen = b == null ? 0 : b.length;
+            exact += (long) PrefixVarint.encodedLength(Integer.toUnsignedLong(blen)) + (long) blen;
+        }
+        int hdrExtra = 1 + PrefixVarint.encodedLength(Integer.toUnsignedLong(n));
+        boolean largeHint = (exact + hdrExtra) > PrefixVarint.MAX_2BYTE;
+        int lenPos = beginTypedArrayFast(fieldNumber, WireType.WIRE_BYTES, n, largeHint);
+        ensureCapacityLong((long) this.pos + exact);
+        byte[] dst = this.buf;
+        int p = this.pos;
+        for (int i = 0; i < n; i++) {
+            byte[] b = values.get(i);
+            int blen = b == null ? 0 : b.length;
+            p = PrefixVarint.write(dst, p, Integer.toUnsignedLong(blen));
+            if (blen > 0) {
+                System.arraycopy(b, 0, dst, p, blen);
+                p += blen;
+            }
+        }
+        this.pos = p;
         endContainerAt(lenPos);
     }
 
     public void writeUint32List(int fieldNumber, List<Integer> values) {
         int n = values == null ? 0 : values.size();
-        int lenPos = beginTypedArrayFast(fieldNumber, WireType.WIRE_UINT, n);
+        int lenPos = beginTypedArrayFast(fieldNumber, WireType.WIRE_UINT, n, n > 16_380);
         if (n > 0) {
             ensureCapacityLong((long) pos + (long) n * 9L);
             byte[] dst = this.buf;
@@ -1002,7 +1077,7 @@ public final class OmniBufEncoder {
 
     public void writeUint32Array(int fieldNumber, int[] values) {
         int n = values == null ? 0 : values.length;
-        int lenPos = beginTypedArrayFast(fieldNumber, WireType.WIRE_UINT, n);
+        int lenPos = beginTypedArrayFast(fieldNumber, WireType.WIRE_UINT, n, n > 16_380);
         if (n > 0) {
             ensureCapacityLong((long) pos + (long) n * 9L);
             byte[] dst = this.buf;
@@ -1017,7 +1092,7 @@ public final class OmniBufEncoder {
 
     public void writeUint64List(int fieldNumber, List<Long> values) {
         int n = values == null ? 0 : values.size();
-        int lenPos = beginTypedArrayFast(fieldNumber, WireType.WIRE_UINT, n);
+        int lenPos = beginTypedArrayFast(fieldNumber, WireType.WIRE_UINT, n, n > 16_380);
         if (n > 0) {
             ensureCapacityLong((long) pos + (long) n * 9L);
             byte[] dst = this.buf;
@@ -1040,7 +1115,7 @@ public final class OmniBufEncoder {
 
     public void writeSint32List(int fieldNumber, List<Integer> values) {
         int n = values == null ? 0 : values.size();
-        int lenPos = beginTypedArrayFast(fieldNumber, WireType.WIRE_SINT, n);
+        int lenPos = beginTypedArrayFast(fieldNumber, WireType.WIRE_SINT, n, n > 16_380);
         if (n > 0) {
             ensureCapacityLong((long) pos + (long) n * 9L);
             byte[] dst = this.buf;
@@ -1063,7 +1138,7 @@ public final class OmniBufEncoder {
 
     public void writeSint64List(int fieldNumber, List<Long> values) {
         int n = values == null ? 0 : values.size();
-        int lenPos = beginTypedArrayFast(fieldNumber, WireType.WIRE_SINT, n);
+        int lenPos = beginTypedArrayFast(fieldNumber, WireType.WIRE_SINT, n, n > 16_380);
         if (n > 0) {
             ensureCapacityLong((long) pos + (long) n * 9L);
             byte[] dst = this.buf;
@@ -1086,7 +1161,7 @@ public final class OmniBufEncoder {
 
     public void writeBoolList(int fieldNumber, List<Boolean> values) {
         int n = values == null ? 0 : values.size();
-        int lenPos = beginTypedArrayFast(fieldNumber, WireType.WIRE_BOOL_FALSE, n);
+        int lenPos = beginTypedArrayFast(fieldNumber, WireType.WIRE_BOOL_FALSE, n, n > 16_380);
         if (n > 0) {
             ensureCapacity(n);
             byte[] dst = this.buf;
@@ -1102,7 +1177,7 @@ public final class OmniBufEncoder {
 
     public void writeFixed32List(int fieldNumber, int elemWireType, List<Integer> values) {
         int n = values == null ? 0 : values.size();
-        int lenPos = beginTypedArrayFast(fieldNumber, elemWireType, n);
+        int lenPos = beginTypedArrayFast(fieldNumber, elemWireType, n, n >= 4_096);
         if (n > 0) {
             ensureCapacityLong((long) pos + (long) n * 4L);
             byte[] dst = this.buf;
@@ -1127,7 +1202,7 @@ public final class OmniBufEncoder {
 
     public void writeFixed64List(int fieldNumber, int elemWireType, List<Long> values) {
         int n = values == null ? 0 : values.size();
-        int lenPos = beginTypedArrayFast(fieldNumber, elemWireType, n);
+        int lenPos = beginTypedArrayFast(fieldNumber, elemWireType, n, n >= 2_048);
         if (n > 0) {
             ensureCapacityLong((long) pos + (long) n * 8L);
             byte[] dst = this.buf;
@@ -1152,34 +1227,46 @@ public final class OmniBufEncoder {
 
     public void writeFloat32List(int fieldNumber, List<Float> values) {
         int n = values == null ? 0 : values.size();
-        int lenPos = beginTypedArrayFast(fieldNumber, WireType.WIRE_FLOAT32, n);
+        int lenPos = beginTypedArrayFast(fieldNumber, WireType.WIRE_FLOAT32, n, n >= 4_096);
         if (n > 0) {
             ensureCapacityLong((long) pos + (long) n * 4L);
             byte[] dst = this.buf;
             int p = this.pos;
-            for (int i = 0; i < n; i++) {
-                Float elem = values.get(i);
-                PrefixVarint.setIntLE(dst, p, Float.floatToRawIntBits(elem == null ? 0.0f : elem));
-                p += 4;
+            if (values instanceof FloatArrayList fl) {
+                float[] raw = fl.rawArray();
+                for (int i = 0; i < n; i++) {
+                    PrefixVarint.setIntLE(dst, p + (i << 2), Float.floatToRawIntBits(raw[i]));
+                }
+            } else {
+                for (int i = 0; i < n; i++) {
+                    Float elem = values.get(i);
+                    PrefixVarint.setIntLE(dst, p + (i << 2), Float.floatToRawIntBits(elem == null ? 0.0f : elem));
+                }
             }
-            this.pos = p;
+            this.pos = p + (n << 2);
         }
         endContainerAt(lenPos);
     }
 
     public void writeFloat64List(int fieldNumber, List<Double> values) {
         int n = values == null ? 0 : values.size();
-        int lenPos = beginTypedArrayFast(fieldNumber, WireType.WIRE_FLOAT64, n);
+        int lenPos = beginTypedArrayFast(fieldNumber, WireType.WIRE_FLOAT64, n, n >= 2_048);
         if (n > 0) {
             ensureCapacityLong((long) pos + (long) n * 8L);
             byte[] dst = this.buf;
             int p = this.pos;
-            for (int i = 0; i < n; i++) {
-                Double elem = values.get(i);
-                PrefixVarint.setLongLE(dst, p, Double.doubleToRawLongBits(elem == null ? 0.0d : elem));
-                p += 8;
+            if (values instanceof DoubleArrayList dl) {
+                double[] raw = dl.rawArray();
+                for (int i = 0; i < n; i++) {
+                    PrefixVarint.setLongLE(dst, p + (i << 3), Double.doubleToRawLongBits(raw[i]));
+                }
+            } else {
+                for (int i = 0; i < n; i++) {
+                    Double elem = values.get(i);
+                    PrefixVarint.setLongLE(dst, p + (i << 3), Double.doubleToRawLongBits(elem == null ? 0.0d : elem));
+                }
             }
-            this.pos = p;
+            this.pos = p + (n << 3);
         }
         endContainerAt(lenPos);
     }

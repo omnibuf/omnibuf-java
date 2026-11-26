@@ -35,7 +35,11 @@ public final class OmniBufPeerUpdate {
         this.rssiDbm = 0;
         this.cpuLoad = 0.0d;
         this.tags = null;
-        this.prefixes = null;
+        if (this.prefixes instanceof IntArrayList list) {
+            list.clear();
+        } else {
+            this.prefixes = null;
+        }
         this.location = null;
         this.neighbors = null;
         this.sequence = 0L;
@@ -104,7 +108,7 @@ public final class OmniBufPeerUpdate {
 
     ArrayList<String> ensureTags(int minCap) {
         List<String> cur = this.tags;
-        int cap = Math.min(minCap, 4096);
+        int cap = Math.min(minCap, 65_536);
         if (cur == null) {
             ArrayList<String> al = new ArrayList<>(cap);
             this.tags = al;
@@ -135,7 +139,7 @@ public final class OmniBufPeerUpdate {
 
     IntArrayList ensurePrefixes(int minCap) {
         List<Integer> cur = this.prefixes;
-        int cap = Math.min(minCap, 4096);
+        int cap = Math.min(minCap, 65_536);
         if (cur == null) {
             IntArrayList il = new IntArrayList(cap);
             this.prefixes = il;
@@ -183,7 +187,7 @@ public final class OmniBufPeerUpdate {
 
     ArrayList<com.omnibuf.pb.bench.OmniBufNeighbor> ensureNeighbors(int minCap) {
         List<com.omnibuf.pb.bench.OmniBufNeighbor> cur = this.neighbors;
-        int cap = Math.min(minCap, 4096);
+        int cap = Math.min(minCap, 65_536);
         if (cur == null) {
             ArrayList<com.omnibuf.pb.bench.OmniBufNeighbor> al = new ArrayList<>(cap);
             this.neighbors = al;

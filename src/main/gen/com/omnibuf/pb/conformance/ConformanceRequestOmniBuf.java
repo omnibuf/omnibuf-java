@@ -126,21 +126,46 @@ public final class ConformanceRequestOmniBuf {
         }
     }
 
+    public static final int MIN_ENCODED_BYTES = 17;
+
     public static boolean isLargePayload(OmniBufConformanceRequest msg) {
-        return isLargePayload(msg, 2);
+        return estimateMinSize(msg, 2) > 16_383;
     }
 
     public static boolean isLargePayload(OmniBufConformanceRequest msg, int depthLeft) {
-        if (msg == null || depthLeft < 0) {
-            return false;
+        return depthLeft >= 0 && estimateMinSize(msg, depthLeft) > 16_383;
+    }
+
+    public static int estimateMinSize(OmniBufConformanceRequest msg, int depthLeft) {
+        if (msg == null) {
+            return 0;
         }
-        if (((msg.testName == null ? 0 : msg.testName.length())
-                | (msg.messageType == null ? 0 : msg.messageType.length())
-                | (msg.omnibufPayload == null ? 0 : msg.omnibufPayload.length)
-                | (msg.jsonPayload == null ? 0 : msg.jsonPayload.length())) > 16_383) {
-            return true;
+        int est = MIN_ENCODED_BYTES;
+        if (msg.testName != null) {
+            int sl = msg.testName.length();
+            if (sl > 16_383 || (est += sl) > 16_383) {
+                return 16_384;
+            }
         }
-        return false;
+        if (msg.messageType != null) {
+            int sl = msg.messageType.length();
+            if (sl > 16_383 || (est += sl) > 16_383) {
+                return 16_384;
+            }
+        }
+        if (msg.omnibufPayload != null) {
+            int sl = msg.omnibufPayload.length;
+            if (sl > 16_383 || (est += sl) > 16_383) {
+                return 16_384;
+            }
+        }
+        if (msg.jsonPayload != null) {
+            int sl = msg.jsonPayload.length();
+            if (sl > 16_383 || (est += sl) > 16_383) {
+                return 16_384;
+            }
+        }
+        return est;
     }
 
     public static void encode(com.omnibuf.wire.OmniBufEncoder enc, OmniBufConformanceRequest msg, boolean deterministic) {

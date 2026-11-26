@@ -29,6 +29,11 @@ public final class OmniBufOpaque {
         T read(OmniBufDecoder decoder);
     }
 
+    @FunctionalInterface
+    public interface SubMsgFactory<T> {
+        T create(byte[] buf, int offset, int length);
+    }
+
     public record LocatedField(int valueOffset, int valueEnd, int wireType, boolean found) {
         public static final LocatedField NOT_FOUND = new LocatedField(0, 0, 0, false);
     }
@@ -349,6 +354,10 @@ public final class OmniBufOpaque {
                 if ((b0 & 1) != 0) {
                     int len = b0 >>> 1;
                     yield end - pos - 1 >= len ? pos + 1 + len : -1;
+                }
+                if ((b0 & 3) == 2 && end - pos >= 2) {
+                    int len = Short.toUnsignedInt(PrefixVarint.getShortLE(packet, pos)) >>> 2;
+                    yield end - pos - 2 >= len ? pos + 2 + len : -1;
                 }
                 long packed = PrefixVarint.tryReadLengthSlicePacked(packet, pos, end, 0);
                 yield packed < 0L ? -1 : (int) packed;
@@ -1607,34 +1616,58 @@ public final class OmniBufOpaque {
 
     public static List<PacketView> readSubMsgList(
             byte[] packet, int offset, int length, int fieldNum, int maxCollectionElements) {
+        return readSubMsgListMapped(packet, offset, length, fieldNum, maxCollectionElements, PacketView::new);
+    }
+
+    public static <T> List<T> readSubMsgListMapped(
+            byte[] packet, int offset, int length, int fieldNum, SubMsgFactory<T> factory) {
+        return readSubMsgListMapped(
+            packet, offset, length, fieldNum, UnmarshalOptions.DEFAULT_MAX_COLLECTION_ELEMENTS, factory
+        );
+    }
+
+    public static <T> List<T> readSubMsgListMapped(
+            byte[] packet,
+            int offset,
+            int length,
+            int fieldNum,
+            int maxCollectionElements,
+            SubMsgFactory<T> factory) {
         checkMaxCollectionElements(maxCollectionElements);
         List<OmniBufDecoder.Slice> bodies =
             collectContainerBodies(packet, offset, length, fieldNum, WireType.WIRE_ARRAY);
         if (bodies.isEmpty()) {
             return Collections.emptyList();
         }
-        List<PacketView> out = new ArrayList<>();
+        ArrayList<T> out = null;
         for (OmniBufDecoder.Slice body : bodies) {
             OmniBufDecoder.ArrayHeader hdr =
                 OmniBufDecoder.parseArrayHeader(packet, body.offset(), body.end(), maxCollectionElements);
             if (hdr.elemWireType() != WireType.WIRE_SUB_MSG) {
                 throw arrayElemMismatch(WireType.WIRE_SUB_MSG, hdr.elemWireType());
             }
-            checkArrayAccumulatedCount(out.size(), hdr.count(), maxCollectionElements);
+            int count = hdr.count();
+            int curSize = out == null ? 0 : out.size();
+            checkArrayAccumulatedCount(curSize, count, maxCollectionElements);
+            if (out == null) {
+                out = new ArrayList<>(Math.min(count, 65_536));
+            } else if (count > 0) {
+                out.ensureCapacity(curSize + count);
+            }
             int p = hdr.payloadStart();
             int end = hdr.payloadEnd();
-            for (int i = 0; i < hdr.count(); i++) {
-                long packed = PrefixVarint.readLengthSlicePacked(packet, p, end, 0);
+            for (int i = 0; i < count; i++) {
+                long packed = OmniBufDecoder.readSubMsgSpan(packet, p, end);
                 int sStart = (int) (packed >>> 32);
                 int sEnd = (int) packed;
-                out.add(new PacketView(packet, sStart, sEnd - sStart));
+                out.add(factory.create(packet, sStart, sEnd - sStart));
                 p = sEnd;
             }
             if (p != end) {
                 throw new OmniBufException("omnibuf: WireArray has trailing payload bytes");
             }
         }
-        return out;
+        return out == null || out.isEmpty() ? Collections.emptyList() : out;
     }
 
     public static Map<String, Long> readMapStringUint64(

@@ -43,7 +43,11 @@ public final class OmniBufTestAllTypes {
         this.f7Bytes = EMPTY_BYTES;
         this.f8SubMsg = null;
         this.f9StringArr = null;
-        this.f10Uint32Arr = null;
+        if (this.f10Uint32Arr instanceof IntArrayList list) {
+            list.clear();
+        } else {
+            this.f10Uint32Arr = null;
+        }
         this.f11SubMsgArr = null;
         this.f12MapStrUint = null;
         this.f13Float32 = 0.0f;
@@ -143,7 +147,7 @@ public final class OmniBufTestAllTypes {
 
     ArrayList<String> ensureF9StringArr(int minCap) {
         List<String> cur = this.f9StringArr;
-        int cap = Math.min(minCap, 4096);
+        int cap = Math.min(minCap, 65_536);
         if (cur == null) {
             ArrayList<String> al = new ArrayList<>(cap);
             this.f9StringArr = al;
@@ -174,7 +178,7 @@ public final class OmniBufTestAllTypes {
 
     IntArrayList ensureF10Uint32Arr(int minCap) {
         List<Integer> cur = this.f10Uint32Arr;
-        int cap = Math.min(minCap, 4096);
+        int cap = Math.min(minCap, 65_536);
         if (cur == null) {
             IntArrayList il = new IntArrayList(cap);
             this.f10Uint32Arr = il;
@@ -204,7 +208,7 @@ public final class OmniBufTestAllTypes {
 
     ArrayList<com.omnibuf.pb.conformance.OmniBufAllTypesSubMsg> ensureF11SubMsgArr(int minCap) {
         List<com.omnibuf.pb.conformance.OmniBufAllTypesSubMsg> cur = this.f11SubMsgArr;
-        int cap = Math.min(minCap, 4096);
+        int cap = Math.min(minCap, 65_536);
         if (cur == null) {
             ArrayList<com.omnibuf.pb.conformance.OmniBufAllTypesSubMsg> al = new ArrayList<>(cap);
             this.f11SubMsgArr = al;

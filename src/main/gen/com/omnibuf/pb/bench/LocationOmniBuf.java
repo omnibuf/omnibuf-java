@@ -120,20 +120,40 @@ public final class LocationOmniBuf {
         }
     }
 
+    public static final int MIN_ENCODED_BYTES = 18;
+
     public static boolean isLargePayload(OmniBufLocation msg) {
-        return isLargePayload(msg, 2);
+        return estimateMinSize(msg, 2) > 16_383;
     }
 
     public static boolean isLargePayload(OmniBufLocation msg, int depthLeft) {
-        if (msg == null || depthLeft < 0) {
-            return false;
+        return depthLeft >= 0 && estimateMinSize(msg, depthLeft) > 16_383;
+    }
+
+    public static int estimateMinSize(OmniBufLocation msg, int depthLeft) {
+        if (msg == null) {
+            return 0;
         }
-        if (((msg.region == null ? 0 : msg.region.length())
-                | (msg.datacenter == null ? 0 : msg.datacenter.length())
-                | (msg.city == null ? 0 : msg.city.length())) > 16_383) {
-            return true;
+        int est = MIN_ENCODED_BYTES;
+        if (msg.region != null) {
+            int sl = msg.region.length();
+            if (sl > 16_383 || (est += sl) > 16_383) {
+                return 16_384;
+            }
         }
-        return false;
+        if (msg.datacenter != null) {
+            int sl = msg.datacenter.length();
+            if (sl > 16_383 || (est += sl) > 16_383) {
+                return 16_384;
+            }
+        }
+        if (msg.city != null) {
+            int sl = msg.city.length();
+            if (sl > 16_383 || (est += sl) > 16_383) {
+                return 16_384;
+            }
+        }
+        return est;
     }
 
     public static void encode(com.omnibuf.wire.OmniBufEncoder enc, OmniBufLocation msg, boolean deterministic) {

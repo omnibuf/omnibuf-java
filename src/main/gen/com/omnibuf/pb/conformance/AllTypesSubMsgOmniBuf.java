@@ -116,18 +116,28 @@ public final class AllTypesSubMsgOmniBuf {
         }
     }
 
+    public static final int MIN_ENCODED_BYTES = 7;
+
     public static boolean isLargePayload(OmniBufAllTypesSubMsg msg) {
-        return isLargePayload(msg, 2);
+        return estimateMinSize(msg, 2) > 16_383;
     }
 
     public static boolean isLargePayload(OmniBufAllTypesSubMsg msg, int depthLeft) {
-        if (msg == null || depthLeft < 0) {
-            return false;
+        return depthLeft >= 0 && estimateMinSize(msg, depthLeft) > 16_383;
+    }
+
+    public static int estimateMinSize(OmniBufAllTypesSubMsg msg, int depthLeft) {
+        if (msg == null) {
+            return 0;
         }
-        if ((msg.label == null ? 0 : msg.label.length()) > 16_383) {
-            return true;
+        int est = MIN_ENCODED_BYTES;
+        if (msg.label != null) {
+            int sl = msg.label.length();
+            if (sl > 16_383 || (est += sl) > 16_383) {
+                return 16_384;
+            }
         }
-        return false;
+        return est;
     }
 
     public static void encode(com.omnibuf.wire.OmniBufEncoder enc, OmniBufAllTypesSubMsg msg, boolean deterministic) {

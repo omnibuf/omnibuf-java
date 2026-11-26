@@ -170,32 +170,96 @@ public final class TestAllTypesOmniBuf {
         }
     }
 
+    public static final int MIN_ENCODED_BYTES = 73;
+
     public static boolean isLargePayload(OmniBufTestAllTypes msg) {
-        return isLargePayload(msg, 2);
+        return estimateMinSize(msg, 2) > 16_383;
     }
 
     public static boolean isLargePayload(OmniBufTestAllTypes msg, int depthLeft) {
-        if (msg == null || depthLeft < 0) {
-            return false;
+        return depthLeft >= 0 && estimateMinSize(msg, depthLeft) > 16_383;
+    }
+
+    public static int estimateMinSize(OmniBufTestAllTypes msg, int depthLeft) {
+        if (msg == null) {
+            return 0;
         }
-        if (((msg.f6String == null ? 0 : msg.f6String.length())
-                | (msg.f7Bytes == null ? 0 : msg.f7Bytes.length)
-                | (msg.f20OverflowStr == null ? 0 : msg.f20OverflowStr.length())) > 16_383) {
-            return true;
+        int est = MIN_ENCODED_BYTES;
+        if (msg.f6String != null) {
+            int sl = msg.f6String.length();
+            if (sl > 16_383 || (est += sl) > 16_383) {
+                return 16_384;
+            }
+        }
+        if (msg.f7Bytes != null) {
+            int sl = msg.f7Bytes.length;
+            if (sl > 16_383 || (est += sl) > 16_383) {
+                return 16_384;
+            }
+        }
+        if (msg.f9StringArr != null) {
+            int sz = msg.f9StringArr.size();
+            if (sz > 16_383) {
+                return 16_384;
+            }
+            for (int i = 0; i < sz; i++) {
+                String s = msg.f9StringArr.get(i);
+                est += (s == null ? 1 : 1 + s.length());
+                if (est > 16_383) {
+                    return 16_384;
+                }
+            }
+        }
+        if (msg.f10Uint32Arr != null) {
+            int sz = msg.f10Uint32Arr.size();
+            if (sz > 16_383) {
+                return 16_384;
+            }
+            est += sz;
+            if (est > 16_383) {
+                return 16_384;
+            }
+        }
+        if (msg.f12MapStrUint != null) {
+            int sz = msg.f12MapStrUint.size();
+            if (sz > 8_191) {
+                return 16_384;
+            }
+            est += sz << 1;
+            if (est > 16_383) {
+                return 16_384;
+            }
+        }
+        if (msg.f20OverflowStr != null) {
+            int sl = msg.f20OverflowStr.length();
+            if (sl > 16_383 || (est += sl) > 16_383) {
+                return 16_384;
+            }
         }
         if (depthLeft > 0) {
-            if (msg.f8SubMsg != null && com.omnibuf.pb.conformance.AllTypesSubMsgOmniBuf.isLargePayload(msg.f8SubMsg, depthLeft - 1)) {
-                return true;
+            if (msg.f8SubMsg != null) {
+                est += 4 + com.omnibuf.pb.conformance.AllTypesSubMsgOmniBuf.estimateMinSize(msg.f8SubMsg, depthLeft - 1);
+                if (est > 16_383) {
+                    return 16_384;
+                }
             }
             if (msg.f11SubMsgArr != null) {
-                for (int i = 0, n = msg.f11SubMsgArr.size(); i < n; i++) {
-                    if (com.omnibuf.pb.conformance.AllTypesSubMsgOmniBuf.isLargePayload(msg.f11SubMsgArr.get(i), depthLeft - 1)) {
-                        return true;
+                int sz = msg.f11SubMsgArr.size();
+                if (sz > 0) {
+                    int minPerElem = com.omnibuf.pb.conformance.AllTypesSubMsgOmniBuf.MIN_ENCODED_BYTES + 2;
+                    if (sz > 16_383 / minPerElem) {
+                        return 16_384;
+                    }
+                    for (int i = 0; i < sz; i++) {
+                        est += 2 + com.omnibuf.pb.conformance.AllTypesSubMsgOmniBuf.estimateMinSize(msg.f11SubMsgArr.get(i), depthLeft - 1);
+                        if (est > 16_383) {
+                            return 16_384;
+                        }
                     }
                 }
             }
         }
-        return false;
+        return est;
     }
 
     public static void encode(com.omnibuf.wire.OmniBufEncoder enc, OmniBufTestAllTypes msg, boolean deterministic) {
@@ -229,16 +293,32 @@ public final class TestAllTypesOmniBuf {
             List<com.omnibuf.pb.conformance.OmniBufAllTypesSubMsg> list11 = msg.f11SubMsgArr;
             int n = list11 == null ? 0 : list11.size();
             boolean largeArr = false;
-            for (int i = 0; i < n; i++) {
-                if (com.omnibuf.pb.conformance.AllTypesSubMsgOmniBuf.isLargePayload(list11.get(i))) {
+            boolean checkElemLarge = false;
+            if (n > 0) {
+                int minPerElem = com.omnibuf.pb.conformance.AllTypesSubMsgOmniBuf.MIN_ENCODED_BYTES + 2;
+                if (n > 16_383 / minPerElem) {
                     largeArr = true;
-                    break;
+                    checkElemLarge = com.omnibuf.pb.conformance.AllTypesSubMsgOmniBuf.isLargePayload(list11.get(0));
+                } else {
+                    int e0 = com.omnibuf.pb.conformance.AllTypesSubMsgOmniBuf.estimateMinSize(list11.get(0), 2);
+                    if (e0 > 8_192) {
+                        largeArr = true;
+                        checkElemLarge = true;
+                    } else if (n > 1) {
+                        int eLast = com.omnibuf.pb.conformance.AllTypesSubMsgOmniBuf.estimateMinSize(list11.get(n - 1), 2);
+                        if (eLast > 8_192) {
+                            largeArr = true;
+                            checkElemLarge = true;
+                        } else if ((long) (e0 + eLast + 4) * (long) n > 32_766L) {
+                            largeArr = true;
+                        }
+                    }
                 }
             }
             int arrPos = enc.beginTypedArrayFast(11, WireType.WIRE_SUB_MSG, n, largeArr);
             for (int i = 0; i < n; i++) {
                 com.omnibuf.pb.conformance.OmniBufAllTypesSubMsg elem = list11.get(i);
-                int elemPos = enc.beginInlineSubMsgFast(com.omnibuf.pb.conformance.AllTypesSubMsgOmniBuf.isLargePayload(elem));
+                int elemPos = enc.beginInlineSubMsgFast(checkElemLarge && com.omnibuf.pb.conformance.AllTypesSubMsgOmniBuf.isLargePayload(elem));
                 if (elem != null) {
                     com.omnibuf.pb.conformance.AllTypesSubMsgOmniBuf.encode(enc, elem, deterministic);
                 }
@@ -480,7 +560,7 @@ public final class TestAllTypesOmniBuf {
                 }
                 case 8 -> {
                     if (wt == WireType.WIRE_SUB_MSG) {
-                        long pk_subStart = com.omnibuf.wire.OmniBufDecoder.readStringSpan(buf, pos, lim);
+                        long pk_subStart = com.omnibuf.wire.OmniBufDecoder.readSubMsgSpan(buf, pos, lim);
                         int subStart = (int) (pk_subStart >>> 32);
                         int subEnd = (int) pk_subStart;
                         pos = subEnd;
@@ -509,14 +589,7 @@ public final class TestAllTypesOmniBuf {
                         if ((long) list.size() + count > maxElems) {
                             com.omnibuf.wire.OmniBufDecoder.throwMaxCollectionElements();
                         }
-                        for (int i = 0; i < count; i++) {
-                            {
-                                long sp = com.omnibuf.wire.OmniBufDecoder.readStringSpan(buf, ap, arrEnd);
-                                int ss = (int) (sp >>> 32);
-                                ap = (int) sp;
-                                list.add(com.omnibuf.wire.Utf8Validator.decodeStrictUnchecked(buf, ss, ap - ss));
-                            }
-                        }
+                        ap = com.omnibuf.wire.OmniBufDecoder.readStringSliceInto(buf, ap, arrEnd, list, count);
                         if (ap != arrEnd) {
                             com.omnibuf.wire.OmniBufDecoder.throwTrailingContainerBytes();
                         }
@@ -559,7 +632,7 @@ public final class TestAllTypesOmniBuf {
                             com.omnibuf.wire.OmniBufDecoder.throwMaxCollectionElements();
                         }
                         for (int i = 0; i < count; i++) {
-                            long pk_es = com.omnibuf.wire.OmniBufDecoder.readStringSpan(buf, ap, arrEnd);
+                            long pk_es = com.omnibuf.wire.OmniBufDecoder.readSubMsgSpan(buf, ap, arrEnd);
                             int es = (int) (pk_es >>> 32);
                             int ee = (int) pk_es;
                             ap = ee;

@@ -120,23 +120,58 @@ public final class ConformanceResponseOmniBuf {
         }
     }
 
+    public static final int MIN_ENCODED_BYTES = 12;
+
     public static boolean isLargePayload(OmniBufConformanceResponse msg) {
-        return isLargePayload(msg, 2);
+        return estimateMinSize(msg, 2) > 16_383;
     }
 
     public static boolean isLargePayload(OmniBufConformanceResponse msg, int depthLeft) {
-        if (msg == null || depthLeft < 0) {
-            return false;
+        return depthLeft >= 0 && estimateMinSize(msg, depthLeft) > 16_383;
+    }
+
+    public static int estimateMinSize(OmniBufConformanceResponse msg, int depthLeft) {
+        if (msg == null) {
+            return 0;
         }
-        if (((msg.parseError == null ? 0 : msg.parseError.length())
-                | (msg.serializeError == null ? 0 : msg.serializeError.length())
-                | (msg.runtimeError == null ? 0 : msg.runtimeError.length())
-                | (msg.skipped == null ? 0 : msg.skipped.length())
-                | (msg.omnibufPayload == null ? 0 : msg.omnibufPayload.length)
-                | (msg.jsonPayload == null ? 0 : msg.jsonPayload.length())) > 16_383) {
-            return true;
+        int est = MIN_ENCODED_BYTES;
+        if (msg.parseError != null) {
+            int sl = msg.parseError.length();
+            if (sl > 16_383 || (est += sl) > 16_383) {
+                return 16_384;
+            }
         }
-        return false;
+        if (msg.serializeError != null) {
+            int sl = msg.serializeError.length();
+            if (sl > 16_383 || (est += sl) > 16_383) {
+                return 16_384;
+            }
+        }
+        if (msg.runtimeError != null) {
+            int sl = msg.runtimeError.length();
+            if (sl > 16_383 || (est += sl) > 16_383) {
+                return 16_384;
+            }
+        }
+        if (msg.skipped != null) {
+            int sl = msg.skipped.length();
+            if (sl > 16_383 || (est += sl) > 16_383) {
+                return 16_384;
+            }
+        }
+        if (msg.omnibufPayload != null) {
+            int sl = msg.omnibufPayload.length;
+            if (sl > 16_383 || (est += sl) > 16_383) {
+                return 16_384;
+            }
+        }
+        if (msg.jsonPayload != null) {
+            int sl = msg.jsonPayload.length();
+            if (sl > 16_383 || (est += sl) > 16_383) {
+                return 16_384;
+            }
+        }
+        return est;
     }
 
     public static void encode(com.omnibuf.wire.OmniBufEncoder enc, OmniBufConformanceResponse msg, boolean deterministic) {

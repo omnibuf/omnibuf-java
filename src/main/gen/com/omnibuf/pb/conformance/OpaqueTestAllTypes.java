@@ -323,15 +323,7 @@ public final class OpaqueTestAllTypes {
             }
             return out;
         }
-        List<com.omnibuf.wire.OmniBufOpaque.PacketView> views = com.omnibuf.wire.OmniBufOpaque.readSubMsgList(buffer, offset, length, 11);
-        if (views.isEmpty()) {
-            return Collections.emptyList();
-        }
-        List<com.omnibuf.pb.conformance.OpaqueAllTypesSubMsg> out = new ArrayList<>(views.size());
-        for (com.omnibuf.wire.OmniBufOpaque.PacketView v : views) {
-            out.add(new com.omnibuf.pb.conformance.OpaqueAllTypesSubMsg(v));
-        }
-        return out;
+        return com.omnibuf.wire.OmniBufOpaque.readSubMsgListMapped(buffer, offset, length, 11, com.omnibuf.pb.conformance.OpaqueAllTypesSubMsg::new);
     }
 
     public OpaqueTestAllTypes setF11SubMsgArr(List<com.omnibuf.pb.conformance.OmniBufAllTypesSubMsg> value) {
@@ -526,16 +518,32 @@ public final class OpaqueTestAllTypes {
                     List<com.omnibuf.pb.conformance.OmniBufAllTypesSubMsg> list11 = d.dirty_f11SubMsgArr;
                     int n = list11 == null ? 0 : list11.size();
                     boolean largeArr = false;
-                    for (int i = 0; i < n; i++) {
-                        if (com.omnibuf.pb.conformance.AllTypesSubMsgOmniBuf.isLargePayload(list11.get(i))) {
+                    boolean checkElemLarge = false;
+                    if (n > 0) {
+                        int minPerElem = com.omnibuf.pb.conformance.AllTypesSubMsgOmniBuf.MIN_ENCODED_BYTES + 2;
+                        if (n > 16_383 / minPerElem) {
                             largeArr = true;
-                            break;
+                            checkElemLarge = com.omnibuf.pb.conformance.AllTypesSubMsgOmniBuf.isLargePayload(list11.get(0));
+                        } else {
+                            int e0 = com.omnibuf.pb.conformance.AllTypesSubMsgOmniBuf.estimateMinSize(list11.get(0), 2);
+                            if (e0 > 8_192) {
+                                largeArr = true;
+                                checkElemLarge = true;
+                            } else if (n > 1) {
+                                int eLast = com.omnibuf.pb.conformance.AllTypesSubMsgOmniBuf.estimateMinSize(list11.get(n - 1), 2);
+                                if (eLast > 8_192) {
+                                    largeArr = true;
+                                    checkElemLarge = true;
+                                } else if ((long) (e0 + eLast + 4) * (long) n > 32_766L) {
+                                    largeArr = true;
+                                }
+                            }
                         }
                     }
                     int arrPos = enc.beginTypedArrayFast(11, WireType.WIRE_SUB_MSG, n, largeArr);
                     for (int i = 0; i < n; i++) {
                         com.omnibuf.pb.conformance.OmniBufAllTypesSubMsg elem = list11.get(i);
-                        int elemPos = enc.beginInlineSubMsgFast(com.omnibuf.pb.conformance.AllTypesSubMsgOmniBuf.isLargePayload(elem));
+                        int elemPos = enc.beginInlineSubMsgFast(checkElemLarge && com.omnibuf.pb.conformance.AllTypesSubMsgOmniBuf.isLargePayload(elem));
                         if (elem != null) {
                             com.omnibuf.pb.conformance.AllTypesSubMsgOmniBuf.encode(enc, elem, deterministic);
                         }

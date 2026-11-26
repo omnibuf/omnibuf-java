@@ -116,18 +116,28 @@ public final class NeighborOmniBuf {
         }
     }
 
+    public static final int MIN_ENCODED_BYTES = 7;
+
     public static boolean isLargePayload(OmniBufNeighbor msg) {
-        return isLargePayload(msg, 2);
+        return estimateMinSize(msg, 2) > 16_383;
     }
 
     public static boolean isLargePayload(OmniBufNeighbor msg, int depthLeft) {
-        if (msg == null || depthLeft < 0) {
-            return false;
+        return depthLeft >= 0 && estimateMinSize(msg, depthLeft) > 16_383;
+    }
+
+    public static int estimateMinSize(OmniBufNeighbor msg, int depthLeft) {
+        if (msg == null) {
+            return 0;
         }
-        if ((msg.router == null ? 0 : msg.router.length()) > 16_383) {
-            return true;
+        int est = MIN_ENCODED_BYTES;
+        if (msg.router != null) {
+            int sl = msg.router.length();
+            if (sl > 16_383 || (est += sl) > 16_383) {
+                return 16_384;
+            }
         }
-        return false;
+        return est;
     }
 
     public static void encode(com.omnibuf.wire.OmniBufEncoder enc, OmniBufNeighbor msg, boolean deterministic) {

@@ -57,8 +57,16 @@ public final class OmniBufTestEditions2026 {
         this.implicitFlag = false;
         this.child = null;
         this.delimitedChild = null;
-        this.packedVals = null;
-        this.expandedVals = null;
+        if (this.packedVals instanceof IntArrayList list) {
+            list.clear();
+        } else {
+            this.packedVals = null;
+        }
+        if (this.expandedVals instanceof IntArrayList list) {
+            list.clear();
+        } else {
+            this.expandedVals = null;
+        }
         this.scores = null;
         this.choiceInt = 0;
         this.choiceText = "";
@@ -279,7 +287,7 @@ public final class OmniBufTestEditions2026 {
 
     IntArrayList ensurePackedVals(int minCap) {
         List<Integer> cur = this.packedVals;
-        int cap = Math.min(minCap, 4096);
+        int cap = Math.min(minCap, 65_536);
         if (cur == null) {
             IntArrayList il = new IntArrayList(cap);
             this.packedVals = il;
@@ -309,7 +317,7 @@ public final class OmniBufTestEditions2026 {
 
     IntArrayList ensureExpandedVals(int minCap) {
         List<Integer> cur = this.expandedVals;
-        int cap = Math.min(minCap, 4096);
+        int cap = Math.min(minCap, 65_536);
         if (cur == null) {
             IntArrayList il = new IntArrayList(cap);
             this.expandedVals = il;

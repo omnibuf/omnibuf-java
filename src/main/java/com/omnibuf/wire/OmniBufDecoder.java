@@ -3,6 +3,7 @@ package com.omnibuf.wire;
 import com.omnibuf.OmniBufException;
 import com.omnibuf.SchemaMeta;
 import com.omnibuf.UnmarshalOptions;
+import java.util.ArrayList;
 import java.util.Arrays;
 
 /**
@@ -213,12 +214,26 @@ public final class OmniBufDecoder {
         return PrefixVarint.readLengthSlicePacked(buf, pos, lim, 0);
     }
 
-    public static long readLengthSpanMin2(byte[] buf, int pos, int lim) {
-        if (pos < lim) {
+    public static long readSubMsgSpan(byte[] buf, int pos, int lim) {
+        if (lim - pos >= 2) {
             int b0 = buf[pos] & 0xFF;
-            if ((b0 & 1) != 0) {
-                int len = b0 >>> 1;
-                int start = pos + 1;
+            if ((b0 & 3) == 2) {
+                int len = Short.toUnsignedInt(PrefixVarint.getShortLE(buf, pos)) >>> 2;
+                int start = pos + 2;
+                if (lim - start >= len) {
+                    return (((long) start) << 32) | ((start + len) & 0xFFFF_FFFFL);
+                }
+            }
+        }
+        return PrefixVarint.readLengthSlicePacked(buf, pos, lim, 0);
+    }
+
+    public static long readLengthSpanMin2(byte[] buf, int pos, int lim) {
+        if (lim - pos >= 2) {
+            int b0 = buf[pos] & 0xFF;
+            if ((b0 & 3) == 2) {
+                int len = Short.toUnsignedInt(PrefixVarint.getShortLE(buf, pos)) >>> 2;
+                int start = pos + 2;
                 if (len >= 2 && lim - start >= len) {
                     return (((long) start) << 32) | ((start + len) & 0xFFFF_FFFFL);
                 }
@@ -254,10 +269,9 @@ public final class OmniBufDecoder {
                 int count = b0 >>> 1;
                 int payloadStart = bodyStart + 2;
                 int remaining = bodyEnd - payloadStart;
-                if (count > 0
-                        && count <= remaining
-                        && count <= maxCollectionElements
-                        && WireType.fixedElementWidth(expectedElemWT) == 0) {
+                int fw = WireType.fixedElementWidth(expectedElemWT);
+                if (count <= maxCollectionElements
+                        && (fw == 0 ? (count > 0 && count <= remaining) : ((long) count * (long) fw == (long) remaining))) {
                     return (((long) payloadStart) << 32) | (count & 0xFFFF_FFFFL);
                 }
             }
@@ -526,6 +540,68 @@ public final class OmniBufDecoder {
                 p += 8;
             }
             dst.setSizeUnchecked(outIdx + count);
+        }
+        return p;
+    }
+
+    public static int readFloat32SliceInto(byte[] b, int p, int lim, FloatArrayList dst, int count) {
+        if (count > 0) {
+            if ((long) count * 4L > (long) (lim - p)) {
+                throw new OmniBufException("omnibuf: truncated float32 array");
+            }
+            dst.ensureAdditional(count);
+            float[] out = dst.rawArray();
+            int outIdx = dst.size();
+            for (int i = 0; i < count; i++) {
+                out[outIdx + i] = Float.intBitsToFloat(PrefixVarint.getIntLE(b, p + (i << 2)));
+            }
+            dst.setSizeUnchecked(outIdx + count);
+            p += count << 2;
+        }
+        return p;
+    }
+
+    public static int readFloat64SliceInto(byte[] b, int p, int lim, DoubleArrayList dst, int count) {
+        if (count > 0) {
+            if ((long) count * 8L > (long) (lim - p)) {
+                throw new OmniBufException("omnibuf: truncated float64 array");
+            }
+            dst.ensureAdditional(count);
+            double[] out = dst.rawArray();
+            int outIdx = dst.size();
+            for (int i = 0; i < count; i++) {
+                out[outIdx + i] = Double.longBitsToDouble(PrefixVarint.getLongLE(b, p + (i << 3)));
+            }
+            dst.setSizeUnchecked(outIdx + count);
+            p += count << 3;
+        }
+        return p;
+    }
+
+    public static int readStringSliceInto(byte[] buf, int p, int lim, ArrayList<String> dst, int count) {
+        if (count <= 0) {
+            return p;
+        }
+        if (!dst.isEmpty() || count > 65_536) {
+            dst.ensureCapacity(dst.size() + count);
+        }
+        for (int i = 0; i < count; i++) {
+            if (p < lim) {
+                int b0 = buf[p] & 0xFF;
+                if ((b0 & 1) != 0) {
+                    int len = b0 >>> 1;
+                    int start = p + 1;
+                    if (lim - start >= len) {
+                        p = start + len;
+                        dst.add(len == 0 ? "" : Utf8Validator.decodeStrictUnchecked(buf, start, len));
+                        continue;
+                    }
+                }
+            }
+            long sp = PrefixVarint.readLengthSlicePacked(buf, p, lim, 0);
+            int ss = (int) (sp >>> 32);
+            p = (int) sp;
+            dst.add(Utf8Validator.decodeStrictUnchecked(buf, ss, p - ss));
         }
         return p;
     }

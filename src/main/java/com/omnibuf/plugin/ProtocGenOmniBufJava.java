@@ -755,11 +755,17 @@ public final class ProtocGenOmniBufJava {
         sb.append("import com.omnibuf.MarshalOptions;\n");
         boolean needsIntList = false;
         boolean needsLongList = false;
+        boolean needsFloatList = false;
+        boolean needsDoubleList = false;
         for (ResolvedField f : fields) {
             if (isRepeatedInt32Scalar(f)) {
                 needsIntList = true;
             } else if (isRepeatedInt64Scalar(f)) {
                 needsLongList = true;
+            } else if (isRepeatedFloat32Scalar(f)) {
+                needsFloatList = true;
+            } else if (isRepeatedFloat64Scalar(f)) {
+                needsDoubleList = true;
             }
         }
         if (needsIntList) {
@@ -767,6 +773,12 @@ public final class ProtocGenOmniBufJava {
         }
         if (needsLongList) {
             sb.append("import com.omnibuf.wire.LongArrayList;\n");
+        }
+        if (needsFloatList) {
+            sb.append("import com.omnibuf.wire.FloatArrayList;\n");
+        }
+        if (needsDoubleList) {
+            sb.append("import com.omnibuf.wire.DoubleArrayList;\n");
         }
         sb.append("import java.util.ArrayList;\n");
         sb.append("import java.util.LinkedHashMap;\n");
@@ -796,7 +808,19 @@ public final class ProtocGenOmniBufJava {
 
         sb.append("    public void reset() {\n");
         for (ResolvedField f : fields) {
-            if (f.isRepeated() || f.isMap()) {
+            if (isRepeatedInt32Scalar(f) || isRepeatedInt64Scalar(f)
+                    || isRepeatedFloat32Scalar(f) || isRepeatedFloat64Scalar(f)) {
+                String listImpl = isRepeatedInt32Scalar(f)
+                    ? "IntArrayList"
+                    : (isRepeatedInt64Scalar(f)
+                        ? "LongArrayList"
+                        : (isRepeatedFloat32Scalar(f) ? "FloatArrayList" : "DoubleArrayList"));
+                sb.append("        if (this.").append(f.camelName()).append(" instanceof ").append(listImpl).append(" list) {\n");
+                sb.append("            list.clear();\n");
+                sb.append("        } else {\n");
+                sb.append("            this.").append(f.camelName()).append(" = null;\n");
+                sb.append("        }\n");
+            } else if (f.isRepeated() || f.isMap()) {
                 sb.append("        this.").append(f.camelName()).append(" = null;\n");
             } else {
                 sb.append("        this.")
@@ -847,7 +871,7 @@ public final class ProtocGenOmniBufJava {
 
                     sb.append("    IntArrayList ensure").append(f.pascalName()).append("(int minCap) {\n");
                     sb.append("        ").append(fType).append(" cur = this.").append(f.camelName()).append(";\n");
-                    sb.append("        int cap = Math.min(minCap, 4096);\n");
+                    sb.append("        int cap = Math.min(minCap, 65_536);\n");
                     sb.append("        if (cur == null) {\n");
                     sb.append("            IntArrayList il = new IntArrayList(cap);\n");
                     sb.append("            this.").append(f.camelName()).append(" = il;\n");
@@ -872,7 +896,7 @@ public final class ProtocGenOmniBufJava {
 
                     sb.append("    LongArrayList ensure").append(f.pascalName()).append("(int minCap) {\n");
                     sb.append("        ").append(fType).append(" cur = this.").append(f.camelName()).append(";\n");
-                    sb.append("        int cap = Math.min(minCap, 4096);\n");
+                    sb.append("        int cap = Math.min(minCap, 65_536);\n");
                     sb.append("        if (cur == null) {\n");
                     sb.append("            LongArrayList ll = new LongArrayList(cap);\n");
                     sb.append("            this.").append(f.camelName()).append(" = ll;\n");
@@ -887,6 +911,56 @@ public final class ProtocGenOmniBufJava {
                     sb.append("        this.").append(f.camelName()).append(" = ll;\n");
                     sb.append("        return ll;\n");
                     sb.append("    }\n\n");
+                } else if (isRepeatedFloat32Scalar(f)) {
+                    sb.append("    public ").append(fType).append(" get").append(f.pascalName()).append("() {\n");
+                    sb.append("        if (this.").append(f.camelName()).append(" == null) {\n");
+                    sb.append("            this.").append(f.camelName()).append(" = new FloatArrayList();\n");
+                    sb.append("        }\n");
+                    sb.append("        return this.").append(f.camelName()).append(";\n");
+                    sb.append("    }\n\n");
+
+                    sb.append("    FloatArrayList ensure").append(f.pascalName()).append("(int minCap) {\n");
+                    sb.append("        ").append(fType).append(" cur = this.").append(f.camelName()).append(";\n");
+                    sb.append("        int cap = Math.min(minCap, 65_536);\n");
+                    sb.append("        if (cur == null) {\n");
+                    sb.append("            FloatArrayList fl = new FloatArrayList(cap);\n");
+                    sb.append("            this.").append(f.camelName()).append(" = fl;\n");
+                    sb.append("            return fl;\n");
+                    sb.append("        }\n");
+                    sb.append("        if (cur instanceof FloatArrayList fl) {\n");
+                    sb.append("            fl.ensureAdditional(cap);\n");
+                    sb.append("            return fl;\n");
+                    sb.append("        }\n");
+                    sb.append("        FloatArrayList fl = new FloatArrayList(cur);\n");
+                    sb.append("        fl.ensureAdditional(cap);\n");
+                    sb.append("        this.").append(f.camelName()).append(" = fl;\n");
+                    sb.append("        return fl;\n");
+                    sb.append("    }\n\n");
+                } else if (isRepeatedFloat64Scalar(f)) {
+                    sb.append("    public ").append(fType).append(" get").append(f.pascalName()).append("() {\n");
+                    sb.append("        if (this.").append(f.camelName()).append(" == null) {\n");
+                    sb.append("            this.").append(f.camelName()).append(" = new DoubleArrayList();\n");
+                    sb.append("        }\n");
+                    sb.append("        return this.").append(f.camelName()).append(";\n");
+                    sb.append("    }\n\n");
+
+                    sb.append("    DoubleArrayList ensure").append(f.pascalName()).append("(int minCap) {\n");
+                    sb.append("        ").append(fType).append(" cur = this.").append(f.camelName()).append(";\n");
+                    sb.append("        int cap = Math.min(minCap, 65_536);\n");
+                    sb.append("        if (cur == null) {\n");
+                    sb.append("            DoubleArrayList dl = new DoubleArrayList(cap);\n");
+                    sb.append("            this.").append(f.camelName()).append(" = dl;\n");
+                    sb.append("            return dl;\n");
+                    sb.append("        }\n");
+                    sb.append("        if (cur instanceof DoubleArrayList dl) {\n");
+                    sb.append("            dl.ensureAdditional(cap);\n");
+                    sb.append("            return dl;\n");
+                    sb.append("        }\n");
+                    sb.append("        DoubleArrayList dl = new DoubleArrayList(cur);\n");
+                    sb.append("        dl.ensureAdditional(cap);\n");
+                    sb.append("        this.").append(f.camelName()).append(" = dl;\n");
+                    sb.append("        return dl;\n");
+                    sb.append("    }\n\n");
                 } else {
                     String elemBox = boxedType(f.proto(), f.subMessage());
                     String arrListType = "ArrayList<" + elemBox + ">";
@@ -899,7 +973,7 @@ public final class ProtocGenOmniBufJava {
 
                     sb.append("    ").append(arrListType).append(" ensure").append(f.pascalName()).append("(int minCap) {\n");
                     sb.append("        ").append(fType).append(" cur = this.").append(f.camelName()).append(";\n");
-                    sb.append("        int cap = Math.min(minCap, 4096);\n");
+                    sb.append("        int cap = Math.min(minCap, 65_536);\n");
                     sb.append("        if (cur == null) {\n");
                     sb.append("            ").append(arrListType).append(" al = new ArrayList<>(cap);\n");
                     sb.append("            this.").append(f.camelName()).append(" = al;\n");
@@ -1622,7 +1696,7 @@ public final class ProtocGenOmniBufJava {
         sb.append("        dec.position(dec.limit());\n");
         sb.append("    }\n\n");
 
-        boolean emitSequentialFastPath = resolved.oneofs().isEmpty() && !fields.isEmpty() && fields.size() <= 16;
+        boolean emitSequentialFastPath = resolved.oneofs().isEmpty() && !fields.isEmpty() && fields.size() <= 32;
         if (emitSequentialFastPath) {
             for (ResolvedField f : fields) {
                 if (f.isMap() || f.number() >= 1024) {
@@ -1718,6 +1792,14 @@ public final class ProtocGenOmniBufJava {
             case TYPE_INT64, TYPE_SINT64, TYPE_UINT64, TYPE_FIXED64, TYPE_SFIXED64 -> true;
             default -> false;
         };
+    }
+
+    private static boolean isRepeatedFloat32Scalar(ResolvedField f) {
+        return f.isRepeated() && f.proto().getType() == Type.TYPE_FLOAT;
+    }
+
+    private static boolean isRepeatedFloat64Scalar(ResolvedField f) {
+        return f.isRepeated() && f.proto().getType() == Type.TYPE_DOUBLE;
     }
 
     private static boolean isUnconditionalFusableScalar(ResolvedField f) {
@@ -1881,58 +1963,172 @@ public final class ProtocGenOmniBufJava {
         }
     }
 
+    private static int computeBaseMinEncodedBytes(List<ResolvedField> fields) {
+        int sum = 0;
+        for (ResolvedField f : fields) {
+            if (f.oneof() != null || f.hasExplicitScalarPresence()) {
+                continue;
+            }
+            int tagBytes = encodedTagByteLength(f.number());
+            if (f.isMap()) {
+                sum += tagBytes + 5;
+            } else if (f.isRepeated()) {
+                sum += tagBytes + 4;
+            } else {
+                sum += switch (f.proto().getType()) {
+                    case TYPE_BOOL -> tagBytes;
+                    case TYPE_FIXED32, TYPE_SFIXED32, TYPE_FLOAT -> tagBytes + 4;
+                    case TYPE_FIXED64, TYPE_SFIXED64, TYPE_DOUBLE -> tagBytes + 8;
+                    case TYPE_MESSAGE -> 0;
+                    default -> tagBytes + 1;
+                };
+            }
+            if (sum > 16_384) {
+                return 16_384;
+            }
+        }
+        return sum;
+    }
+
     private static void emitIsLargePayloadMethods(
             StringBuilder sb, MessageInfo info, List<ResolvedField> fields) {
+        int baseMin = computeBaseMinEncodedBytes(fields);
+        sb.append("    public static final int MIN_ENCODED_BYTES = ").append(baseMin).append(";\n\n");
+
         sb.append("    public static boolean isLargePayload(").append(info.modelClass()).append(" msg) {\n");
-        sb.append("        return isLargePayload(msg, 2);\n");
+        sb.append("        return estimateMinSize(msg, 2) > 16_383;\n");
         sb.append("    }\n\n");
 
         sb.append("    public static boolean isLargePayload(")
             .append(info.modelClass()).append(" msg, int depthLeft) {\n");
-        sb.append("        if (msg == null || depthLeft < 0) {\n");
-        sb.append("            return false;\n");
-        sb.append("        }\n");
+        sb.append("        return depthLeft >= 0 && estimateMinSize(msg, depthLeft) > 16_383;\n");
+        sb.append("    }\n\n");
 
-        List<String> lengthExprs = new ArrayList<>();
+        sb.append("    public static int estimateMinSize(")
+            .append(info.modelClass()).append(" msg, int depthLeft) {\n");
+        sb.append("        if (msg == null) {\n");
+        sb.append("            return 0;\n");
+        sb.append("        }\n");
+        if (baseMin > 16_383) {
+            sb.append("        return 16_384;\n");
+            sb.append("    }\n\n");
+            return;
+        }
+        sb.append("        int est = MIN_ENCODED_BYTES;\n");
+
         List<ResolvedField> subFields = new ArrayList<>();
         for (ResolvedField f : fields) {
+            String ref = "msg." + f.camelName();
             if (f.isMap()) {
+                sb.append("        if (").append(ref).append(" != null) {\n");
+                sb.append("            int sz = ").append(ref).append(".size();\n");
+                sb.append("            if (sz > 8_191) {\n");
+                sb.append("                return 16_384;\n");
+                sb.append("            }\n");
+                sb.append("            est += sz << 1;\n");
+                sb.append("            if (est > 16_383) {\n");
+                sb.append("                return 16_384;\n");
+                sb.append("            }\n");
+                sb.append("        }\n");
                 continue;
             }
-            if (!f.isRepeated()
-                    && (f.proto().getType() == Type.TYPE_STRING || f.proto().getType() == Type.TYPE_BYTES)) {
-                String lenSuffix = f.proto().getType() == Type.TYPE_STRING ? ".length()" : ".length";
-                String ref = "msg." + f.camelName();
-                if (f.oneof() != null) {
-                    lengthExprs.add(
-                        "(msg." + f.oneof().camelName() + "Case == " + f.number()
-                            + " && " + ref + " != null ? " + ref + lenSuffix + " : 0)"
-                    );
-                } else if (f.hasExplicitScalarPresence()) {
-                    lengthExprs.add(
-                        "(msg.has_" + f.camelName() + " && " + ref + " != null ? " + ref + lenSuffix + " : 0)"
-                    );
+            if (f.isRepeated()) {
+                Type t = f.proto().getType();
+                if (t == Type.TYPE_MESSAGE && f.subMessage() != null) {
+                    subFields.add(f);
+                } else if (t == Type.TYPE_STRING) {
+                    sb.append("        if (").append(ref).append(" != null) {\n");
+                    sb.append("            int sz = ").append(ref).append(".size();\n");
+                    sb.append("            if (sz > 16_383) {\n");
+                    sb.append("                return 16_384;\n");
+                    sb.append("            }\n");
+                    sb.append("            for (int i = 0; i < sz; i++) {\n");
+                    sb.append("                String s = ").append(ref).append(".get(i);\n");
+                    sb.append("                est += (s == null ? 1 : 1 + s.length());\n");
+                    sb.append("                if (est > 16_383) {\n");
+                    sb.append("                    return 16_384;\n");
+                    sb.append("                }\n");
+                    sb.append("            }\n");
+                    sb.append("        }\n");
+                } else if (t == Type.TYPE_BYTES) {
+                    sb.append("        if (").append(ref).append(" != null) {\n");
+                    sb.append("            int sz = ").append(ref).append(".size();\n");
+                    sb.append("            if (sz > 16_383) {\n");
+                    sb.append("                return 16_384;\n");
+                    sb.append("            }\n");
+                    sb.append("            for (int i = 0; i < sz; i++) {\n");
+                    sb.append("                byte[] b = ").append(ref).append(".get(i);\n");
+                    sb.append("                est += (b == null ? 1 : 1 + b.length);\n");
+                    sb.append("                if (est > 16_383) {\n");
+                    sb.append("                    return 16_384;\n");
+                    sb.append("                }\n");
+                    sb.append("            }\n");
+                    sb.append("        }\n");
+                } else if (t == Type.TYPE_DOUBLE || t == Type.TYPE_FIXED64 || t == Type.TYPE_SFIXED64) {
+                    sb.append("        if (").append(ref).append(" != null) {\n");
+                    sb.append("            int sz = ").append(ref).append(".size();\n");
+                    sb.append("            if (sz >= 2_048) {\n");
+                    sb.append("                return 16_384;\n");
+                    sb.append("            }\n");
+                    sb.append("            est += sz << 3;\n");
+                    sb.append("            if (est > 16_383) {\n");
+                    sb.append("                return 16_384;\n");
+                    sb.append("            }\n");
+                    sb.append("        }\n");
+                } else if (t == Type.TYPE_FLOAT || t == Type.TYPE_FIXED32 || t == Type.TYPE_SFIXED32) {
+                    sb.append("        if (").append(ref).append(" != null) {\n");
+                    sb.append("            int sz = ").append(ref).append(".size();\n");
+                    sb.append("            if (sz >= 4_096) {\n");
+                    sb.append("                return 16_384;\n");
+                    sb.append("            }\n");
+                    sb.append("            est += sz << 2;\n");
+                    sb.append("            if (est > 16_383) {\n");
+                    sb.append("                return 16_384;\n");
+                    sb.append("            }\n");
+                    sb.append("        }\n");
                 } else {
-                    lengthExprs.add("(" + ref + " == null ? 0 : " + ref + lenSuffix + ")");
+                    sb.append("        if (").append(ref).append(" != null) {\n");
+                    sb.append("            int sz = ").append(ref).append(".size();\n");
+                    sb.append("            if (sz > 16_383) {\n");
+                    sb.append("                return 16_384;\n");
+                    sb.append("            }\n");
+                    sb.append("            est += sz;\n");
+                    sb.append("            if (est > 16_383) {\n");
+                    sb.append("                return 16_384;\n");
+                    sb.append("            }\n");
+                    sb.append("        }\n");
+                }
+                continue;
+            }
+            if (f.proto().getType() == Type.TYPE_STRING || f.proto().getType() == Type.TYPE_BYTES) {
+                String lenSuffix = f.proto().getType() == Type.TYPE_STRING ? ".length()" : ".length";
+                if (f.oneof() != null) {
+                    sb.append("        if (msg.").append(f.oneof().camelName()).append("Case == ")
+                        .append(f.number()).append(" && ").append(ref).append(" != null) {\n");
+                    sb.append("            int sl = ").append(ref).append(lenSuffix).append(";\n");
+                    sb.append("            if (sl > 16_383 || (est += sl) > 16_383) {\n");
+                    sb.append("                return 16_384;\n");
+                    sb.append("            }\n");
+                    sb.append("        }\n");
+                } else if (f.hasExplicitScalarPresence()) {
+                    sb.append("        if (msg.has_").append(f.camelName())
+                        .append(" && ").append(ref).append(" != null) {\n");
+                    sb.append("            int sl = ").append(ref).append(lenSuffix).append(";\n");
+                    sb.append("            if (sl > 16_383 || (est += sl) > 16_383) {\n");
+                    sb.append("                return 16_384;\n");
+                    sb.append("            }\n");
+                    sb.append("        }\n");
+                } else {
+                    sb.append("        if (").append(ref).append(" != null) {\n");
+                    sb.append("            int sl = ").append(ref).append(lenSuffix).append(";\n");
+                    sb.append("            if (sl > 16_383 || (est += sl) > 16_383) {\n");
+                    sb.append("                return 16_384;\n");
+                    sb.append("            }\n");
+                    sb.append("        }\n");
                 }
             } else if (f.proto().getType() == Type.TYPE_MESSAGE && f.subMessage() != null) {
                 subFields.add(f);
             }
-        }
-
-        for (int i = 0; i < lengthExprs.size(); i += 16) {
-            int end = Math.min(lengthExprs.size(), i + 16);
-            if (end - i == 1) {
-                sb.append("        if (").append(lengthExprs.get(i)).append(" > 16_383) {\n");
-            } else {
-                sb.append("        if ((").append(lengthExprs.get(i));
-                for (int j = i + 1; j < end; j++) {
-                    sb.append("\n                | ").append(lengthExprs.get(j));
-                }
-                sb.append(") > 16_383) {\n");
-            }
-            sb.append("            return true;\n");
-            sb.append("        }\n");
         }
 
         if (!subFields.isEmpty()) {
@@ -1940,32 +2136,47 @@ public final class ProtocGenOmniBufJava {
             for (ResolvedField sf : subFields) {
                 String subCodec = sf.subMessage().qualifiedCodec();
                 String ref = "msg." + sf.camelName();
+                int tagBytes = encodedTagByteLength(sf.number());
                 if (sf.isRepeated()) {
                     sb.append("            if (").append(ref).append(" != null) {\n");
-                    sb.append("                for (int i = 0, n = ").append(ref).append(".size(); i < n; i++) {\n");
-                    sb.append("                    if (").append(subCodec)
-                        .append(".isLargePayload(").append(ref).append(".get(i), depthLeft - 1)) {\n");
-                    sb.append("                        return true;\n");
+                    sb.append("                int sz = ").append(ref).append(".size();\n");
+                    sb.append("                if (sz > 0) {\n");
+                    sb.append("                    int minPerElem = ").append(subCodec).append(".MIN_ENCODED_BYTES + 2;\n");
+                    sb.append("                    if (sz > 16_383 / minPerElem) {\n");
+                    sb.append("                        return 16_384;\n");
+                    sb.append("                    }\n");
+                    sb.append("                    for (int i = 0; i < sz; i++) {\n");
+                    sb.append("                        est += 2 + ").append(subCodec)
+                        .append(".estimateMinSize(").append(ref).append(".get(i), depthLeft - 1);\n");
+                    sb.append("                        if (est > 16_383) {\n");
+                    sb.append("                            return 16_384;\n");
+                    sb.append("                        }\n");
                     sb.append("                    }\n");
                     sb.append("                }\n");
                     sb.append("            }\n");
                 } else if (sf.oneof() != null) {
                     sb.append("            if (msg.").append(sf.oneof().camelName()).append("Case == ")
-                        .append(sf.number()).append(" && ").append(ref).append(" != null && ")
-                        .append(subCodec).append(".isLargePayload(").append(ref).append(", depthLeft - 1)) {\n");
-                    sb.append("                return true;\n");
+                        .append(sf.number()).append(" && ").append(ref).append(" != null) {\n");
+                    sb.append("                est += ").append(tagBytes + 2).append(" + ")
+                        .append(subCodec).append(".estimateMinSize(").append(ref).append(", depthLeft - 1);\n");
+                    sb.append("                if (est > 16_383) {\n");
+                    sb.append("                    return 16_384;\n");
+                    sb.append("                }\n");
                     sb.append("            }\n");
                 } else {
-                    sb.append("            if (").append(ref).append(" != null && ")
-                        .append(subCodec).append(".isLargePayload(").append(ref).append(", depthLeft - 1)) {\n");
-                    sb.append("                return true;\n");
+                    sb.append("            if (").append(ref).append(" != null) {\n");
+                    sb.append("                est += ").append(tagBytes + 2).append(" + ")
+                        .append(subCodec).append(".estimateMinSize(").append(ref).append(", depthLeft - 1);\n");
+                    sb.append("                if (est > 16_383) {\n");
+                    sb.append("                    return 16_384;\n");
+                    sb.append("                }\n");
                     sb.append("            }\n");
                 }
             }
             sb.append("        }\n");
         }
 
-        sb.append("        return false;\n");
+        sb.append("        return est;\n");
         sb.append("    }\n\n");
     }
 
@@ -2067,17 +2278,32 @@ public final class ProtocGenOmniBufJava {
                         .append(" = ").append(expr).append(";\n");
                     sb.append(indent).append("    int n = ").append(varName).append(" == null ? 0 : ").append(varName).append(".size();\n");
                     sb.append(indent).append("    boolean largeArr = false;\n");
-                    sb.append(indent).append("    for (int i = 0; i < n; i++) {\n");
-                    sb.append(indent).append("        if (").append(subCodec)
-                        .append(".isLargePayload(").append(varName).append(".get(i))) {\n");
+                    sb.append(indent).append("    boolean checkElemLarge = false;\n");
+                    sb.append(indent).append("    if (n > 0) {\n");
+                    sb.append(indent).append("        int minPerElem = ").append(subCodec).append(".MIN_ENCODED_BYTES + 2;\n");
+                    sb.append(indent).append("        if (n > 16_383 / minPerElem) {\n");
                     sb.append(indent).append("            largeArr = true;\n");
-                    sb.append(indent).append("            break;\n");
+                    sb.append(indent).append("            checkElemLarge = ").append(subCodec).append(".isLargePayload(").append(varName).append(".get(0));\n");
+                    sb.append(indent).append("        } else {\n");
+                    sb.append(indent).append("            int e0 = ").append(subCodec).append(".estimateMinSize(").append(varName).append(".get(0), 2);\n");
+                    sb.append(indent).append("            if (e0 > 8_192) {\n");
+                    sb.append(indent).append("                largeArr = true;\n");
+                    sb.append(indent).append("                checkElemLarge = true;\n");
+                    sb.append(indent).append("            } else if (n > 1) {\n");
+                    sb.append(indent).append("                int eLast = ").append(subCodec).append(".estimateMinSize(").append(varName).append(".get(n - 1), 2);\n");
+                    sb.append(indent).append("                if (eLast > 8_192) {\n");
+                    sb.append(indent).append("                    largeArr = true;\n");
+                    sb.append(indent).append("                    checkElemLarge = true;\n");
+                    sb.append(indent).append("                } else if ((long) (e0 + eLast + 4) * (long) n > 32_766L) {\n");
+                    sb.append(indent).append("                    largeArr = true;\n");
+                    sb.append(indent).append("                }\n");
+                    sb.append(indent).append("            }\n");
                     sb.append(indent).append("        }\n");
                     sb.append(indent).append("    }\n");
                     sb.append(indent).append("    int arrPos = enc.beginTypedArrayFast(").append(fnum).append(", WireType.WIRE_SUB_MSG, n, largeArr);\n");
                     sb.append(indent).append("    for (int i = 0; i < n; i++) {\n");
                     sb.append(indent).append("        ").append(subModel).append(" elem = ").append(varName).append(".get(i);\n");
-                    sb.append(indent).append("        int elemPos = enc.beginInlineSubMsgFast(")
+                    sb.append(indent).append("        int elemPos = enc.beginInlineSubMsgFast(checkElemLarge && ")
                         .append(subCodec).append(".isLargePayload(elem));\n");
                     sb.append(indent).append("        if (elem != null) {\n");
                     sb.append(indent).append("            ").append(subCodec).append(".encode(enc, elem, deterministic);\n");
@@ -2209,7 +2435,7 @@ public final class ProtocGenOmniBufJava {
     private static void emitInlineLengthSlice(
             StringBuilder sb, String startVar, String endVar, String posVar, String limVar, int minLen, String indent) {
         String helper = minLen == 0
-            ? "com.omnibuf.wire.OmniBufDecoder.readStringSpan"
+            ? "com.omnibuf.wire.OmniBufDecoder.readSubMsgSpan"
             : (minLen == 2 ? "com.omnibuf.wire.OmniBufDecoder.readLengthSpanMin2" : null);
         if (helper != null) {
             sb.append(indent).append("long pk_").append(startVar).append(" = ").append(helper)
@@ -2436,9 +2662,12 @@ public final class ProtocGenOmniBufJava {
             case TYPE_UINT32 -> "readUint32SliceInto";
             case TYPE_INT32, TYPE_SINT32, TYPE_ENUM -> "readSint32SliceInto";
             case TYPE_FIXED32, TYPE_SFIXED32 -> "readFixed32SliceInto";
+            case TYPE_FLOAT -> "readFloat32SliceInto";
             case TYPE_UINT64 -> "readUint64SliceInto";
             case TYPE_INT64, TYPE_SINT64 -> "readSint64SliceInto";
             case TYPE_FIXED64, TYPE_SFIXED64 -> "readFixed64SliceInto";
+            case TYPE_DOUBLE -> "readFloat64SliceInto";
+            case TYPE_STRING -> "readStringSliceInto";
             default -> null;
         };
     }
@@ -3026,15 +3255,8 @@ public final class ProtocGenOmniBufJava {
                 sb.append("            }\n");
                 sb.append("            return out;\n");
                 sb.append("        }\n");
-                sb.append("        List<com.omnibuf.wire.OmniBufOpaque.PacketView> views = com.omnibuf.wire.OmniBufOpaque.readSubMsgList(buffer, offset, length, ").append(fnum).append(");\n");
-                sb.append("        if (views.isEmpty()) {\n");
-                sb.append("            return Collections.emptyList();\n");
-                sb.append("        }\n");
-                sb.append("        List<").append(subOpaque).append("> out = new ArrayList<>(views.size());\n");
-                sb.append("        for (com.omnibuf.wire.OmniBufOpaque.PacketView v : views) {\n");
-                sb.append("            out.add(new ").append(subOpaque).append("(v));\n");
-                sb.append("        }\n");
-                sb.append("        return out;\n");
+                sb.append("        return com.omnibuf.wire.OmniBufOpaque.readSubMsgListMapped(buffer, offset, length, ")
+                    .append(fnum).append(", ").append(subOpaque).append("::new);\n");
                 sb.append("    }\n\n");
 
                 sb.append("    public ").append(info.opaqueClass()).append(" set").append(f.pascalName())
