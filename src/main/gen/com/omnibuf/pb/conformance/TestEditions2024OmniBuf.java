@@ -591,7 +591,7 @@ public final class TestEditions2024OmniBuf {
                         int arrStart = (int) (pk_arrStart >>> 32);
                         int arrEnd = (int) pk_arrStart;
                         pos = arrEnd;
-                        long arrHdr = com.omnibuf.wire.OmniBufDecoder.readArrayHeaderPacked(buf, arrStart, arrEnd, WireType.WIRE_SINT, depth, maxDepth, maxElems);
+                        long arrHdr = com.omnibuf.wire.OmniBufDecoder.readVarArrayHeaderPacked(buf, arrStart, arrEnd, WireType.WIRE_SINT, depth, maxDepth, maxElems);
                         int ap = (int) (arrHdr >>> 32);
                         int count = (int) arrHdr;
                         var list = target.ensurePackedVals(count);
@@ -612,7 +612,7 @@ public final class TestEditions2024OmniBuf {
                         int arrStart = (int) (pk_arrStart >>> 32);
                         int arrEnd = (int) pk_arrStart;
                         pos = arrEnd;
-                        long arrHdr = com.omnibuf.wire.OmniBufDecoder.readArrayHeaderPacked(buf, arrStart, arrEnd, WireType.WIRE_SINT, depth, maxDepth, maxElems);
+                        long arrHdr = com.omnibuf.wire.OmniBufDecoder.readVarArrayHeaderPacked(buf, arrStart, arrEnd, WireType.WIRE_SINT, depth, maxDepth, maxElems);
                         int ap = (int) (arrHdr >>> 32);
                         int count = (int) arrHdr;
                         var list = target.ensureExpandedVals(count);

@@ -2014,6 +2014,51 @@ public final class ProtocGenOmniBufJava {
             sb.append("    }\n\n");
             return;
         }
+        boolean isLeaf = true;
+        boolean hasVarScalar = false;
+        for (ResolvedField f : fields) {
+            if (f.isMap() || f.isRepeated()
+                    || (f.proto().getType() == Type.TYPE_MESSAGE && f.subMessage() != null)) {
+                isLeaf = false;
+                break;
+            }
+            if (f.proto().getType() == Type.TYPE_STRING || f.proto().getType() == Type.TYPE_BYTES) {
+                hasVarScalar = true;
+            }
+        }
+        if (isLeaf) {
+            if (!hasVarScalar) {
+                sb.append("        return MIN_ENCODED_BYTES;\n");
+                sb.append("    }\n\n");
+                return;
+            }
+            sb.append("        long est = MIN_ENCODED_BYTES;\n");
+            for (ResolvedField f : fields) {
+                if (f.proto().getType() != Type.TYPE_STRING && f.proto().getType() != Type.TYPE_BYTES) {
+                    continue;
+                }
+                String ref = "msg." + f.camelName();
+                String lenSuffix = f.proto().getType() == Type.TYPE_STRING ? ".length()" : ".length";
+                if (f.oneof() != null) {
+                    sb.append("        if (msg.").append(f.oneof().camelName()).append("Case == ")
+                        .append(f.number()).append(" && ").append(ref).append(" != null) {\n");
+                    sb.append("            est += ").append(ref).append(lenSuffix).append(";\n");
+                    sb.append("        }\n");
+                } else if (f.hasExplicitScalarPresence()) {
+                    sb.append("        if (msg.has_").append(f.camelName())
+                        .append(" && ").append(ref).append(" != null) {\n");
+                    sb.append("            est += ").append(ref).append(lenSuffix).append(";\n");
+                    sb.append("        }\n");
+                } else {
+                    sb.append("        if (").append(ref).append(" != null) {\n");
+                    sb.append("            est += ").append(ref).append(lenSuffix).append(";\n");
+                    sb.append("        }\n");
+                }
+            }
+            sb.append("        return est > 16_383L ? 16_384 : (int) est;\n");
+            sb.append("    }\n\n");
+            return;
+        }
         sb.append("        int est = MIN_ENCODED_BYTES;\n");
 
         List<ResolvedField> subFields = new ArrayList<>();
@@ -2461,9 +2506,15 @@ public final class ProtocGenOmniBufJava {
                 sb.append("            pos += 2;\n");
             }
             String elemWireConst = wireTypeConst(f.proto().getType());
+            int fixedWidth = fixedArrayElemWidth(f.proto().getType());
             emitInlineLengthSlice(sb, "arrStart", "arrEnd", "pos", "lim", 2, "            ");
-            sb.append("            long arrHdr = com.omnibuf.wire.OmniBufDecoder.readArrayHeaderPacked(buf, arrStart, arrEnd, ")
-                .append(elemWireConst).append(", depth, maxDepth, maxElems);\n");
+            if (fixedWidth > 0) {
+                sb.append("            long arrHdr = com.omnibuf.wire.OmniBufDecoder.readFixedArrayHeaderPacked(buf, arrStart, arrEnd, ")
+                    .append(elemWireConst).append(", ").append(fixedWidth).append(", depth, maxDepth, maxElems);\n");
+            } else {
+                sb.append("            long arrHdr = com.omnibuf.wire.OmniBufDecoder.readVarArrayHeaderPacked(buf, arrStart, arrEnd, ")
+                    .append(elemWireConst).append(", depth, maxDepth, maxElems);\n");
+            }
             sb.append("            int ap = (int) (arrHdr >>> 32);\n");
             sb.append("            int count = (int) arrHdr;\n");
             sb.append("            var list = target.ensure").append(f.pascalName()).append("(count);\n");
@@ -2657,6 +2708,15 @@ public final class ProtocGenOmniBufJava {
         sb.append("        }\n");
     }
 
+    private static int fixedArrayElemWidth(Type t) {
+        return switch (t) {
+            case TYPE_BOOL -> 1;
+            case TYPE_FIXED32, TYPE_SFIXED32, TYPE_FLOAT -> 4;
+            case TYPE_FIXED64, TYPE_SFIXED64, TYPE_DOUBLE -> 8;
+            default -> 0;
+        };
+    }
+
     private static String bulkRepeatedSliceMethod(Type t) {
         return switch (t) {
             case TYPE_UINT32 -> "readUint32SliceInto";
@@ -2720,12 +2780,18 @@ public final class ProtocGenOmniBufJava {
 
         if (f.isRepeated()) {
             String elemWireConst = wireTypeConst(f.proto().getType());
+            int fixedWidth = fixedArrayElemWidth(f.proto().getType());
             sb.append("                    if (wt != WireType.WIRE_ARRAY) {\n");
             sb.append("                        pos = com.omnibuf.wire.OmniBufDecoder.skipOrValidateUnknownSlice(buf, pos, lim, fnum, wt, depth, maxDepth, maxElems);\n");
             sb.append("                    } else {\n");
             emitInlineLengthSlice(sb, "arrStart", "arrEnd", "pos", "lim", 2, "                        ");
-            sb.append("                        long arrHdr = com.omnibuf.wire.OmniBufDecoder.readArrayHeaderPacked(buf, arrStart, arrEnd, ")
-                .append(elemWireConst).append(", depth, maxDepth, maxElems);\n");
+            if (fixedWidth > 0) {
+                sb.append("                        long arrHdr = com.omnibuf.wire.OmniBufDecoder.readFixedArrayHeaderPacked(buf, arrStart, arrEnd, ")
+                    .append(elemWireConst).append(", ").append(fixedWidth).append(", depth, maxDepth, maxElems);\n");
+            } else {
+                sb.append("                        long arrHdr = com.omnibuf.wire.OmniBufDecoder.readVarArrayHeaderPacked(buf, arrStart, arrEnd, ")
+                    .append(elemWireConst).append(", depth, maxDepth, maxElems);\n");
+            }
             sb.append("                        int ap = (int) (arrHdr >>> 32);\n");
             sb.append("                        int count = (int) arrHdr;\n");
             sb.append("                        var list = target.ensure").append(f.pascalName()).append("(count);\n");

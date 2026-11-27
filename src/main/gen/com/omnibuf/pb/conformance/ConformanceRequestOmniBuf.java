@@ -140,32 +140,20 @@ public final class ConformanceRequestOmniBuf {
         if (msg == null) {
             return 0;
         }
-        int est = MIN_ENCODED_BYTES;
+        long est = MIN_ENCODED_BYTES;
         if (msg.testName != null) {
-            int sl = msg.testName.length();
-            if (sl > 16_383 || (est += sl) > 16_383) {
-                return 16_384;
-            }
+            est += msg.testName.length();
         }
         if (msg.messageType != null) {
-            int sl = msg.messageType.length();
-            if (sl > 16_383 || (est += sl) > 16_383) {
-                return 16_384;
-            }
+            est += msg.messageType.length();
         }
         if (msg.omnibufPayload != null) {
-            int sl = msg.omnibufPayload.length;
-            if (sl > 16_383 || (est += sl) > 16_383) {
-                return 16_384;
-            }
+            est += msg.omnibufPayload.length;
         }
         if (msg.jsonPayload != null) {
-            int sl = msg.jsonPayload.length();
-            if (sl > 16_383 || (est += sl) > 16_383) {
-                return 16_384;
-            }
+            est += msg.jsonPayload.length();
         }
-        return est;
+        return est > 16_383L ? 16_384 : (int) est;
     }
 
     public static void encode(com.omnibuf.wire.OmniBufEncoder enc, OmniBufConformanceRequest msg, boolean deterministic) {

@@ -582,7 +582,7 @@ public final class TestAllTypesOmniBuf {
                         int arrStart = (int) (pk_arrStart >>> 32);
                         int arrEnd = (int) pk_arrStart;
                         pos = arrEnd;
-                        long arrHdr = com.omnibuf.wire.OmniBufDecoder.readArrayHeaderPacked(buf, arrStart, arrEnd, WireType.WIRE_STRING, depth, maxDepth, maxElems);
+                        long arrHdr = com.omnibuf.wire.OmniBufDecoder.readVarArrayHeaderPacked(buf, arrStart, arrEnd, WireType.WIRE_STRING, depth, maxDepth, maxElems);
                         int ap = (int) (arrHdr >>> 32);
                         int count = (int) arrHdr;
                         var list = target.ensureF9StringArr(count);
@@ -603,7 +603,7 @@ public final class TestAllTypesOmniBuf {
                         int arrStart = (int) (pk_arrStart >>> 32);
                         int arrEnd = (int) pk_arrStart;
                         pos = arrEnd;
-                        long arrHdr = com.omnibuf.wire.OmniBufDecoder.readArrayHeaderPacked(buf, arrStart, arrEnd, WireType.WIRE_UINT, depth, maxDepth, maxElems);
+                        long arrHdr = com.omnibuf.wire.OmniBufDecoder.readVarArrayHeaderPacked(buf, arrStart, arrEnd, WireType.WIRE_UINT, depth, maxDepth, maxElems);
                         int ap = (int) (arrHdr >>> 32);
                         int count = (int) arrHdr;
                         var list = target.ensureF10Uint32Arr(count);
@@ -624,7 +624,7 @@ public final class TestAllTypesOmniBuf {
                         int arrStart = (int) (pk_arrStart >>> 32);
                         int arrEnd = (int) pk_arrStart;
                         pos = arrEnd;
-                        long arrHdr = com.omnibuf.wire.OmniBufDecoder.readArrayHeaderPacked(buf, arrStart, arrEnd, WireType.WIRE_SUB_MSG, depth, maxDepth, maxElems);
+                        long arrHdr = com.omnibuf.wire.OmniBufDecoder.readVarArrayHeaderPacked(buf, arrStart, arrEnd, WireType.WIRE_SUB_MSG, depth, maxDepth, maxElems);
                         int ap = (int) (arrHdr >>> 32);
                         int count = (int) arrHdr;
                         var list = target.ensureF11SubMsgArr(count);

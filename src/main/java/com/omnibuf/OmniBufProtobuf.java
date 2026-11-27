@@ -30,6 +30,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Set;
+import java.util.concurrent.atomic.AtomicReference;
 
 /**
  * Descriptor-driven OmniBuf codec for standard {@code protoc --java_out} {@link Message}
@@ -38,6 +39,31 @@ import java.util.Set;
 public final class OmniBufProtobuf {
 
     private static final byte[] EMPTY_BYTES = new byte[0];
+
+    private static final class DescriptorPlan {
+        final Descriptor descriptor;
+        final boolean isEditions;
+        final boolean isExtendable;
+        final FieldDescriptor[] orderedFields;
+
+        DescriptorPlan(
+                Descriptor descriptor,
+                boolean isEditions,
+                boolean isExtendable,
+                FieldDescriptor[] orderedFields) {
+            this.descriptor = descriptor;
+            this.isEditions = isEditions;
+            this.isExtendable = isExtendable;
+            this.orderedFields = orderedFields;
+        }
+    }
+
+    private static final ClassValue<AtomicReference<DescriptorPlan>> PLAN_CACHE = new ClassValue<>() {
+        @Override
+        protected AtomicReference<DescriptorPlan> computeValue(Class<?> type) {
+            return new AtomicReference<>();
+        }
+    };
 
     private OmniBufProtobuf() {}
 
@@ -49,7 +75,7 @@ public final class OmniBufProtobuf {
         if (message == null) {
             throw new OmniBufException("omnibuf: cannot marshal null protobuf message");
         }
-        validateDescriptorSupported(message.getDescriptorForType());
+        DescriptorPlan plan = validatedPlanFor(message);
         if (!message.isInitialized()) {
             throw new OmniBufException("omnibuf: protobuf message has uninitialized required fields");
         }
@@ -59,7 +85,7 @@ public final class OmniBufProtobuf {
             if (opts.selfDescribing()) {
                 boolean[] cyclicOut = new boolean[1];
                 SchemaMeta meta = buildSchemaMeta(
-                    message.getDescriptorForType(), 1, new HashSet<>(), cyclicOut
+                    plan.descriptor, 1, new HashSet<>(), cyclicOut
                 );
                 if (cyclicOut[0]) {
                     meta = buildValueSchemaMeta(message, 1);
@@ -68,7 +94,7 @@ public final class OmniBufProtobuf {
                     meta.writeField0(enc, opts.deterministic());
                 }
             }
-            encodeMessage(enc, message, opts.deterministic());
+            encodeMessage(enc, message, plan, opts.deterministic());
             return enc.toByteArray();
         } finally {
             CodecPool.releaseEncoder(enc);
@@ -86,11 +112,11 @@ public final class OmniBufProtobuf {
         if (builder == null) {
             throw new OmniBufException("omnibuf: null protobuf Message.Builder");
         }
-        validateDescriptorSupported(builder.getDescriptorForType());
+        DescriptorPlan plan = validatedPlanFor(builder);
         builder.clear();
         OmniBufDecoder dec = CodecPool.acquireDecoder(data, 0, data.length, options);
         try {
-            decodeIntoBuilder(dec, builder, 0);
+            decodeIntoBuilder(dec, builder, plan, 0);
         } finally {
             CodecPool.releaseDecoder(dec);
         }
@@ -392,11 +418,64 @@ public final class OmniBufProtobuf {
         }
     }
 
+    private static DescriptorPlan validatedPlanFor(MessageOrBuilder message) {
+        Descriptor md = message.getDescriptorForType();
+        Class<?> cls = message.getClass();
+        if (cls != DynamicMessage.class && cls != DynamicMessage.Builder.class) {
+            AtomicReference<DescriptorPlan> slot = PLAN_CACHE.get(cls);
+            DescriptorPlan cached = slot.get();
+            if (cached != null && cached.descriptor == md) {
+                return cached;
+            }
+            validateDescriptorSupported(md);
+            DescriptorPlan plan = buildDescriptorPlan(md);
+            if (cached == null) {
+                slot.compareAndSet(null, plan);
+            }
+            return plan;
+        }
+        validateDescriptorSupported(md);
+        return buildDescriptorPlan(md);
+    }
+
+    private static DescriptorPlan planForNested(MessageOrBuilder message) {
+        Descriptor md = message.getDescriptorForType();
+        Class<?> cls = message.getClass();
+        if (cls != DynamicMessage.class && cls != DynamicMessage.Builder.class) {
+            AtomicReference<DescriptorPlan> slot = PLAN_CACHE.get(cls);
+            DescriptorPlan cached = slot.get();
+            if (cached != null && cached.descriptor == md) {
+                return cached;
+            }
+            validateDescriptorSupported(md);
+            DescriptorPlan plan = buildDescriptorPlan(md);
+            if (cached == null) {
+                slot.compareAndSet(null, plan);
+            }
+            return plan;
+        }
+        return buildDescriptorPlan(md);
+    }
+
+    private static DescriptorPlan buildDescriptorPlan(Descriptor md) {
+        boolean isEditions = isEditionsFile(md.getFile());
+        List<FieldDescriptor> ordered = orderedFields(md, isEditions);
+        return new DescriptorPlan(
+            md,
+            isEditions,
+            md.isExtendable(),
+            ordered.toArray(new FieldDescriptor[0])
+        );
+    }
+
     private static List<FieldDescriptor> orderedFields(Descriptor md) {
+        return orderedFields(md, isEditionsFile(md.getFile()));
+    }
+
+    private static List<FieldDescriptor> orderedFields(Descriptor md, boolean isEditions) {
         List<FieldDescriptor> fds = md.getFields();
         int n = fds.size();
         boolean ascending = true;
-        boolean isEditions = isEditionsFile(md.getFile());
         for (int i = 0; i < n; i++) {
             FieldDescriptor fd = fds.get(i);
             if (fd.getType() == FieldDescriptor.Type.GROUP && !isEditions) {
@@ -526,9 +605,8 @@ public final class OmniBufProtobuf {
     // ========================================================================
 
     private static void encodeMessage(
-            OmniBufEncoder enc, MessageOrBuilder msg, boolean deterministic) {
-        Descriptor md = msg.getDescriptorForType();
-        if (md.isExtendable()) {
+            OmniBufEncoder enc, MessageOrBuilder msg, DescriptorPlan plan, boolean deterministic) {
+        if (plan.isExtendable) {
             for (FieldDescriptor populated : msg.getAllFields().keySet()) {
                 if (populated.isExtension()) {
                     throw new OmniBufException(
@@ -537,9 +615,9 @@ public final class OmniBufProtobuf {
                 }
             }
         }
-        List<FieldDescriptor> fds = orderedFields(md);
-        for (int i = 0, n = fds.size(); i < n; i++) {
-            FieldDescriptor fd = fds.get(i);
+        FieldDescriptor[] fds = plan.orderedFields;
+        for (int i = 0, n = fds.length; i < n; i++) {
+            FieldDescriptor fd = fds[i];
             if (fd.hasPresence() && !msg.hasField(fd)) {
                 continue;
             }
@@ -585,7 +663,7 @@ public final class OmniBufProtobuf {
                         boolean largeElem = rawElem instanceof Message em && em.getSerializedSize() > 16_383;
                         int elemPos = enc.beginInlineSubMsgFast(largeElem);
                         if (rawElem instanceof MessageOrBuilder sub) {
-                            encodeMessage(enc, sub, deterministic);
+                            encodeMessage(enc, sub, planForNested(sub), deterministic);
                         }
                         enc.endContainerAt(elemPos);
                     }
@@ -633,7 +711,7 @@ public final class OmniBufProtobuf {
                 if (val instanceof MessageOrBuilder sub) {
                     boolean largeSub = sub instanceof Message sm && sm.getSerializedSize() > 16_383;
                     int subPos = enc.beginSubMsgFast(fnum, largeSub);
-                    encodeMessage(enc, sub, deterministic);
+                    encodeMessage(enc, sub, planForNested(sub), deterministic);
                     enc.endContainerAt(subPos);
                 }
             }
@@ -664,7 +742,7 @@ public final class OmniBufProtobuf {
                 }
                 int elemPos = enc.beginInlineSubMsgFast();
                 if (val instanceof MessageOrBuilder sub) {
-                    encodeMessage(enc, sub, deterministic);
+                    encodeMessage(enc, sub, planForNested(sub), deterministic);
                 }
                 enc.endContainerAt(elemPos);
             }
@@ -677,12 +755,12 @@ public final class OmniBufProtobuf {
     // ========================================================================
 
     private static void decodeIntoBuilder(
-            OmniBufDecoder dec, Message.Builder builder, int depth) {
+            OmniBufDecoder dec, Message.Builder builder, DescriptorPlan plan, int depth) {
         if (depth > dec.maxNestingDepth()) {
             throw new OmniBufException("omnibuf: nesting depth exceeds MaxNestingDepth");
         }
-        Descriptor md = builder.getDescriptorForType();
-        boolean isEditions = isEditionsFile(md.getFile());
+        Descriptor md = plan.descriptor;
+        boolean isEditions = plan.isEditions;
         Map<FieldDescriptor, Map<Object, Object>> mapAccumulators = null;
 
         while (dec.hasRemaining()) {
@@ -802,7 +880,7 @@ public final class OmniBufProtobuf {
                 Message.Builder subBuilder = builder.hasField(fd)
                     ? ((Message) builder.getField(fd)).toBuilder()
                     : builder.newBuilderForField(fd);
-                decodeIntoBuilder(dec, subBuilder, depth + 1);
+                decodeIntoBuilder(dec, subBuilder, planForNested(subBuilder), depth + 1);
                 dec.endContainer(subLimit);
                 builder.setField(fd, subBuilder.buildPartial());
                 continue;
@@ -875,7 +953,7 @@ public final class OmniBufProtobuf {
                 Message.Builder subBuilder = parentBuilder != null
                     ? parentBuilder.newBuilderForField(fd)
                     : DynamicMessage.newBuilder(fd.getMessageType());
-                decodeIntoBuilder(dec, subBuilder, containerDepth + 1);
+                decodeIntoBuilder(dec, subBuilder, planForNested(subBuilder), containerDepth + 1);
                 dec.endContainer(elemLimit);
                 yield subBuilder.buildPartial();
             }

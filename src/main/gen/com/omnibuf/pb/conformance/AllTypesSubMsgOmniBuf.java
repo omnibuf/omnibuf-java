@@ -130,14 +130,11 @@ public final class AllTypesSubMsgOmniBuf {
         if (msg == null) {
             return 0;
         }
-        int est = MIN_ENCODED_BYTES;
+        long est = MIN_ENCODED_BYTES;
         if (msg.label != null) {
-            int sl = msg.label.length();
-            if (sl > 16_383 || (est += sl) > 16_383) {
-                return 16_384;
-            }
+            est += msg.label.length();
         }
-        return est;
+        return est > 16_383L ? 16_384 : (int) est;
     }
 
     public static void encode(com.omnibuf.wire.OmniBufEncoder enc, OmniBufAllTypesSubMsg msg, boolean deterministic) {

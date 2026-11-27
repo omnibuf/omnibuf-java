@@ -255,6 +255,56 @@ public final class OmniBufDecoder {
         return tag;
     }
 
+    public static long readVarArrayHeaderPacked(
+            byte[] buf,
+            int bodyStart,
+            int bodyEnd,
+            int expectedElemWT,
+            int depth,
+            int maxNestingDepth,
+            int maxCollectionElements) {
+        if (depth < maxNestingDepth && (buf[bodyStart] & 0xFF) == expectedElemWT) {
+            int b0 = buf[bodyStart + 1] & 0xFF;
+            if ((b0 & 1) != 0) {
+                int count = b0 >>> 1;
+                int payloadStart = bodyStart + 2;
+                int remaining = bodyEnd - payloadStart;
+                if (count > 0 && count <= remaining && count <= maxCollectionElements) {
+                    return (((long) payloadStart) << 32) | (count & 0xFFFF_FFFFL);
+                }
+            }
+        }
+        return readArrayHeaderPackedSlow(
+            buf, bodyStart, bodyEnd, expectedElemWT, depth, maxNestingDepth, maxCollectionElements
+        );
+    }
+
+    public static long readFixedArrayHeaderPacked(
+            byte[] buf,
+            int bodyStart,
+            int bodyEnd,
+            int expectedElemWT,
+            int elemWidth,
+            int depth,
+            int maxNestingDepth,
+            int maxCollectionElements) {
+        if (depth < maxNestingDepth && (buf[bodyStart] & 0xFF) == expectedElemWT) {
+            int b0 = buf[bodyStart + 1] & 0xFF;
+            if ((b0 & 1) != 0) {
+                int count = b0 >>> 1;
+                int payloadStart = bodyStart + 2;
+                int remaining = bodyEnd - payloadStart;
+                if (count <= maxCollectionElements
+                        && (long) count * (long) elemWidth == (long) remaining) {
+                    return (((long) payloadStart) << 32) | (count & 0xFFFF_FFFFL);
+                }
+            }
+        }
+        return readArrayHeaderPackedSlow(
+            buf, bodyStart, bodyEnd, expectedElemWT, depth, maxNestingDepth, maxCollectionElements
+        );
+    }
+
     public static long readArrayHeaderPacked(
             byte[] buf,
             int bodyStart,
@@ -582,7 +632,7 @@ public final class OmniBufDecoder {
         if (count <= 0) {
             return p;
         }
-        if (!dst.isEmpty() || count > 65_536) {
+        if (count > 65_536) {
             dst.ensureCapacity(dst.size() + count);
         }
         for (int i = 0; i < count; i++) {
@@ -593,7 +643,7 @@ public final class OmniBufDecoder {
                     int start = p + 1;
                     if (lim - start >= len) {
                         p = start + len;
-                        dst.add(len == 0 ? "" : Utf8Validator.decodeStrictUnchecked(buf, start, len));
+                        dst.add(Utf8Validator.decodeStrictUnchecked(buf, start, len));
                         continue;
                     }
                 }

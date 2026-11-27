@@ -440,7 +440,41 @@ public final class OmniBufEncoder {
 
     private static int writeShortAsciiInto(byte[] dst, int lenBytePos, String s, int n) {
         int p = lenBytePos + 1;
-        for (int i = 0; i < n; i++) {
+        int i = 0;
+        for (; i + 8 <= n; i += 8) {
+            int c0 = s.charAt(i);
+            int c1 = s.charAt(i + 1);
+            int c2 = s.charAt(i + 2);
+            int c3 = s.charAt(i + 3);
+            int c4 = s.charAt(i + 4);
+            int c5 = s.charAt(i + 5);
+            int c6 = s.charAt(i + 6);
+            int c7 = s.charAt(i + 7);
+            if (((c0 | c1 | c2 | c3 | c4 | c5 | c6 | c7) & 0xFF80) != 0) {
+                return ~i;
+            }
+            long word = (long) c0
+                | ((long) c1 << 8)
+                | ((long) c2 << 16)
+                | ((long) c3 << 24)
+                | ((long) c4 << 32)
+                | ((long) c5 << 40)
+                | ((long) c6 << 48)
+                | ((long) c7 << 56);
+            PrefixVarint.setLongLE(dst, p + i, word);
+        }
+        if (i + 4 <= n) {
+            int c0 = s.charAt(i);
+            int c1 = s.charAt(i + 1);
+            int c2 = s.charAt(i + 2);
+            int c3 = s.charAt(i + 3);
+            if (((c0 | c1 | c2 | c3) & 0xFF80) != 0) {
+                return ~i;
+            }
+            PrefixVarint.setIntLE(dst, p + i, c0 | (c1 << 8) | (c2 << 16) | (c3 << 24));
+            i += 4;
+        }
+        for (; i < n; i++) {
             int c = s.charAt(i);
             if (c >= 0x80) {
                 return ~i;
@@ -928,30 +962,18 @@ public final class OmniBufEncoder {
     // High-Level Typed Array & Map Helpers
     // ========================================================================
 
-    private static boolean isLargeStringListHint(List<String> values, int n) {
+    private static boolean isLargeStringListHint(List<String> values, int n, String first) {
         if (n > 16_380) {
             return true;
         }
-        String first = values.get(0);
         int l0 = first == null ? 0 : first.length();
         if (l0 > 16_383) {
             return true;
-        }
-        if (n == 1) {
-            return false;
         }
         String last = values.get(n - 1);
         int lLast = last == null ? 0 : last.length();
         if (lLast > 16_383) {
             return true;
-        }
-        if (n <= 4) {
-            long sum = 2L + l0 + lLast;
-            for (int i = 1; i < n - 1; i++) {
-                String s = values.get(i);
-                sum += 1L + (s == null ? 0L : s.length());
-            }
-            return sum + 2L > PrefixVarint.MAX_2BYTE;
         }
         String mid = values.get(n >>> 1);
         int lMid = mid == null ? 0 : mid.length();
@@ -980,41 +1002,34 @@ public final class OmniBufEncoder {
             endContainerAt(lenPos);
             return;
         }
-        String first = values.get(0);
+        String s = values.get(0);
         boolean largeHint = n > 64
-            ? isLargeStringListHint(values, n)
-            : (first != null && first.length() > 16_383);
+            ? isLargeStringListHint(values, n, s)
+            : (s != null && s.length() > 16_383);
         int lenPos = beginTypedArrayFast(fieldNumber, WireType.WIRE_STRING, n, largeHint);
         byte[] dst = this.buf;
         int p = this.pos;
         int cap = dst.length;
-        for (int i = 0; i < n; i++) {
-            String s = values.get(i);
-            if (s == null || s.isEmpty()) {
-                if (p < cap) {
-                    dst[p++] = 1;
-                } else {
-                    p = writeStringElementSlow(p, s);
-                    dst = this.buf;
-                    cap = dst.length;
-                }
-                continue;
-            }
-            int slen = s.length();
-            if (slen <= 127 && cap - p >= 1 + slen) {
+        for (int i = 0; ; ) {
+            int slen;
+            if (s != null && (slen = s.length()) > 0 && slen <= 127 && cap - p >= 1 + slen) {
                 int nextP = writeShortAsciiInto(dst, p, s, slen);
                 if (nextP >= 0) {
                     p = nextP;
-                    continue;
+                } else {
+                    p = writeStringNonAsciiFrom(p, s, slen, ~nextP);
+                    dst = this.buf;
+                    cap = dst.length;
                 }
-                p = writeStringNonAsciiFrom(p, s, slen, ~nextP);
-                dst = this.buf;
-                cap = dst.length;
             } else {
                 p = writeStringElementSlow(p, s);
                 dst = this.buf;
                 cap = dst.length;
             }
+            if (++i >= n) {
+                break;
+            }
+            s = values.get(i);
         }
         this.pos = p;
         endContainerAt(lenPos);

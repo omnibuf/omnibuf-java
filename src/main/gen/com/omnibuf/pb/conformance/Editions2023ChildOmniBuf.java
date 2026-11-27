@@ -126,14 +126,11 @@ public final class Editions2023ChildOmniBuf {
         if (msg == null) {
             return 0;
         }
-        int est = MIN_ENCODED_BYTES;
+        long est = MIN_ENCODED_BYTES;
         if (msg.has_note && msg.note != null) {
-            int sl = msg.note.length();
-            if (sl > 16_383 || (est += sl) > 16_383) {
-                return 16_384;
-            }
+            est += msg.note.length();
         }
-        return est;
+        return est > 16_383L ? 16_384 : (int) est;
     }
 
     public static void encode(com.omnibuf.wire.OmniBufEncoder enc, OmniBufEditions2023Child msg, boolean deterministic) {

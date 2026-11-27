@@ -455,7 +455,7 @@ public final class PeerUpdateOmniBuf {
             int arrStart = (int) (pk_arrStart >>> 32);
             int arrEnd = (int) pk_arrStart;
             pos = arrEnd;
-            long arrHdr = com.omnibuf.wire.OmniBufDecoder.readArrayHeaderPacked(buf, arrStart, arrEnd, WireType.WIRE_STRING, depth, maxDepth, maxElems);
+            long arrHdr = com.omnibuf.wire.OmniBufDecoder.readVarArrayHeaderPacked(buf, arrStart, arrEnd, WireType.WIRE_STRING, depth, maxDepth, maxElems);
             int ap = (int) (arrHdr >>> 32);
             int count = (int) arrHdr;
             var list = target.ensureTags(count);
@@ -473,7 +473,7 @@ public final class PeerUpdateOmniBuf {
             int arrStart = (int) (pk_arrStart >>> 32);
             int arrEnd = (int) pk_arrStart;
             pos = arrEnd;
-            long arrHdr = com.omnibuf.wire.OmniBufDecoder.readArrayHeaderPacked(buf, arrStart, arrEnd, WireType.WIRE_UINT, depth, maxDepth, maxElems);
+            long arrHdr = com.omnibuf.wire.OmniBufDecoder.readVarArrayHeaderPacked(buf, arrStart, arrEnd, WireType.WIRE_UINT, depth, maxDepth, maxElems);
             int ap = (int) (arrHdr >>> 32);
             int count = (int) arrHdr;
             var list = target.ensurePrefixes(count);
@@ -504,7 +504,7 @@ public final class PeerUpdateOmniBuf {
             int arrStart = (int) (pk_arrStart >>> 32);
             int arrEnd = (int) pk_arrStart;
             pos = arrEnd;
-            long arrHdr = com.omnibuf.wire.OmniBufDecoder.readArrayHeaderPacked(buf, arrStart, arrEnd, WireType.WIRE_SUB_MSG, depth, maxDepth, maxElems);
+            long arrHdr = com.omnibuf.wire.OmniBufDecoder.readVarArrayHeaderPacked(buf, arrStart, arrEnd, WireType.WIRE_SUB_MSG, depth, maxDepth, maxElems);
             int ap = (int) (arrHdr >>> 32);
             int count = (int) arrHdr;
             var list = target.ensureNeighbors(count);
@@ -671,7 +671,7 @@ public final class PeerUpdateOmniBuf {
                         int arrStart = (int) (pk_arrStart >>> 32);
                         int arrEnd = (int) pk_arrStart;
                         pos = arrEnd;
-                        long arrHdr = com.omnibuf.wire.OmniBufDecoder.readArrayHeaderPacked(buf, arrStart, arrEnd, WireType.WIRE_STRING, depth, maxDepth, maxElems);
+                        long arrHdr = com.omnibuf.wire.OmniBufDecoder.readVarArrayHeaderPacked(buf, arrStart, arrEnd, WireType.WIRE_STRING, depth, maxDepth, maxElems);
                         int ap = (int) (arrHdr >>> 32);
                         int count = (int) arrHdr;
                         var list = target.ensureTags(count);
@@ -692,7 +692,7 @@ public final class PeerUpdateOmniBuf {
                         int arrStart = (int) (pk_arrStart >>> 32);
                         int arrEnd = (int) pk_arrStart;
                         pos = arrEnd;
-                        long arrHdr = com.omnibuf.wire.OmniBufDecoder.readArrayHeaderPacked(buf, arrStart, arrEnd, WireType.WIRE_UINT, depth, maxDepth, maxElems);
+                        long arrHdr = com.omnibuf.wire.OmniBufDecoder.readVarArrayHeaderPacked(buf, arrStart, arrEnd, WireType.WIRE_UINT, depth, maxDepth, maxElems);
                         int ap = (int) (arrHdr >>> 32);
                         int count = (int) arrHdr;
                         var list = target.ensurePrefixes(count);
@@ -729,7 +729,7 @@ public final class PeerUpdateOmniBuf {
                         int arrStart = (int) (pk_arrStart >>> 32);
                         int arrEnd = (int) pk_arrStart;
                         pos = arrEnd;
-                        long arrHdr = com.omnibuf.wire.OmniBufDecoder.readArrayHeaderPacked(buf, arrStart, arrEnd, WireType.WIRE_SUB_MSG, depth, maxDepth, maxElems);
+                        long arrHdr = com.omnibuf.wire.OmniBufDecoder.readVarArrayHeaderPacked(buf, arrStart, arrEnd, WireType.WIRE_SUB_MSG, depth, maxDepth, maxElems);
                         int ap = (int) (arrHdr >>> 32);
                         int count = (int) arrHdr;
                         var list = target.ensureNeighbors(count);

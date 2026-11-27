@@ -134,26 +134,17 @@ public final class LocationOmniBuf {
         if (msg == null) {
             return 0;
         }
-        int est = MIN_ENCODED_BYTES;
+        long est = MIN_ENCODED_BYTES;
         if (msg.region != null) {
-            int sl = msg.region.length();
-            if (sl > 16_383 || (est += sl) > 16_383) {
-                return 16_384;
-            }
+            est += msg.region.length();
         }
         if (msg.datacenter != null) {
-            int sl = msg.datacenter.length();
-            if (sl > 16_383 || (est += sl) > 16_383) {
-                return 16_384;
-            }
+            est += msg.datacenter.length();
         }
         if (msg.city != null) {
-            int sl = msg.city.length();
-            if (sl > 16_383 || (est += sl) > 16_383) {
-                return 16_384;
-            }
+            est += msg.city.length();
         }
-        return est;
+        return est > 16_383L ? 16_384 : (int) est;
     }
 
     public static void encode(com.omnibuf.wire.OmniBufEncoder enc, OmniBufLocation msg, boolean deterministic) {

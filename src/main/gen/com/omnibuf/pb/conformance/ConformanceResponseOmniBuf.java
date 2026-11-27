@@ -134,44 +134,26 @@ public final class ConformanceResponseOmniBuf {
         if (msg == null) {
             return 0;
         }
-        int est = MIN_ENCODED_BYTES;
+        long est = MIN_ENCODED_BYTES;
         if (msg.parseError != null) {
-            int sl = msg.parseError.length();
-            if (sl > 16_383 || (est += sl) > 16_383) {
-                return 16_384;
-            }
+            est += msg.parseError.length();
         }
         if (msg.serializeError != null) {
-            int sl = msg.serializeError.length();
-            if (sl > 16_383 || (est += sl) > 16_383) {
-                return 16_384;
-            }
+            est += msg.serializeError.length();
         }
         if (msg.runtimeError != null) {
-            int sl = msg.runtimeError.length();
-            if (sl > 16_383 || (est += sl) > 16_383) {
-                return 16_384;
-            }
+            est += msg.runtimeError.length();
         }
         if (msg.skipped != null) {
-            int sl = msg.skipped.length();
-            if (sl > 16_383 || (est += sl) > 16_383) {
-                return 16_384;
-            }
+            est += msg.skipped.length();
         }
         if (msg.omnibufPayload != null) {
-            int sl = msg.omnibufPayload.length;
-            if (sl > 16_383 || (est += sl) > 16_383) {
-                return 16_384;
-            }
+            est += msg.omnibufPayload.length;
         }
         if (msg.jsonPayload != null) {
-            int sl = msg.jsonPayload.length();
-            if (sl > 16_383 || (est += sl) > 16_383) {
-                return 16_384;
-            }
+            est += msg.jsonPayload.length();
         }
-        return est;
+        return est > 16_383L ? 16_384 : (int) est;
     }
 
     public static void encode(com.omnibuf.wire.OmniBufEncoder enc, OmniBufConformanceResponse msg, boolean deterministic) {
